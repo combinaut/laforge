@@ -2,7 +2,7 @@
 module LaForge
   module ActiveRecord
     def self.laforged
-      has_many :data_entries, dependent: :delete_all, class_name: 'LaForge::DataEntry'
+      has_many :data_entries, as: :record, dependent: :delete_all, class_name: 'LaForge::DataEntry'
       has_many :data_sources, through: :source_data_entries, class_name: 'LaForge::DataSource'
 
       scope :from_data_source, ->(source) { joins(:data_entries).merge(DataEntry.from_source(source)) }
