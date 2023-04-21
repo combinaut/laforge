@@ -1,6 +1,6 @@
 # create_table :laforge_data_entries do |t|
 #   t.belongs_to :record, polymorphic: true, null: false, index: false
-#   t.string :attribute, null: false
+#   t.string :attribute_name, null: false
 #   t.belongs_to :source, null: false, index: false
 #   t.text :value
 #   t.integer :priority
