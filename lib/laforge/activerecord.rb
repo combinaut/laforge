@@ -1,7 +1,7 @@
 # TODO: create generator to generate tables
 module LaForge
   module ActiveRecord
-    def self.laforged
+    def laforged
       has_many :data_entries, as: :record, dependent: :delete_all, class_name: 'LaForge::DataEntry'
       has_many :data_sources, through: :source_data_entries, class_name: 'LaForge::DataSource'
 
@@ -24,9 +24,12 @@ module LaForge
 
   module InstanceMethods
     # Assign attributes and save the record based on the data entries
-    def forge!(**forge_options)
-      forge(**forge_options)
-      save!
+    def forge!(**forge_options, &block)
+      transaction do
+        block.call if block_given?
+        forge(**forge_options)
+        save!
+      end
     end
 
     # Assign attributes based on the data entries
