@@ -1,14 +1,3 @@
-# create_table :laforge_data_entries do |t|
-#   t.belongs_to :record, polymorphic: true, null: false, index: false
-#   t.string :attribute_name, null: false
-#   t.belongs_to :source, null: false, index: false
-#   t.text :value
-#   t.integer :priority
-#   t.timestamps null: false
-# end
-# add_index :laforge_data_entries, [:record_id, :record_type, :attribute, :source_id]
-
-
 module LaForge
   class DataEntry < ActiveRecord::Base
     self.table_name = "la_forge_data_entries"

@@ -1,4 +1,3 @@
-# TODO: create generator to generate tables
 module LaForge
   module ActiveRecord
     def laforged

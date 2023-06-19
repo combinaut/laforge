@@ -1,0 +1,21 @@
+
+class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
+  def change
+    create_table :la_forge_data_sources do |t|
+      t.text :name
+      t.integer :priority
+      t.timestamps null: false
+    end
+
+    create_table :la_forge_data_entries do |t|
+      t.belongs_to :record, polymorphic: true, null: false, index: false
+      t.string :attribute_name, null: false
+      t.belongs_to :source, null: false, index: false
+      t.json :value
+      t.integer :priority
+      t.timestamps null: false
+    end
+
+    add_index :la_forge_data_entries, [:record_id, :record_type, :attribute_name, :source_id], name: :index_la_forge_data_entries_on_record_and_attribute_and_source
+  end
+end
