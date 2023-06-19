@@ -17,6 +17,22 @@ describe 'ActiveRecordExtensions' do
       expect { record.record_data_entries({name: "Article"}, data_source.name, priority: 20) }.to change { record.data_entries.last&.priority }.to(20)
     end
 
+    it 'can set an attribute to a string value' do
+      expect { record.record_data_entries({name: "Article"}, data_source.name) }.to change { record.data_entries.last&.value }.to("Article")
+    end
+
+    it 'can set an attribute to an integer value' do
+      expect { record.record_data_entries({count: 5}, data_source.name) }.to change { record.data_entries.last&.value }.to(5)
+    end
+
+    it 'can set an attribute to true' do
+      expect { record.record_data_entries({active: true}, data_source.name) }.to change { record.data_entries.last&.value }.to(true)
+    end
+
+    it 'can set an attribute to false' do
+      expect { record.record_data_entries({active: false}, data_source.name) }.to change { record.data_entries.last&.value }.to(false)
+    end
+
     it 'destroys data_entries from the same source' do
       record.record_data_entries({name: "Article"}, data_source.name)
       expect { record.record_data_entries({name: "Article 2"}, data_source.name) }.not_to change { record.data_entries.count }
@@ -47,7 +63,7 @@ describe 'ActiveRecordExtensions' do
       record.record_data_entries({name: "Article"}, data_source.name)
       record.record_data_entries({active: false}, prioritized_data_source.name)
 
-      expect { record.forge }.to change { record.changed_attributes.keys }.to eq(["name", "active"])
+      expect { record.forge }.to change { record.changes }.to eq({"name"=>["Post", "Article"], "active"=>[true, false]})
     end
 
     it 'prioritizes based on the data_entry priority' do
@@ -63,8 +79,6 @@ describe 'ActiveRecordExtensions' do
 
       expect { record.forge }.to change { record.name }.from("Post").to("#{prioritized_data_source} Article")
     end
-
-
   end
 
   describe '#forge!' do

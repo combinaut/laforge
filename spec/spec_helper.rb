@@ -24,6 +24,7 @@ ActiveRecord::Schema.define(version: 0) do
   create_table :active_record_mocks, force: true do |t|
     t.string :name
     t.boolean :active
+    t.integer :count
     t.timestamps null: false
   end
 
@@ -37,7 +38,7 @@ ActiveRecord::Schema.define(version: 0) do
     t.belongs_to :record, polymorphic: true, null: false, index: false
     t.string :attribute_name, null: false
     t.belongs_to :source, null: false, index: false
-    t.text :value
+    t.json :value
     t.integer :priority
     t.timestamps null: false
   end

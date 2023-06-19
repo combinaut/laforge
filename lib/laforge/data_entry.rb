@@ -18,16 +18,8 @@ module LaForge
 
     delegate :priority, to: :source, prefix: true, allow_nil: true
 
-    before_save :normalize_value
-
     def priority_with_fallback
       priority || source_priority
-    end
-
-    private
-
-    def normalize_value
-      self.value = nil unless value.present?
     end
   end
 end
