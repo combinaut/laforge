@@ -6,41 +6,58 @@ describe 'ActiveRecordExtensions' do
     let(:record) { ActiveRecordMock.create(name: "Post") }
 
     it 'creates a data_entry for an attribute passed' do
-      expect { record.record_data_entries({name: "Article"}, data_source.name) }.to change { record.data_entries.count }.by(1)
+      expect { record.record_data_entries({name: "Article"}, data_source.name) }
+        .to change { record.data_entries.count }
+        .by(1)
     end
 
     it 'sets the source_id' do
-      expect { record.record_data_entries({name: "Article"}, data_source.name) }.to change { record.data_entries.last&.source_id }.to(data_source.id)
+      expect { record.record_data_entries({name: "Article"}, data_source.name) }
+        .to change { record.data_entries.last&.source_id }
+        .to(data_source.id)
     end
 
     it 'sets the priority when passed' do
-      expect { record.record_data_entries({name: "Article"}, data_source.name, priority: 20) }.to change { record.data_entries.last&.priority }.to(20)
+      expect { record.record_data_entries({name: "Article"}, data_source.name, priority: 20) }
+        .to change { record.data_entries.last&.priority }
+        .to(20)
     end
 
     it 'can set an attribute to a string value' do
-      expect { record.record_data_entries({name: "Article"}, data_source.name) }.to change { record.data_entries.last&.value }.to("Article")
+      expect { record.record_data_entries({name: "Article"}, data_source.name) }
+        .to change { record.data_entries.last&.value }
+        .to("Article")
     end
 
     it 'can set an attribute to an integer value' do
-      expect { record.record_data_entries({count: 5}, data_source.name) }.to change { record.data_entries.last&.value }.to(5)
+      expect { record.record_data_entries({count: 5}, data_source.name) }
+        .to change { record.data_entries.last&.value }
+        .to(5)
     end
 
     it 'can set an attribute to true' do
-      expect { record.record_data_entries({active: true}, data_source.name) }.to change { record.data_entries.last&.value }.to(true)
+      expect { record.record_data_entries({active: true}, data_source.name) }
+        .to change { record.data_entries.last&.value }
+        .to(true)
     end
 
     it 'can set an attribute to false' do
-      expect { record.record_data_entries({active: false}, data_source.name) }.to change { record.data_entries.last&.value }.to(false)
+      expect { record.record_data_entries({active: false}, data_source.name) }
+        .to change { record.data_entries.last&.value }
+        .to(false)
     end
 
     it 'destroys data_entries from the same source' do
       record.record_data_entries({name: "Article"}, data_source.name)
-      expect { record.record_data_entries({name: "Article 2"}, data_source.name) }.not_to change { record.data_entries.count }
+      expect { record.record_data_entries({name: "Article 2"}, data_source.name) }
+        .not_to change { record.data_entries.count }
     end
 
     it 'does not destroy data_entries from the same source when the replace is false' do
       record.record_data_entries({name: "Article"}, data_source.name)
-      expect { record.record_data_entries({name: "Article 2"}, data_source.name, replace: false) }.to change { record.data_entries.count }.from(1).to(2)
+      expect { record.record_data_entries({name: "Article 2"}, data_source.name, replace: false) }
+        .to change { record.data_entries.count }
+        .from(1).to(2)
     end
   end
 
