@@ -1,6 +1,6 @@
 module LaForge
   class DataEntry < ActiveRecord::Base
-    self.table_name = "la_forge_data_entries"
+    self.table_name = "laforge_data_entries"
 
     belongs_to :record, polymorphic: true
     belongs_to :source, class_name: 'LaForge::DataSource'

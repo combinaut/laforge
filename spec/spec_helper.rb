@@ -28,13 +28,13 @@ ActiveRecord::Schema.define(version: 0) do
     t.timestamps null: false
   end
 
-  create_table :la_forge_data_sources, force: true do |t|
+  create_table :laforge_data_sources, force: true do |t|
     t.text :name
     t.integer :priority
     t.timestamps null: false
   end
 
-  create_table :la_forge_data_entries, force: true do |t|
+  create_table :laforge_data_entries, force: true do |t|
     t.belongs_to :record, polymorphic: true, null: false, index: false
     t.string :attribute_name, null: false
     t.belongs_to :source, null: false, index: false
