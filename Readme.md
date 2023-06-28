@@ -59,17 +59,20 @@ The priority of a data entry can be customized to override the priority inherite
 
 ### Querying
   ```ruby
-    MyModel.from_data_source(source1) # => All records from source1
-    MyModel.without_data_source # => All records without any data source
-    MyModel.without_data_source(source1) # => All records not from source1
+    MyModel.with_source(source1) # => All records from source1
+    MyModel.without_source(source1) # => All records not from source1
 
-    MyModel.with_attribute_from_data_source(:height, source1) # => All records with a recorded height attribute from source1
-    MyModel.with_attribute_from_data_source([:height, :width], source1) # => All records with a recorded height or width attribute from source1
-    MyModel.with_attribute_from_data_source(:height, source1).with_attribute_from_data_source(:width, source1) # => All records with a recorded height and width attribute from source1
+    MyModel.with_attribute(:height) # => All records with a recorded height attribute from any source
+    MyModel.without_attribute(:height) # => All records without a recorded height attribute from any source
 
-    MyModel.without_attribute_from_data_source(:height) # => All records without a recorded height attribute from any source
-    MyModel.without_attribute_from_data_source(:height, source1) # => All records without a recorded height attribute from source1
-    MyModel.without_attribute_from_data_source([:height, :width], source1) # => All records missing a recorded height or missing a recorded width from source1
-    MyModel.without_attribute_from_data_source(:height, source1).without_attribute_from_data_source(:width, source1) # => All records without both a recorded height and width attribute from source1
+    MyModel.with_attribute_with_source(:height, source1) # => All records with a recorded height attribute from source1
+    MyModel.with_attribute_with_source([:height, :width], source1) # => All records with a recorded height or width attribute from source1
 
+    MyModel.with_attribute_without_source(:height, source1) # => All records with a recorded height not from source1
+    MyModel.with_attribute_without_source([:height, :width], source1) # => All records with a recorded height or width attribute not from source1
+    MyModel.with_attribute_with_source(:height, source1).with_attribute_with_source(:width, source1) # => All records with both a recorded height and width attribute from source1
+
+    MyModel.without_attribute_with_source(:height, source1) # => All records without a recorded height attribute from source1
+    MyModel.without_attribute_with_source([:height, :width], source1) # => All records missing a recorded height or missing a recorded width from source1
+    MyModel.without_attribute_with_source(:height, source1).without_attribute_with_source(:width, source1) # => All records without both a recorded height and width attribute from source1
   ```
