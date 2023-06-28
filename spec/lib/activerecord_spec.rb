@@ -11,10 +11,34 @@ describe 'ActiveRecordExtensions' do
         .by(1)
     end
 
-    it 'sets the source_id' do
+    it 'sets the source_id when a source_name is passed in' do
       expect { record.record_data_entries({name: "Article"}, data_source.name) }
         .to change { record.data_entries.last&.source_id }
         .to(data_source.id)
+    end
+
+    it 'sets the source_id when a source_id is passed in' do
+      expect { record.record_data_entries({name: "Article"}, data_source.id) }
+        .to change { record.data_entries.last&.source_id }
+        .to(data_source.id)
+    end
+
+    it 'sets the source_id when a source object is passed in' do
+      expect { record.record_data_entries({name: "Article"}, data_source) }
+        .to change { record.data_entries.last&.source_id }
+        .to(data_source.id)
+    end
+
+    it 'raises an error when an invalid source name is passed in' do
+      expect { record.record_data_entries({name: "Article"}, "#{data_source.name}_test") }.to raise_exception(LaForge::InstanceMethods::InvalidDataSource)
+    end
+
+    it 'raises an error when an invalid source type is passed in' do
+      expect { record.record_data_entries({name: "Article"}, {test: 'name'}) }.to raise_exception(LaForge::InstanceMethods::InvalidDataSource)
+    end
+
+    it 'raises an error when an nil is passed in as the source type' do
+      expect { record.record_data_entries({name: "Article"}, nil) }.to raise_exception(LaForge::InstanceMethods::InvalidDataSource)
     end
 
     it 'sets the priority when passed' do
