@@ -1,13 +1,18 @@
 module LaForge
   module ActiveRecord
+    extend ActiveSupport::Concern
+
     def laforged
       has_many :data_entries, as: :record, dependent: :delete_all, class_name: 'LaForge::DataEntry'
       has_many :data_sources, through: :source_data_entries, class_name: 'LaForge::DataSource'
 
-      scope :from_data_source, ->(source) { joins(:data_entries).merge(DataEntry.from_source(source)) }
-      scope :with_attribute_from_data_source, ->(attribute, source) { joins(:data_entries).merge(DataEntry.for_attribute(attribute).from_source(source)) }
-      scope :without_data_source, ->(source = nil) { source.nil? ? left_outer_joins(:data_entries).where(data_entries: { source_id: nil }) : left_outer_joins(:data_entries).where.not(data_entries: { source_id: source }) }
-      scope :without_attribute_from_data_source, ->(attribute, source = nil) { source.nil? ? left_outer_joins(:data_entries).merge(DataEntry.for_attribute(attribute)).where(data_entries: { source_id: nil }) : left_outer_joins(:data_entries).merge(DataEntry.for_attribute(attribute)).where.not(data_entries: { source_id: source }) }
+      scope :with_source, ->(source) { joins(:data_entries).merge(DataEntry.with_source(source)) }
+      scope :without_source, ->(source) { joins(:data_entries).merge(DataEntry.without_source(source)) }
+      scope :with_attribute, ->(attribute) { joins(:data_entries).merge(DataEntry.with_attribute(attribute)) }
+      scope :without_attribute, ->(attribute) { joins(:data_entries).merge(DataEntry.without_attribute(attribute)) }
+      scope :with_attribute_with_source, ->(attribute, source) { joins(:data_entries).merge(DataEntry.with_attribute(attribute).with_source(source)) }
+      scope :with_attribute_without_source, ->(attribute, source) { joins(:data_entries).merge(DataEntry.with_attribute(attribute).without_source(source)) }
+      scope :without_attribute_with_source, ->(attribute, source) { joins(:data_entries).merge(DataEntry.without_attribute(attribute).with_source(source)) }
 
       extend ClassMethods
       include InstanceMethods
@@ -72,9 +77,8 @@ module LaForge
     # Optionally pass a custom priority for that attribute and source at the same time.
     # Optionally pass `replace: false` to leave the existing entry for the attribute and source instead of deleting it
     def record_data_entry(attribute_name, value, source, priority: nil, replace: true)
-      source_id = source_id_from(source)
-      data_entries.destroy(*filter_loaded_data_entries(attributes: attribute_name, sources: source_id)) if replace
-      data_entries << DataEntry.new(attribute_name: attribute_name, value: value, source_id: source_id, priority: priority)
+      data_entries.destroy(*filter_loaded_data_entries(attributes: attribute_name, sources: source)) if replace
+      data_entries << DataEntry.new(attribute_name: attribute_name, value: value, source_id: source, priority: priority)
     end
 
     # Set and save the priority of a source for the source of a single attribute
@@ -86,41 +90,13 @@ module LaForge
 
     # Returns a list of the entries matching the filters
     def filter_loaded_data_entries(attributes: nil, sources: nil, present: nil)
-      list = data_entries.to_a
-      return list if list.blank?
-
-      unless attributes.nil?
-        attributes = Array.wrap(attributes).map(&:to_s)
-        list.select! {|data_entry| attributes.include?(data_entry.attribute_name) }
-      end
-
-      unless sources.nil?
-        source_ids = Array.wrap(sources).map {|source| source_id_from(source) }.compact
-        list.select! {|data_entry| source_ids.include?(data_entry.source_id) }
-      end
-
-      list.select!(&:present?) if present == true
-      list.reject!(&:present?) if present == false
+      list = data_entries
+      list = list.with_attribute(attributes) unless attributes.nil?
+      list = list.with_source(sources) unless sources.nil?
+      list = list.select(&:present?) if present == true
+      list = list.reject(&:present?) if present == false
 
       return list
     end
-
-    def source_id_from(source)
-      case source
-      when /\d+/, Integer
-        source.to_i
-      when String
-        data_source = DataSource.find_by(name: source)
-        return data_source.id if data_source.present?
-        raise InvalidDataSource, "Could not find a DataSource with the name #{source}"
-      when DataSource
-        source.id
-      else
-        raise InvalidDataSource, "Cannot find a DataSource with value: #{source.class} (#{source}). Supported values include: source_id, source_name, or source object"
-      end
-    end
-
-    # EXCEPTIONS
-    class InvalidDataSource < StandardError; end
   end
 end

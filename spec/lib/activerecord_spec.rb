@@ -1,6 +1,106 @@
 require 'spec_helper'
 
 describe 'ActiveRecordExtensions' do
+  context 'querying' do
+    let(:record) { ActiveRecordMock.create(name: "Post") }
+    let(:record2) { ActiveRecordMock.create(name: "News") }
+    let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
+    let(:data_source2) { LaForge::DataSource.find_or_create_by(name: "gaurdian", priority: 2) }
+
+    before(:each) do
+      LaForge::DataEntry.destroy_all
+      LaForge::DataEntry.create(source: data_source, record: record, attribute_name: "name", value: "Article")
+      LaForge::DataEntry.create(source: data_source2, record: record2, attribute_name: "active", value: true)
+    end
+
+    describe "::with_source" do
+      it 'returns all records from a given source' do
+        expect(ActiveRecordMock.with_source(data_source)).to eq([record])
+      end
+    end
+
+    describe "::without_source" do
+      it 'returns all records without a given source' do
+        expect(ActiveRecordMock.without_source(data_source)).to eq([record2])
+      end
+    end
+
+    describe "::with_attribute" do
+      it 'returns all records with a recorded attribute when a string is passed' do
+        expect(ActiveRecordMock.with_attribute('name')).to eq([record])
+      end
+
+      it 'returns all records with a recorded attribute when a symbol is passed' do
+        expect(ActiveRecordMock.with_attribute(:name)).to eq([record])
+      end
+
+      it 'returns all records with any of recorded attribute when an array is passed' do
+        expect(ActiveRecordMock.with_attribute([:name, :active])).to eq([record, record2])
+      end
+    end
+
+    describe "::without_attribute" do
+      it 'returns all records without a recorded attribute when a string is passed' do
+        expect(ActiveRecordMock.without_attribute('name')).to eq([record2])
+      end
+
+      it 'returns all records without a recorded attribute when a symbol is passed' do
+        expect(ActiveRecordMock.without_attribute(:name)).to eq([record2])
+      end
+
+      it 'returns all records without any of recorded attribute when an array is passed' do
+        expect(ActiveRecordMock.without_attribute([:name, :intger])).to eq([record2])
+      end
+
+      it 'returns an empty array when there are no records without any of recorded attribute when an array is passed' do
+        expect(ActiveRecordMock.without_attribute([:name, :active])).to eq([])
+      end
+    end
+
+    describe "::with_attribute_with_source" do
+      it 'returns all records from a given source with a recorded attribute' do
+        expect(ActiveRecordMock.with_attribute_with_source('name', data_source)).to eq([record])
+      end
+
+      it 'does not return records from a given source but without the recorded attribute' do
+        expect(ActiveRecordMock.with_attribute_with_source('active', data_source)).not_to include(record)
+      end
+
+      it 'does not return records from a different source but with the recorded attribute' do
+        expect(ActiveRecordMock.with_attribute_with_source('name', data_source2)).not_to include(record)
+      end
+    end
+
+    describe "::with_attribute_without_source" do
+      it 'returns all records with recorded attribute not from the given source' do
+        expect(ActiveRecordMock.with_attribute_without_source('active', data_source)).to eq([record2])
+      end
+
+      it 'returns all records of any recorded attributes not from the given source' do
+        expect(ActiveRecordMock.with_attribute_without_source(['active', 'name'], data_source)).to eq([record2])
+      end
+
+      xit 'returns records with all recorded attributes from the given source when chained'
+    end
+
+    describe "::without_attribute_with_source" do
+      it 'returns all records without recorded attribute from the given source' do
+        expect(ActiveRecordMock.without_attribute_with_source('active', data_source)).to eq([record])
+      end
+
+      it 'returns all records without any recorded attributes from the given source' do
+        expect(ActiveRecordMock.without_attribute_with_source(['active', 'integer'], data_source)).to eq([record])
+      end
+
+      it 'returns an empty array when there are no records without any recorded attributes from the given source' do
+        expect(ActiveRecordMock.without_attribute_with_source(['active', 'name'], data_source)).to eq([])
+      end
+
+      xit 'returns records without any of the recorded attributes from the given source when chained'
+    end
+  end
+
+
   describe '#record_data_entries' do
     let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
     let(:record) { ActiveRecordMock.create(name: "Post") }
@@ -30,15 +130,15 @@ describe 'ActiveRecordExtensions' do
     end
 
     it 'raises an error when an invalid source name is passed in' do
-      expect { record.record_data_entries({name: "Article"}, "#{data_source.name}_test") }.to raise_exception(LaForge::InstanceMethods::InvalidDataSource)
+      expect { record.record_data_entries({name: "Article"}, "#{data_source.name}_test") }.to raise_exception(LaForge::DataSource::Invalid)
     end
 
     it 'raises an error when an invalid source type is passed in' do
-      expect { record.record_data_entries({name: "Article"}, {test: 'name'}) }.to raise_exception(LaForge::InstanceMethods::InvalidDataSource)
+      expect { record.record_data_entries({name: "Article"}, {test: 'name'}) }.to raise_exception(LaForge::DataSource::Invalid)
     end
 
     it 'raises an error when an nil is passed in as the source type' do
-      expect { record.record_data_entries({name: "Article"}, nil) }.to raise_exception(LaForge::InstanceMethods::InvalidDataSource)
+      expect { record.record_data_entries({name: "Article"}, nil) }.to raise_exception(LaForge::DataSource::Invalid)
     end
 
     it 'sets the priority when passed' do
