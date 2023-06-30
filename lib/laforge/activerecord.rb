@@ -96,7 +96,7 @@ module LaForge
       list = list.select(&:present?) if present == true
       list = list.reject(&:present?) if present == false
 
-      return list
+      return list.to_a
     end
   end
 end
