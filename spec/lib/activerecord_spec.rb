@@ -100,7 +100,6 @@ describe 'ActiveRecordExtensions' do
     end
   end
 
-
   describe '#record_data_entries' do
     let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
     let(:record) { ActiveRecordMock.create(name: "Post") }
@@ -220,11 +219,32 @@ describe 'ActiveRecordExtensions' do
 
       expect { record.forge }.to change { record.name }.from("Post").to("#{prioritized_data_source} Article")
     end
+
   end
 
   describe '#forge!' do
-    it 'generates the record from the data entries' do
+    let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
+    let(:record) { ActiveRecordMock.create(name: "Post", active: true) }
 
+    it 'changes the database record' do
+      record.record_data_entries({name: "Article"}, data_source.name)
+      expect { record.forge! }.to change { record.reload.name }.from("Post").to("Article")
+    end
+
+    it 'changes the database record when a block is passed that creates data entries' do
+      expect { record.forge! { record.record_data_entries({name: "Article"}, data_source.name) }}.to change { record.reload.name }.from("Post").to("Article")
+    end
+
+    it 'nils out the attribute when a block is passed that destroys the only data entry with that attribute' do
+      record.record_data_entries({name: "Post"}, data_source.name)
+      expect { record.forge! { record.remove_data_entries(sources: data_source.name) }}.to change { record.reload.name }.from("Post").to(nil)
+    end
+
+    it 'does not change the attribute when the only data_entry with that attribute is destroyed outside of the block' do
+      record.record_data_entries({name: "Post"}, data_source.name)
+      record.remove_data_entries(sources: data_source.name)
+
+      expect { record.forge! }.not_to change { record.reload.name }
     end
   end
 end
