@@ -86,10 +86,14 @@ module LaForge
 
     # Record a single piece of information from a source.
     # Optionally pass a custom priority for that attribute and source at the same time.
-    # Optionally pass `replace: false` to leave the existing entry for the attribute and source instead of deleting it
-    def record_data_entry(attribute_name, value, source, priority: nil, replace: true)
-      data_entries.destroy(*filter_loaded_data_entries(attributes: attribute_name, sources: source)) if replace
-      data_entries << DataEntry.new(attribute_name: attribute_name, value: value, source_id: source, priority: priority)
+    def record_data_entry(attribute_name, value, source, priority: nil)
+      exiting_data_entry = filter_loaded_data_entries(attributes: attribute_name, sources: source).first
+      if exiting_data_entry
+        exiting_data_entry.value = value
+        exiting_data_entry.priority = priority
+      else
+        data_entries.build(attribute_name: attribute_name, value: value, source_id: source, priority: priority)
+      end
     end
 
     # Set and save the priority of a source for the source of a single attribute
