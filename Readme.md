@@ -46,6 +46,16 @@ Key features:
     foo.forge! # => Saves the model with the attributes { height: 20, width: 5, name: 'El Capitan' }
   ```
 
+**Note:** Calling `record_data_entries` builds the Data Entries, but they are not persisted and and the record's attributes not updated until `forge!` is called.
+
+3. Remove data for an existing model from any of your sources.
+  ```ruby
+    foo.remove_data_entries(source1)
+    foo.forge! # => Saves the model with the attributes { height: 19, width: nil, name: 'El Capitan' }
+  ```
+
+**Note:** calling `remove_data_entries` marks the Data Entries for destruction, but they are not destroyed and the removed attributes not nullified until `forge!` is called.
+
 ### Overriding Priority
 
 The priority of a data entry can be customized to override the priority inherited from the data source.

@@ -100,15 +100,19 @@ describe 'ActiveRecordExtensions' do
     end
   end
 
-
   describe '#record_data_entries' do
     let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
     let(:record) { ActiveRecordMock.create(name: "Post") }
 
-    it 'creates a data_entry for an attribute passed' do
+    it 'builds a data_entry for an attribute passed' do
       expect { record.record_data_entries({name: "Article"}, data_source.name) }
-        .to change { record.data_entries.count }
+        .to change { record.data_entries.size }
         .by(1)
+    end
+
+    it 'does not create a new data_entry until save is called' do
+      expect { record.record_data_entries({name: "Article"}, data_source.name) }
+        .not_to change { record.data_entries.count }
     end
 
     it 'sets the source_id when a source_name is passed in' do
@@ -171,17 +175,11 @@ describe 'ActiveRecordExtensions' do
         .to(false)
     end
 
-    it 'destroys data_entries from the same source' do
+    it 'updates a data_entry for the same attribute from the same source' do
+
       record.record_data_entries({name: "Article"}, data_source.name)
       expect { record.record_data_entries({name: "Article 2"}, data_source.name) }
-        .not_to change { record.data_entries.count }
-    end
-
-    it 'does not destroy data_entries from the same source when the replace is false' do
-      record.record_data_entries({name: "Article"}, data_source.name)
-      expect { record.record_data_entries({name: "Article 2"}, data_source.name, replace: false) }
-        .to change { record.data_entries.count }
-        .from(1).to(2)
+      .not_to change { record.data_entries.pluck(:id) }
     end
   end
 
@@ -192,17 +190,20 @@ describe 'ActiveRecordExtensions' do
 
     it 'sets the record attributes from the data entries' do
       record.record_data_entries({name: "Article"}, data_source.name)
+
       expect { record.forge }.to change { record.name }.from("Post").to("Article")
     end
 
     it 'does not change the database record' do
       record.record_data_entries({name: "Article"}, data_source.name)
+
       expect { record.forge }.not_to change { record.reload.name }
     end
 
     it 'merges data_entries from multiple sources' do
       record.record_data_entries({name: "Article"}, data_source.name)
       record.record_data_entries({active: false}, prioritized_data_source.name)
+      record.save!
 
       expect { record.forge }.to change { record.changes }.to eq({"name"=>["Post", "Article"], "active"=>[true, false]})
     end
@@ -210,21 +211,47 @@ describe 'ActiveRecordExtensions' do
     it 'prioritizes based on the data_entry priority' do
       record.record_data_entries({name: "#{prioritized_data_source} Article"}, prioritized_data_source.name, priority: 3)
       record.record_data_entries({name: "#{data_source.name} Article"}, data_source.name, priority: 5)
+      record.save!
 
       expect { record.forge }.to change { record.name }.from("Post").to("#{data_source.name} Article")
     end
 
     it 'prioritizes based on the data_source priority when priority is not set on the data_entry' do
-      record.record_data_entries({name: "#{prioritized_data_source} Article"}, prioritized_data_source.name)
+      record.record_data_entries({name: "#{prioritized_data_source.name} Article"}, prioritized_data_source.name)
       record.record_data_entries({name: "#{data_source.name} Article"}, data_source.name)
+      record.save!
 
-      expect { record.forge }.to change { record.name }.from("Post").to("#{prioritized_data_source} Article")
+      expect { record.forge }.to change { record.name }.from("Post").to("#{prioritized_data_source.name} Article")
     end
+
   end
 
   describe '#forge!' do
-    it 'generates the record from the data entries' do
+    let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
+    let(:record) { ActiveRecordMock.create(name: "Post", active: true) }
 
+    it 'changes the database record' do
+      record.record_data_entries({name: "Article"}, data_source.name)
+
+      expect { record.forge! }.to change { record.name }.from("Post").to("Article")
+    end
+
+    it 'changes the database record when a block is passed that creates data entries' do
+      expect { record.forge! { record.record_data_entries({name: "Article"}, data_source.name) }}.to change { record.reload.name }.from("Post").to("Article")
+    end
+
+    it 'nils out the attribute when a block is passed that destroys the only data entry with that attribute' do
+      record.record_data_entries({name: "Post"}, data_source.name)
+      record.save!
+
+      expect { record.forge! { record.remove_data_entries(sources: data_source.name) }}.to change { record.reload.name }.from("Post").to(nil)
+    end
+
+    it 'does not change the attribute when the only data_entry with that attribute is destroyed outside of the block' do
+      record.record_data_entries({name: "Post"}, data_source.name)
+      record.remove_data_entries(sources: data_source.name)
+
+      expect { record.forge! }.not_to change { record.reload.name }
     end
   end
 end
