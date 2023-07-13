@@ -46,7 +46,7 @@ Key features:
     foo.forge! # => Saves the model with the attributes { height: 20, width: 5, name: 'El Capitan' }
   ```
 
-Note calling `record_data_entries` builds the data_entries, but the data_entries are not created and prioritized until `forge!`
+**Note:** Calling `record_data_entries` builds the Data Entries, but they are not persisted and and the record's attributes not updated until `forge!` is called.
 
 3. Remove data for an existing model from any of your sources.
   ```ruby
@@ -54,7 +54,7 @@ Note calling `record_data_entries` builds the data_entries, but the data_entries
     foo.forge! # => Saves the model with the attributes { height: 19, width: nil, name: 'El Capitan' }
   ```
 
-Note calling `remove_data_entries` marks the data_entries for destruction, but the data_entries are destroyed and nullified until `forge!`
+**Note:** calling `remove_data_entries` marks the Data Entries for destruction, but they are not destroyed and the removed attributes not nullified until `forge!` is called.
 
 ### Overriding Priority
 
