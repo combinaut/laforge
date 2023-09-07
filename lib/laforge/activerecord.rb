@@ -61,6 +61,8 @@ module LaForge
       forged_attrs = {}
 
       filter_loaded_data_entries(attributes: attributes, sources: sources, present: true).sort_by(&:priority_with_fallback).reverse.uniq(&:attribute_name).each do |data_entry|
+        next unless respond_to?("#{data_entry.attribute_name}=")
+
         value = data_entry.marked_for_destruction? ? nil : data_entry.value
         forged_attrs[data_entry.attribute_name] = value
       end

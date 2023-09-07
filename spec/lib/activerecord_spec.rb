@@ -169,7 +169,21 @@ describe 'ActiveRecordExtensions' do
 
       expect { record.forge }.to change { record.name }.from("Post").to("#{prioritized_data_source.name} Article")
     end
+  end
 
+  describe '#forge_attributes' do
+    let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
+    let(:record) { ActiveRecordMock.create(name: "Post", active: true) }
+    let!(:data_entry) { LaForge::DataEntry.create!(record: record, attribute_name: "name", value: "Article", source_id: data_source.id) }
+
+    it 'returns a hash of the attributes generated the data entries' do
+      expect(record.forge_attributes).to eq({"name"=> 'Article'})
+    end
+
+    it 'removes data_entries for invalid columns' do
+      data_entry.update_column(:attribute_name, "name_invalid")
+      expect(record.forge_attributes).to eq({})
+    end
   end
 
   describe '#record_data_entries' do
