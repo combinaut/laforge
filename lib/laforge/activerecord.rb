@@ -89,6 +89,8 @@ module LaForge
     # Record a single piece of information from a source.
     # Optionally pass a custom priority for that attribute and source at the same time.
     def record_data_entry(attribute_name, value, source, priority: nil)
+      raise InvalidAttributeName, "Cannot set #{attribute_name} on #{self.class.name}" unless respond_to?("#{attribute_name}=")
+
       exiting_data_entry = filter_loaded_data_entries(attributes: attribute_name, sources: source).first
       if exiting_data_entry
         exiting_data_entry.value = value
@@ -125,4 +127,6 @@ module LaForge
       return list
     end
   end
+
+  class InvalidAttributeName < StandardError; end
 end

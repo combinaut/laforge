@@ -5,7 +5,7 @@ describe 'ActiveRecordExtensions' do
     let(:record) { ActiveRecordMock.create(name: "Post") }
     let(:record2) { ActiveRecordMock.create(name: "News") }
     let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
-    let(:data_source2) { LaForge::DataSource.find_or_create_by(name: "gaurdian", priority: 2) }
+    let(:data_source2) { LaForge::DataSource.find_or_create_by(name: "guardian", priority: 2) }
 
     before(:each) do
       LaForge::DataEntry.destroy_all
@@ -134,7 +134,7 @@ describe 'ActiveRecordExtensions' do
     let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
     let(:data_entry) { LaForge::DataEntry.new(record: record, source_id: data_source.id) }
 
-    let(:prioritized_data_source) { LaForge::DataSource.find_or_create_by(name: "gaurdian", priority: 2) }
+    let(:prioritized_data_source) { LaForge::DataSource.find_or_create_by(name: "guardian", priority: 2) }
     let(:prioritized_data_entry) { LaForge::DataEntry.new(record: record, source_id: prioritized_data_source.id) }
 
     it 'sets the record attributes from the data entries' do
@@ -147,7 +147,7 @@ describe 'ActiveRecordExtensions' do
       expect { record.forge }.not_to change { record.reload.name }
     end
 
-    it 'ignores data_entries with an invalid attribute name' do
+    it 'ignores data_entries when the attribute_name does not have a setter' do
       data_entry.update_attributes(attribute_name: "name_invalid")
       expect { record.forge }.not_to change { record.changes }
     end
@@ -167,7 +167,7 @@ describe 'ActiveRecordExtensions' do
     end
 
     it 'prioritizes based on the data_source priority when priority is not set on the data_entry' do
-      data_entry.update_attributes(attribute_name: "name", value: "Lower Prioirty")
+      data_entry.update_attributes(attribute_name: "name", value: "Lower Priority")
       prioritized_data_entry.update_attributes(attribute_name: "name", value: "Higher Priority")
 
       expect { record.forge }.to change { record.name }.from("Post").to("Higher Priority")
@@ -183,7 +183,7 @@ describe 'ActiveRecordExtensions' do
       expect(record.forge_attributes).to eq({"name"=> 'Article'})
     end
 
-    it 'removes data_entries for invalid columns' do
+    it 'excludes data_entries when the attribute_name does not have a setter' do
       data_entry.update_column(:attribute_name, "name_invalid")
       expect(record.forge_attributes).to eq({})
     end
@@ -202,6 +202,10 @@ describe 'ActiveRecordExtensions' do
     it 'does not create a new data_entry until save is called' do
       expect { record.record_data_entries({name: "Article"}, data_source.name) }
         .not_to change { record.data_entries.count }
+    end
+
+    it 'raises an error when the record does not have a setter method for the attribute_name' do
+      expect { record.record_data_entries({name2: "Article"}, data_source.name) }.to raise_exception(LaForge::InvalidAttributeName)
     end
 
     it 'sets the source_id when a source_name is passed in' do
