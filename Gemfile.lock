@@ -2,7 +2,7 @@ PATH
   remote: .
   specs:
     laforge (0.0.1.alpha)
-      rails (~> 6.0)
+      rails (~> 6.1, >= 6.1.7.4)
 
 GEM
   remote: https://rubygems.org/
@@ -192,4 +192,4 @@ DEPENDENCIES
   rspec-rails (~> 3.7)
 
 BUNDLED WITH
-   2.4.13
+   2.4.22
