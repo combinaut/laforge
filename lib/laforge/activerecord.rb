@@ -105,6 +105,14 @@ module LaForge
       filter_loaded_data_entries(attributes: attribute, sources: source).each {|data_entry| data_entry.update(priority: priority) }
     end
 
+    def data_source?(source)
+      filter_loaded_data_entries(sources: source).any?
+    end
+
+    def data_source_names(attributes: nil)
+      filter_loaded_data_entries(attributes: attributes).map(&:source).map(&:name).uniq
+    end
+
     private
 
     # Returns a list of the entries matching the filters
