@@ -269,10 +269,43 @@ describe 'ActiveRecordExtensions' do
     end
 
     it 'updates a data_entry for the same attribute from the same source' do
-
       record.record_data_entries({name: "Article"}, data_source.name)
       expect { record.record_data_entries({name: "Article 2"}, data_source.name) }
       .not_to change { record.data_entries.pluck(:id) }
+    end
+  end
+
+  describe '#data_source?' do
+    let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
+    let(:record) { ActiveRecordMock.create(name: "Post") }
+
+    it 'returns true when the record has a data_entry from the source' do
+      record.record_data_entries({name: "Article"}, data_source.name)
+      expect(record.data_source?(data_source.name)).to be true
+    end
+
+    it 'returns false when the record does not have a data_entry from the source' do
+      expect(record.data_source?(data_source.name)).to be false
+    end
+  end
+
+  describe '#data_source_names' do
+    let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
+    let(:data_source2) { LaForge::DataSource.find_or_create_by(name: "guardian", priority: 2) }
+    let(:record) { ActiveRecordMock.create(name: "Post") }
+
+    it 'returns a list of sources for the data_entries' do
+      record.record_data_entries({name: "Article"}, data_source.name)
+      record.record_data_entries({active: true}, data_source2.name)
+
+      expect(record.data_source_names).to eq([data_source.name, data_source2.name])
+    end
+
+    it 'returns a list of sources for the data_entries when an attribute is passed' do
+      record.record_data_entries({name: "Article"}, data_source.name)
+      record.record_data_entries({active: true}, data_source2.name)
+
+      expect(record.data_source_names(attributes: :name)).to eq([data_source.name])
     end
   end
 end
