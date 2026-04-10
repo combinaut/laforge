@@ -29,7 +29,7 @@ jobs:
       DATABASE_URL: mysql2://root@127.0.0.1:3306/laforge_test
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
