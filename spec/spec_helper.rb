@@ -6,13 +6,12 @@ Bundler.require :default, :development
 require 'rspec/rails'
 
 # Add additional requires below this line. Rails is not loaded until this point!
-ActiveRecord::Base.establish_connection(adapter: "mysql2", database: "laforge_test", username: 'root', password: '')
+ActiveRecord::Base.establish_connection(adapter: "mysql2", host: "127.0.0.1", database: "laforge_test", username: 'root', password: ENV.fetch('MYSQL_PASSWORD', ''))
 
 ENGINE_RAILS_ROOT = File.join(File.dirname(__FILE__), '../')
 Dir[File.join(ENGINE_RAILS_ROOT, "spec/support/**/*.rb")].each {|f| require f }
 
 RSpec.configure do |config|
-  config.fixture_paths = ["#{::Rails.root}/spec/fixtures"]
   config.order = "random"
 end
 
