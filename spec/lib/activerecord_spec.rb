@@ -106,7 +106,7 @@ describe 'ActiveRecordExtensions' do
     let(:data_entry) { LaForge::DataEntry.new(record: record, source_id: data_source.id) }
 
     it 'changes the database record' do
-      data_entry.update_attributes(attribute_name: "name", value: "Article")
+      data_entry.update(attribute_name: "name", value: "Article")
 
       expect { record.forge! }.to change { record.name }.from("Post").to("Article")
     end
@@ -116,13 +116,13 @@ describe 'ActiveRecordExtensions' do
     end
 
     it 'nils out the attribute when a block is passed that destroys the only data entry with that attribute' do
-      data_entry.update_attributes(attribute_name: "name", value: "Post")
+      data_entry.update(attribute_name: "name", value: "Post")
 
       expect { record.forge! { record.remove_data_entries(sources: data_source.name) }}.to change { record.reload.name }.from("Post").to(nil)
     end
 
     it 'does not change the attribute when the only data_entry with that attribute is destroyed outside of the block' do
-      data_entry.update_attributes(attribute_name: "name", value: "Post")
+      data_entry.update(attribute_name: "name", value: "Post")
       record.remove_data_entries(sources: data_source.name)
 
       expect { record.forge! }.not_to change { record.reload.name }
@@ -138,37 +138,37 @@ describe 'ActiveRecordExtensions' do
     let(:prioritized_data_entry) { LaForge::DataEntry.new(record: record, source_id: prioritized_data_source.id) }
 
     it 'sets the record attributes from the data entries' do
-      data_entry.update_attributes(attribute_name: "name", value: "Article")
+      data_entry.update(attribute_name: "name", value: "Article")
       expect { record.forge }.to change { record.name }.from("Post").to("Article")
     end
 
     it 'does not change the database record' do
-      data_entry.update_attributes(attribute_name: "name", value: "Article")
+      data_entry.update(attribute_name: "name", value: "Article")
       expect { record.forge }.not_to change { record.reload.name }
     end
 
     it 'ignores data_entries when the attribute_name does not have a setter' do
-      data_entry.update_attributes(attribute_name: "name_invalid")
+      data_entry.update(attribute_name: "name_invalid")
       expect { record.forge }.not_to change { record.changes }
     end
 
     it 'merges data_entries from multiple sources' do
-      data_entry.update_attributes(attribute_name: "name", value: "Article")
-      prioritized_data_entry.update_attributes(attribute_name: "active", value: false)
+      data_entry.update(attribute_name: "name", value: "Article")
+      prioritized_data_entry.update(attribute_name: "active", value: false)
 
       expect { record.forge }.to change { record.changes }.to eq({"name"=>["Post", "Article"], "active"=>[true, false]})
     end
 
     it 'prioritizes based on the data_entry priority' do
-      data_entry.update_attributes(attribute_name: "name", value: "Higher Priority", priority: 5)
-      prioritized_data_entry.update_attributes(attribute_name: "name", value: "Lower Priority", priority: 3)
+      data_entry.update(attribute_name: "name", value: "Higher Priority", priority: 5)
+      prioritized_data_entry.update(attribute_name: "name", value: "Lower Priority", priority: 3)
 
       expect { record.forge }.to change { record.name }.from("Post").to("Higher Priority")
     end
 
     it 'prioritizes based on the data_source priority when priority is not set on the data_entry' do
-      data_entry.update_attributes(attribute_name: "name", value: "Lower Priority")
-      prioritized_data_entry.update_attributes(attribute_name: "name", value: "Higher Priority")
+      data_entry.update(attribute_name: "name", value: "Lower Priority")
+      prioritized_data_entry.update(attribute_name: "name", value: "Higher Priority")
 
       expect { record.forge }.to change { record.name }.from("Post").to("Higher Priority")
     end
