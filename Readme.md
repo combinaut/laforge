@@ -11,6 +11,20 @@ Key features:
 - Allows published content to be edited without those changes immediately being seen by visitors
 - Can selectively update content without needing to sync the entire database with production
 
+#### Additional info
+
+In simple terms, it is a way to track data sources for each attribute, For each attribute, such as `city` on an address, the data may be coming from different sources. If a certain source should be treated as a source of truth, then these sources (a LaForge feature) can take on a `priority` value. Using LaForge allows these sources to be tracked using `data_entries`, then later, these `data_entries` are used to determine the final value on the record.
+
+One neat feature is also that a single data importer need not be the source of truth for all the attributes being imported all the time. LaForge allows more granular control over which attributes should take priorty when coming from which data source.
+
+For example:
+
+Let's say the value for `city` could come from two different sources, MDStaff and Epic. Whenever it comes from MDStaff, we want to use that value, but it could also be blank in either case.
+
+Let's say that Dr Jane Smith's city is coming as "Los Angeles" in MDStaff but "Pasadena" in Epic. We would obviously want to use "Los Angeles" value, so we can set the priority for MDStaff higher.
+
+However, if we want to set the priority for `Epic` for `zip_code`, we can write some override logic inside the importer to choose Epic over MDStaff when it comes to that attribute.
+
 ## Setup
 1. Add **Laforge** to your Gemfile:
 
@@ -29,8 +43,9 @@ Key features:
 
 ## Usage
 
-1. Create some sources and prioritize them, giving higher priority to sources whose attributes should override those
-   same attributes from lower priority sources.
+1. Create some sources and prioritize them, giving higher priority to sources whose attributes should override
+those same attributes from lower priority sources. Here, `Encyclopedia Britannica` is a higher priority than
+`Wikipedia` -- a higher value for `priority` means it wins over those with lower `priority` value.
 
   ```ruby
     source1 = LaForge::DataSource.create(name: 'Encyclopedia Britannica', priority: 2)
