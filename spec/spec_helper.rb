@@ -24,6 +24,7 @@ ActiveRecord::Schema.define(version: 0) do
     t.string :name
     t.boolean :active
     t.integer :count
+    t.boolean :listed, null: false, default: true
     t.timestamps null: false
   end
 

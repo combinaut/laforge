@@ -121,6 +121,24 @@ describe 'ActiveRecordExtensions' do
       expect { record.forge! { record.remove_data_entries(sources: data_source.name) }}.to change { record.reload.name }.from("Post").to(nil)
     end
 
+    it 'falls back to the next source when the highest priority data entry is destroyed' do
+      prioritized_data_source = LaForge::DataSource.find_or_create_by(name: "guardian", priority: 2)
+      record.record_data_entries({ name: "Low" }, data_source)
+      record.record_data_entries({ name: "High" }, prioritized_data_source)
+      record.forge!
+
+      expect { record.forge! { record.remove_data_entries(sources: prioritized_data_source) } }
+        .to change { record.reload.name }.from("High").to("Low")
+    end
+
+    it 'resets a not-null attribute to its column default when its only data entry is destroyed' do
+      record.record_data_entries({ listed: false }, data_source)
+      record.forge!
+
+      expect { record.forge! { record.remove_data_entries(sources: data_source) } }
+        .to change { record.reload.listed }.from(false).to(true)
+    end
+
     it 'does not change the attribute when the only data_entry with that attribute is destroyed outside of the block' do
       data_entry.update(attribute_name: "name", value: "Post")
       record.remove_data_entries(sources: data_source.name)

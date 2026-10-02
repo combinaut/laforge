@@ -60,11 +60,11 @@ module LaForge
     def forge_attributes(attributes: nil, sources: nil)
       forged_attrs = {}
 
-      filter_loaded_data_entries(attributes: attributes, sources: sources, present: true).sort_by(&:priority_with_fallback).reverse.uniq(&:attribute_name).each do |data_entry|
-        next unless respond_to?("#{data_entry.attribute_name}=")
+      filter_loaded_data_entries(attributes: attributes, sources: sources, present: true).group_by(&:attribute_name).each do |attribute_name, data_entries|
+        next unless respond_to?("#{attribute_name}=")
 
-        value = data_entry.marked_for_destruction? ? nil : data_entry.value
-        forged_attrs[data_entry.attribute_name] = value
+        winning_data_entry = data_entries.reject(&:marked_for_destruction?).max_by(&:priority_with_fallback)
+        forged_attrs[attribute_name] = winning_data_entry ? winning_data_entry.value : removed_attribute_value(attribute_name)
       end
 
       return forged_attrs
@@ -114,6 +114,15 @@ module LaForge
     end
 
     private
+
+    # Returns the value an attribute takes once all of its data entries are removed: its column default when the
+    # column cannot be null, otherwise nil.
+    def removed_attribute_value(attribute_name)
+      column = self.class.columns_hash[attribute_name]
+      return nil if column.nil? || column.null
+
+      self.class.column_defaults[attribute_name]
+    end
 
     # Returns a list of the entries matching the filters
     def filter_loaded_data_entries(attributes: nil, sources: nil, present: nil)
