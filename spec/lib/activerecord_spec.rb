@@ -314,6 +314,20 @@ describe 'ActiveRecordExtensions' do
         .to(false)
     end
 
+    it 'keeps the priority of an existing data_entry when re-recorded without one' do
+      record.record_data_entries({name: "Article"}, data_source.name, priority: 20)
+      record.record_data_entries({name: "Article 2"}, data_source.name)
+
+      expect(record.data_entries.map { |entry| [entry.value, entry.priority] }).to eq([["Article 2", 20]])
+    end
+
+    it 'clears the priority of an existing data_entry when re-recorded with a nil priority' do
+      record.record_data_entries({name: "Article"}, data_source.name, priority: 20)
+      record.record_data_entries({name: "Article 2"}, data_source.name, priority: nil)
+
+      expect(record.data_entries.map(&:priority)).to eq([nil])
+    end
+
     it 'updates a data_entry for the same attribute from the same source' do
       record.record_data_entries({name: "Article"}, data_source.name)
       expect { record.record_data_entries({name: "Article 2"}, data_source.name) }

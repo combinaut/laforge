@@ -27,6 +27,9 @@ module LaForge
   end
 
   module InstanceMethods
+    PRIORITY_NOT_GIVEN = Object.new.freeze
+    private_constant :PRIORITY_NOT_GIVEN
+
     # Assign attributes and save the record based on the data entries
     def forge!(**forge_options, &block)
       transaction do
@@ -94,15 +97,17 @@ module LaForge
     end
 
     # Record a single piece of information from a source.
-    # Optionally pass a custom priority for that attribute and source at the same time.
-    def record_data_entry(attribute_name, value, source, priority: nil)
+    # Optionally pass a custom priority for that attribute and source at the same time. Re-recording
+    # without `priority` keeps the entry's existing priority; pass `priority: nil` to clear it.
+    def record_data_entry(attribute_name, value, source, priority: PRIORITY_NOT_GIVEN)
       raise InvalidAttributeName, "Cannot set #{attribute_name} on #{self.class.name}" unless respond_to?("#{attribute_name}=")
 
-      exiting_data_entry = filter_loaded_data_entries(attributes: attribute_name, sources: source).first
-      if exiting_data_entry
-        exiting_data_entry.value = value
-        exiting_data_entry.priority = priority
+      existing_data_entry = filter_loaded_data_entries(attributes: attribute_name, sources: source).first
+      if existing_data_entry
+        existing_data_entry.value = value
+        existing_data_entry.priority = priority unless priority.equal?(PRIORITY_NOT_GIVEN)
       else
+        priority = nil if priority.equal?(PRIORITY_NOT_GIVEN)
         data_entries.build(attribute_name: attribute_name, value: value, source_id: source, priority: priority)
       end
     end
