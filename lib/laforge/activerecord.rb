@@ -4,7 +4,7 @@ module LaForge
 
     def laforged
       has_many :data_entries, as: :record, dependent: :delete_all, autosave: true, class_name: 'LaForge::DataEntry'
-      has_many :data_sources, through: :source_data_entries, class_name: 'LaForge::DataSource'
+      has_many :data_sources, -> { distinct }, through: :data_entries, source: :source, class_name: 'LaForge::DataSource'
 
       scope :with_source, ->(source) { joins(:data_entries).merge(DataEntry.with_source(source)) }
       scope :without_source, ->(source) { joins(:data_entries).merge(DataEntry.without_source(source)) }
@@ -14,15 +14,7 @@ module LaForge
       scope :with_attribute_without_source, ->(attribute, source) { joins(:data_entries).merge(DataEntry.with_attribute(attribute).without_source(source)) }
       scope :without_attribute_with_source, ->(attribute, source) { joins(:data_entries).merge(DataEntry.without_attribute(attribute).with_source(source)) }
 
-      extend ClassMethods
       include InstanceMethods
-    end
-  end
-
-  module ClassMethods
-    # Create a record from the given data entries
-    def forge!(data_entries)
-
     end
   end
 

@@ -335,6 +335,35 @@ describe 'ActiveRecordExtensions' do
     end
   end
 
+  describe '#data_sources' do
+    let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
+    let(:data_source2) { LaForge::DataSource.find_or_create_by(name: "guardian", priority: 2) }
+    let(:record) { ActiveRecordMock.create(name: "Post") }
+
+    before do
+      record.record_data_entries({name: "Article", active: true}, data_source.name)
+      record.record_data_entries({count: 5}, data_source2.name)
+      record.save!
+    end
+
+    it 'returns each source that supplied a data_entry, once' do
+      expect(record.reload.data_sources).to contain_exactly(data_source, data_source2)
+    end
+
+    it 'can be preloaded' do
+      expect(ActiveRecordMock.preload(:data_sources).find(record.id).data_sources).to contain_exactly(data_source, data_source2)
+    end
+
+    it 'can be joined in a query' do
+      other_record = ActiveRecordMock.create!(name: "Other")
+      other_record.record_data_entries({name: "Other"}, data_source.name)
+      other_record.save!
+
+      expect(ActiveRecordMock.where(id: [record.id, other_record.id]).joins(:data_sources).where(laforge_data_sources: { name: "guardian" }))
+        .to eq([record])
+    end
+  end
+
   describe '#data_source?' do
     let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
     let(:record) { ActiveRecordMock.create(name: "Post") }
