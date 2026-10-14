@@ -54,7 +54,7 @@ module LaForge
     # Optionally pass `sources` to limit data entries used in the calculation to only those from the given sources
     def forge_attributes(attributes: nil, sources: nil)
       forged_attrs = {}
-      data_entries = filter_loaded_data_entries(attributes: attributes, sources: sources)
+      data_entries = filter_data_entries_in_memory(attributes: attributes, sources: sources)
       winners = DataEntry.in_precedence_order(data_entries).uniq(&:attribute_name).index_by(&:attribute_name)
 
       # The hash's key order is the order `forge` calls the setters, which matters when one setter
@@ -76,7 +76,7 @@ module LaForge
     # Optionally pass `attributes` to limit data entries used in the calculation to only those for the given attributes
     # Optionally pass `sources` to limit data entries used in the calculation to only those from the given sources
     def remove_data_entries(attribute_names: nil, sources: nil)
-      filter_loaded_data_entries(attributes: attribute_names, sources: sources).each do |data_entry|
+      filter_data_entries_in_memory(attributes: attribute_names, sources: sources).each do |data_entry|
         data_entry.mark_for_destruction
       end
     end
@@ -94,7 +94,7 @@ module LaForge
     def record_data_entry(attribute_name, value, source, priority: PRIORITY_NOT_GIVEN)
       raise InvalidAttributeName, "Cannot set #{attribute_name} on #{self.class.name}" unless respond_to?("#{attribute_name}=")
 
-      existing_data_entry = filter_loaded_data_entries(attributes: attribute_name, sources: source).first
+      existing_data_entry = filter_data_entries_in_memory(attributes: attribute_name, sources: source).first
       if existing_data_entry
         existing_data_entry.value = value
         existing_data_entry.priority = priority unless priority.equal?(PRIORITY_NOT_GIVEN)
@@ -106,21 +106,22 @@ module LaForge
 
     # Set and save the priority of a source for the source of a single attribute
     def update_attribute_source_priority(attribute, source, priority)
-      filter_loaded_data_entries(attributes: attribute, sources: source).each {|data_entry| data_entry.update(priority: priority) }
+      filter_data_entries_in_memory(attributes: attribute, sources: source).each {|data_entry| data_entry.update(priority: priority) }
     end
 
     def data_source?(source)
-      filter_loaded_data_entries(sources: source).any?
+      filter_data_entries_in_memory(sources: source).any?
     end
 
     def data_source_names(attributes: nil)
-      filter_loaded_data_entries(attributes: attributes).map(&:source).map(&:name).uniq
+      filter_data_entries_in_memory(attributes: attributes).map(&:source).map(&:name).uniq
     end
 
     private
 
-    # Returns a list of the entries matching the filters
-    def filter_loaded_data_entries(attributes: nil, sources: nil)
+    # Returns the record's entries matching the filters, from the in-memory association: every saved
+    # entry (loaded on first use), plus entries built but not yet saved and entries marked for destruction.
+    def filter_data_entries_in_memory(attributes: nil, sources: nil)
       list = data_entries.to_a
 
       unless attributes.nil?
