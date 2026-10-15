@@ -166,6 +166,29 @@ describe 'ActiveRecordExtensions' do
       expect { record.forge }.to change { record.name }.from("Post").to("Higher Priority")
     end
 
+    it 'breaks a tie in effective priority by the higher source priority' do
+      data_entry.update(attribute_name: "name", value: "From the lower source", priority: 2)
+      prioritized_data_entry.update(attribute_name: "name", value: "From the higher source")
+
+      expect { record.forge }.to change { record.name }.from("Post").to("From the higher source")
+    end
+
+    it 'applies the most recently recorded entry when two entries from one source share an attribute' do
+      LaForge::DataEntry.create!(record: record, source_id: data_source.id, attribute_name: "name", value: "Older")
+      LaForge::DataEntry.create!(record: record, source_id: data_source.id, attribute_name: "name", value: "Newer")
+
+      expect(record.reload.forge_attributes).to eq({ "name" => "Newer" })
+    end
+
+    it 'resolves the same winner whatever order the entries are loaded in' do
+      data_entry.update(attribute_name: "name", value: "From the lower source", priority: 2)
+      prioritized_data_entry.update(attribute_name: "name", value: "From the higher source")
+      entries = record.data_entries.to_a
+
+      expect([entries, entries.reverse].map { |list| LaForge::DataEntry.in_precedence_order(list).first.value })
+        .to eq(["From the higher source", "From the higher source"])
+    end
+
     it 'prioritizes based on the data_source priority when priority is not set on the data_entry' do
       data_entry.update(attribute_name: "name", value: "Lower Priority")
       prioritized_data_entry.update(attribute_name: "name", value: "Higher Priority")
@@ -186,6 +209,29 @@ describe 'ActiveRecordExtensions' do
     it 'excludes data_entries when the attribute_name does not have a setter' do
       data_entry.update_column(:attribute_name, "name_invalid")
       expect(record.forge_attributes).to eq({})
+    end
+
+    it 'applies the most recently built of two unsaved entries from one source, before and after saving' do
+      record.data_entries.build(attribute_name: "count", value: 1, source_id: data_source.id)
+      record.data_entries.build(attribute_name: "count", value: 2, source_id: data_source.id)
+      before_save = record.forge_attributes["count"]
+      record.save!
+
+      expect([before_save, record.reload.forge_attributes["count"]]).to eq([2, 2])
+    end
+
+    it 'lists attributes in the order forge calls the setters when every entry shares a priority' do
+      record.record_data_entries({active: false}, data_source.name)
+      record.record_data_entries({count: 3}, data_source.name)
+
+      expect(record.forge_attributes.keys).to eq(%w[count active name])
+    end
+
+    it 'lists attributes highest priority first, whichever entry wins each' do
+      higher_source = LaForge::DataSource.find_or_create_by(name: "guardian", priority: 2)
+      record.record_data_entries({count: 3}, higher_source.name)
+
+      expect(record.forge_attributes.keys.first).to eq("count")
     end
   end
 
@@ -268,10 +314,53 @@ describe 'ActiveRecordExtensions' do
         .to(false)
     end
 
+    it 'keeps the priority of an existing data_entry when re-recorded without one' do
+      record.record_data_entries({name: "Article"}, data_source.name, priority: 20)
+      record.record_data_entries({name: "Article 2"}, data_source.name)
+
+      expect(record.data_entries.map { |entry| [entry.value, entry.priority] }).to eq([["Article 2", 20]])
+    end
+
+    it 'clears the priority of an existing data_entry when re-recorded with a nil priority' do
+      record.record_data_entries({name: "Article"}, data_source.name, priority: 20)
+      record.record_data_entries({name: "Article 2"}, data_source.name, priority: nil)
+
+      expect(record.data_entries.map(&:priority)).to eq([nil])
+    end
+
     it 'updates a data_entry for the same attribute from the same source' do
       record.record_data_entries({name: "Article"}, data_source.name)
       expect { record.record_data_entries({name: "Article 2"}, data_source.name) }
       .not_to change { record.data_entries.pluck(:id) }
+    end
+  end
+
+  describe '#data_sources' do
+    let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
+    let(:data_source2) { LaForge::DataSource.find_or_create_by(name: "guardian", priority: 2) }
+    let(:record) { ActiveRecordMock.create(name: "Post") }
+
+    before do
+      record.record_data_entries({name: "Article", active: true}, data_source.name)
+      record.record_data_entries({count: 5}, data_source2.name)
+      record.save!
+    end
+
+    it 'returns each source that supplied a data_entry, once' do
+      expect(record.reload.data_sources).to contain_exactly(data_source, data_source2)
+    end
+
+    it 'can be preloaded' do
+      expect(ActiveRecordMock.preload(:data_sources).find(record.id).data_sources).to contain_exactly(data_source, data_source2)
+    end
+
+    it 'can be joined in a query' do
+      other_record = ActiveRecordMock.create!(name: "Other")
+      other_record.record_data_entries({name: "Other"}, data_source.name)
+      other_record.save!
+
+      expect(ActiveRecordMock.where(id: [record.id, other_record.id]).joins(:data_sources).where(laforge_data_sources: { name: "guardian" }))
+        .to eq([record])
     end
   end
 
