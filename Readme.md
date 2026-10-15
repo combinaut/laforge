@@ -67,8 +67,19 @@ The priority of a data entry can be customized to override the priority inherite
     foo.forge! # => Saves the model with the attributes { height: 19, width: 5 }
   ```
 
+A custom priority stays with the entry when the same attribute is recorded again from the same source without one. Pass
+`priority: nil` to clear it so the entry falls back to its source's priority.
+
+  ```ruby
+    foo.record_data_entries({ height: 18 }, source2) # Still priority 3
+    foo.record_data_entries({ height: 18 }, source2, priority: nil) # Back to source2's priority
+  ```
+
 ### Querying
   ```ruby
+    foo.data_sources # => The sources that supplied at least one of foo's data entries, each listed once
+    MyModel.joins(:data_sources).where(laforge_data_sources: { name: 'Wikipedia' }) # => Records with an entry from Wikipedia
+
     MyModel.with_source(source1) # => All records from source1
     MyModel.without_source(source1) # => All records not from source1
 
