@@ -11,9 +11,13 @@ module LaForge
       Array.wrap(sources).map { |source| normalize_source_id(source) }
     end
 
+    # Resolves a source given as an id, an all-digit id string, a name, or a DataSource. A string
+    # is an id only when it is all digits, so a name such as "Channel 2" resolves by name.
     def self.normalize_source_id(source)
       case source
-      when /\d+/, Integer
+      when Integer
+        source
+      when /\A\d+\z/
         source.to_i
       when String
         data_source = find_by(name: source)
