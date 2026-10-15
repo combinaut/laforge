@@ -59,12 +59,19 @@ module LaForge
     # Optionally pass `sources` to limit data entries used in the calculation to only those from the given sources
     def forge_attributes(attributes: nil, sources: nil)
       forged_attrs = {}
+      data_entries = filter_loaded_data_entries(attributes: attributes, sources: sources)
+      winners = DataEntry.in_precedence_order(data_entries).uniq(&:attribute_name).index_by(&:attribute_name)
 
-      filter_loaded_data_entries(attributes: attributes, sources: sources, present: true).sort_by(&:priority_with_fallback).reverse.uniq(&:attribute_name).each do |data_entry|
-        next unless respond_to?("#{data_entry.attribute_name}=")
+      # The hash's key order is the order `forge` calls the setters, which matters when one setter
+      # resets another attribute. It follows priority, highest first, independently of which entry
+      # wins each attribute. Attributes that share a priority come in no defined order.
+      assignment_order = data_entries.sort_by { |data_entry| data_entry.priority_with_fallback || -Float::INFINITY }.reverse.map(&:attribute_name).uniq
 
-        value = data_entry.marked_for_destruction? ? nil : data_entry.value
-        forged_attrs[data_entry.attribute_name] = value
+      assignment_order.each do |attribute_name|
+        next unless respond_to?("#{attribute_name}=")
+
+        data_entry = winners.fetch(attribute_name)
+        forged_attrs[attribute_name] = data_entry.marked_for_destruction? ? nil : data_entry.value
       end
 
       return forged_attrs
@@ -116,7 +123,7 @@ module LaForge
     private
 
     # Returns a list of the entries matching the filters
-    def filter_loaded_data_entries(attributes: nil, sources: nil, present: nil)
+    def filter_loaded_data_entries(attributes: nil, sources: nil)
       list = data_entries.to_a
 
       unless attributes.nil?
@@ -128,9 +135,6 @@ module LaForge
         source_ids = Array.wrap(sources).map {|source| DataSource.normalize_source_id(source) }
         list.select! {|data_entry| source_ids.include?(data_entry.source_id) }
       end
-
-      list = list.select(&:present?) if present == true
-      list = list.reject(&:present?) if present == false
 
       return list
     end
