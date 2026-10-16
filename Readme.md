@@ -18,7 +18,16 @@ Key features:
   gem 'laforge', github: 'combinaut/laforge'
   ```
 
-2. Add laforge to your model.
+2. Create the tables:
+
+  ```bash
+    rails generate laforge:install
+    rails db:migrate
+  ```
+
+  Upgrading from a version that stored `priority` on sources and entries? `rails generate laforge:precedence_rules` creates a migration that moves both into the precedence rules table (see [Precedence](#precedence)).
+
+3. Add laforge to your model.
 
   ```ruby
     # In your model
@@ -29,12 +38,12 @@ Key features:
 
 ## Usage
 
-1. Create some sources and prioritize them, giving higher priority to sources whose attributes should override those
-   same attributes from lower priority sources. Each source needs a unique name and a unique priority.
+1. Create some sources and rank them, giving higher precedence to sources whose attributes should override those
+   same attributes from lower precedence sources. Each source needs a unique name and a unique precedence.
 
   ```ruby
-    source1 = LaForge::DataSource.create(name: 'Encyclopedia Britannica', priority: 2)
-    source2 = LaForge::DataSource.create(name: 'Wikipedia', priority: 1)
+    source1 = LaForge::DataSource.create(name: 'Encyclopedia Britannica', precedence: 2)
+    source2 = LaForge::DataSource.create(name: 'Wikipedia', precedence: 1)
   ```
 
 2. Build a new model, or update an existing one with data from any of your sources.
@@ -54,28 +63,48 @@ Key features:
     # => Saves the model with the attributes { height: nil, width: nil, name: 'El Capitan' }
   ```
 
-**Note:** calling `remove_data_entries` marks the Data Entries for destruction, but they are not destroyed and the removed attributes not nullified until `forge!` is called. A marked entry still takes part in the forge as a `nil` value, so the attribute is blanked rather than falling back to a lower priority source. See [Falling back to the next source](#falling-back-to-the-next-source).
+**Note:** calling `remove_data_entries` marks the Data Entries for destruction, but they are not destroyed and the removed attributes not nullified until `forge!` is called. A marked entry still takes part in the forge as a `nil` value, so the attribute is blanked rather than falling back to a lower precedence source. See [Falling back to the next source](#falling-back-to-the-next-source).
 
 A source can be given as a `LaForge::DataSource`, its id, or its name. Looking a source up by a name that has no row raises `LaForge::DataSource::Invalid`.
 
-### Overriding Priority
+### Precedence
 
-The priority of a data entry can be customized to override the priority inherited from the data source.
+A source's precedence ranks its values everywhere, unless a more specific rule applies. Rules are kept in the `laforge_precedence_rules` table at four levels, and the most specific one that matches decides:
+
+| Level | Set with |
+|---|---|
+| One attribute of one record | `record.update_attribute_source_precedence(:height, source2, 3)`, or `precedence:` when recording |
+| One attribute of every record of a model | `MyModel.update_attribute_source_precedence(:height, source2, 3)` |
+| Every attribute of every record of a model | `MyModel.update_source_precedence(source2, 3)` |
+| Everything (the source's own precedence) | `source2.update!(precedence: 3)` |
 
   ```ruby
     foo = MyModel.new
     foo.record_data_entries({ height: 20, width: 5 }, source1)
-    foo.record_data_entries({ height: 19 }, source2, priority: 3) # Override the priority inherited from the data source
+    foo.record_data_entries({ height: 19 }, source2, precedence: 3) # Rank source2's height above source1 on this record
     foo.forge! # => Saves the model with the attributes { height: 19, width: 5 }
   ```
 
-A custom priority stays with the entry when the same attribute is recorded again from the same source without one. Pass
-`priority: nil` to clear it so the entry falls back to its source's priority.
+A record's precedence for an attribute is kept when the source records the attribute again without passing one, and removed by passing `precedence: nil`. It does not depend on the source's entries: it can be set before the source has recorded the attribute, and it survives the source's entries being destroyed. Pass `nil` to any of the setters above to remove a rule.
 
   ```ruby
-    foo.record_data_entries({ height: 18 }, source2) # Still priority 3
-    foo.record_data_entries({ height: 18 }, source2, priority: nil) # Back to source2's priority
+    foo.record_data_entries({ height: 18 }, source2) # Still precedence 3
+    foo.record_data_entries({ height: 18 }, source2, precedence: nil) # Back to source2's own precedence
+
+    foo.update_attribute_source_precedence(:height, source2, 10)
+    foo.source_precedences     # => { 'height' => { source2 => 10 } }
+    MyModel.source_precedences # => the model-wide rules, '' standing for every attribute
   ```
+
+Each forge reads the global and model-wide rules. To read them once for a whole import run, wrap it in `LaForge.with_precedence_cache`. Rules changed through LaForge inside the block take effect immediately; rules changed by SQL or another process are seen once the block ends.
+
+  ```ruby
+    LaForge.with_precedence_cache do
+      rows.each { |row| import(row) } # each import records entries and forges
+    end
+  ```
+
+Equal precedences are broken by the sources' own precedence. To reorder sources, update their precedence; `LaForge::DataSource.by_precedence` lists them highest first and `LaForge::DataSource.maximum_precedence` returns the highest.
 
 ### Querying
   ```ruby
@@ -112,10 +141,10 @@ The same scopes are available on a record's entries and on `LaForge::DataEntry`:
 These cover common ways of merging several feeds and manual edits into one record, and are covered by `spec/lib/usage_spec.rb`. They follow a map that places entities from several sources: a cadastre supplying land records, a business directory that outranks it, a map editor whose edits outrank both, and a geocoder that only adds coordinates:
 
   ```ruby
-    cadastre = LaForge::DataSource.create!(name: 'Cadastre', priority: 1)
-    business_directory = LaForge::DataSource.create!(name: 'Business Directory', priority: 2)
-    map_editor = LaForge::DataSource.create!(name: 'Map Editor', priority: 3)
-    geocoder = LaForge::DataSource.create!(name: 'Geocoder', priority: 0)
+    cadastre = LaForge::DataSource.create!(name: 'Cadastre', precedence: 1)
+    business_directory = LaForge::DataSource.create!(name: 'Business Directory', precedence: 2)
+    map_editor = LaForge::DataSource.create!(name: 'Map Editor', precedence: 3)
+    geocoder = LaForge::DataSource.create!(name: 'Geocoder', precedence: 0)
   ```
 
 ### Importing
@@ -139,7 +168,7 @@ Recorded attributes do not have to be columns. Any attribute with a setter can b
 
 ### Editor overrides
 
-An edit made in the map editor is recorded on the highest priority source, so it wins over every importer and survives their later runs. Pass `attributes:` to forge only the edited attribute.
+An edit made in the map editor is recorded on the highest precedence source, so it wins over every importer and survives their later runs. Pass `attributes:` to forge only the edited attribute.
 
   ```ruby
     place.record_data_entry(:name, 'Harbor Building', map_editor)
@@ -172,13 +201,14 @@ Entries keep being applied at every forge until they are deleted. To make a valu
     LaForge::DataEntry.with_source(business_directory).where(record_type: 'Place', record_id: place_ids, attribute_name: 'name').delete_all
   ```
 
-### Entry priority
+### Authoritative sources
 
-A source can be made authoritative for some attributes regardless of its source priority:
+A source can be made authoritative for some attributes regardless of its own precedence, for every place or for one:
 
   ```ruby
-    place.record_data_entries({ parcel_number: '0412-007' }, cadastre, priority: 100) # outranks the map editor
-    place.record_data_entries({ land_use: 'Commercial' }, cadastre)
+    Place.update_attribute_source_precedence(:parcel_number, cadastre, 100) # outranks the map editor on every place
+
+    place.record_data_entries({ land_use: 'Commercial' }, cadastre, precedence: 100) # on this place only
     place.forge!
   ```
 
@@ -212,7 +242,7 @@ Whether another source still has entries on the record tells whether anything el
     place.data_source?(map_editor)                       # => false
 
     # An attribute's entries, winning entry first
-    place.data_entries.includes(:source).select { |entry| entry.attribute_name == 'name' }.sort_by(&:priority_with_fallback).reverse
+    place.data_entries.includes(:source).select { |entry| entry.attribute_name == 'name' }.sort_by(&:effective_precedence).reverse
   ```
 
 ### Pitfalls

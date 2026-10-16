@@ -10,19 +10,21 @@ module LaForge
     scope :with_attribute, ->(attribute_names) { where(attribute_name: Array.wrap(attribute_names)) }
     scope :without_attribute, ->(attribute_names) { where.not(attribute_name: Array.wrap(attribute_names)) }
 
-    delegate :priority, to: :source, prefix: true, allow_nil: true
+    delegate :precedence, to: :source, prefix: true, allow_nil: true
 
-    def priority_with_fallback
-      priority || source_priority
+    # The precedence this entry's value is ranked by: the most specific precedence rule for its record, attribute and
+    # source, falling back to the source's global precedence
+    def effective_precedence
+      record.laforge_precedence_of(self)
     end
 
-    # Returns `entries` highest precedence first, so the first entry for each attribute is the one
-    # `forge` applies. Precedence is effective priority, then source priority, then recency. Recency
-    # is the id for saved entries; an unsaved entry is newer than every saved one, and among unsaved
-    # entries a later position in `entries` is newer. A missing priority ranks below every number.
-    def self.in_precedence_order(entries)
+    # Returns one record's `entries` highest precedence first, so the first entry for each attribute is the one `forge`
+    # applies. Precedence is the entry's effective precedence on the record, then its source's global precedence, then
+    # recency. Recency is the id for saved entries; an unsaved entry is newer than every saved one, and among unsaved
+    # entries a later position in `entries` is newer.
+    def self.in_precedence_order(entries, record: entries.first&.record)
       entries.each_with_index.sort_by do |entry, position|
-        [-(entry.priority_with_fallback || -Float::INFINITY), -(entry.source_priority || -Float::INFINITY), -(entry.id || Float::INFINITY), -position]
+        [-record.laforge_precedence_of(entry), -record.laforge_global_precedence(entry.source_id), -(entry.id || Float::INFINITY), -position]
       end.map(&:first)
     end
 

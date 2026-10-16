@@ -1,10 +1,14 @@
 module LaForge
+  # Distinguishes "no precedence passed" from an explicit nil so re-recording keeps a custom precedence
+  NOT_GIVEN = Object.new.freeze
+
   module ActiveRecord
     extend ActiveSupport::Concern
 
     def laforged
       has_many :data_entries, as: :record, dependent: :delete_all, autosave: true, class_name: 'LaForge::DataEntry'
       has_many :data_sources, -> { distinct }, through: :data_entries, source: :source, class_name: 'LaForge::DataSource'
+      has_many :precedence_rules, as: :record, dependent: :delete_all, autosave: true, class_name: 'LaForge::PrecedenceRule'
 
       scope :with_source, ->(source) { joins(:data_entries).merge(DataEntry.with_source(source)) }
       scope :without_source, ->(source) { joins(:data_entries).merge(DataEntry.without_source(source)) }
@@ -14,14 +18,39 @@ module LaForge
       scope :with_attribute_without_source, ->(attribute, source) { joins(:data_entries).merge(DataEntry.with_attribute(attribute).without_source(source)) }
       scope :without_attribute_with_source, ->(attribute, source) { joins(:data_entries).merge(DataEntry.without_attribute(attribute).with_source(source)) }
 
+      extend ClassMethods
       include InstanceMethods
     end
   end
 
-  module InstanceMethods
-    PRIORITY_NOT_GIVEN = Object.new.freeze
-    private_constant :PRIORITY_NOT_GIVEN
+  module ClassMethods
+    # Set and save the precedence of a source for one attribute on every record of this model. Pass nil to remove it.
+    def update_attribute_source_precedence(attribute, source, precedence)
+      update_model_precedence_rule(attribute.to_s, source, precedence)
+    end
 
+    # Set and save the precedence of a source for every attribute on every record of this model. Pass nil to remove it.
+    def update_source_precedence(source, precedence)
+      update_model_precedence_rule(PrecedenceRule::ANY_ATTRIBUTE, source, precedence)
+    end
+
+    # Returns { attribute_name => { source => precedence } } for the model-wide rules, '' standing for every attribute
+    def source_precedences
+      PrecedenceRule.for_model(self).includes(:source).group_by(&:attribute_name).transform_values { |rules| rules.to_h { |rule| [rule.source, rule.precedence] } }
+    end
+
+    private
+
+    def update_model_precedence_rule(attribute_name, source, precedence)
+      rules = PrecedenceRule.for_model(self).where(attribute_name: attribute_name, source_id: DataSource.normalize_source_id(source))
+      return rules.destroy_all if precedence.nil?
+
+      rule = rules.first_or_initialize
+      rule.update!(precedence: precedence)
+    end
+  end
+
+  module InstanceMethods
     # Assign attributes and save the record based on the data entries
     def forge!(**forge_options, &block)
       transaction do
@@ -53,14 +82,15 @@ module LaForge
     # Optionally pass `attributes` to limit data entries used in the calculation to only those for the given attributes
     # Optionally pass `sources` to limit data entries used in the calculation to only those from the given sources
     def forge_attributes(attributes: nil, sources: nil)
+      @laforge_precedence_resolver = nil # read the model-wide and global rules afresh (or from the precedence cache) for each forge
       forged_attrs = {}
       data_entries = filter_data_entries_in_memory(attributes: attributes, sources: sources)
-      winners = DataEntry.in_precedence_order(data_entries).uniq(&:attribute_name).index_by(&:attribute_name)
+      winners = DataEntry.in_precedence_order(data_entries, record: self).uniq(&:attribute_name).index_by(&:attribute_name)
 
       # The hash's key order is the order `forge` calls the setters, which matters when one setter
-      # resets another attribute. It follows priority, highest first, independently of which entry
-      # wins each attribute. Attributes that share a priority come in no defined order.
-      assignment_order = data_entries.sort_by { |data_entry| data_entry.priority_with_fallback || -Float::INFINITY }.reverse.map(&:attribute_name).uniq
+      # resets another attribute. It follows precedence, highest first, independently of which entry
+      # wins each attribute. Attributes that share a precedence come in no defined order.
+      assignment_order = data_entries.sort_by { |data_entry| laforge_precedence_of(data_entry) }.reverse.map(&:attribute_name).uniq
 
       assignment_order.each do |attribute_name|
         next unless respond_to?("#{attribute_name}=")
@@ -89,24 +119,42 @@ module LaForge
     end
 
     # Record a single piece of information from a source.
-    # Optionally pass a custom priority for that attribute and source at the same time. Re-recording
-    # without `priority` keeps the entry's existing priority; pass `priority: nil` to clear it.
-    def record_data_entry(attribute_name, value, source, priority: PRIORITY_NOT_GIVEN)
+    # Optionally pass a precedence for that attribute and source on this record at the same time; it is saved with the
+    # record. An existing precedence is kept when none is passed, and removed when nil is passed.
+    def record_data_entry(attribute_name, value, source, precedence: NOT_GIVEN)
       raise InvalidAttributeName, "Cannot set #{attribute_name} on #{self.class.name}" unless respond_to?("#{attribute_name}=")
 
-      existing_data_entry = filter_data_entries_in_memory(attributes: attribute_name, sources: source).first
-      if existing_data_entry
-        existing_data_entry.value = value
-        existing_data_entry.priority = priority unless priority.equal?(PRIORITY_NOT_GIVEN)
-      else
-        priority = nil if priority.equal?(PRIORITY_NOT_GIVEN)
-        data_entries.build(attribute_name: attribute_name, value: value, source_id: source, priority: priority)
-      end
+      write_data_entry(attribute_name, value, source, precedence: precedence)
     end
 
-    # Set and save the priority of a source for the source of a single attribute
-    def update_attribute_source_priority(attribute, source, priority)
-      filter_data_entries_in_memory(attributes: attribute, sources: source).each {|data_entry| data_entry.update(priority: priority) }
+    # Forgets the precedence rules read for the last forge, so they are read afresh, as the next forge would
+    def reload(*)
+      @laforge_precedence_resolver = nil
+      super
+    end
+
+    # Set the precedence of a source for one attribute of this record, whether or not the source has recorded it yet.
+    # Saved immediately on a persisted record, otherwise with the record. Pass nil to remove it.
+    def update_attribute_source_precedence(attribute, source, precedence)
+      rule = write_precedence_rule(attribute, source, precedence)
+      return unless persisted? && rule
+
+      rule.marked_for_destruction? ? precedence_rules.destroy(rule) : rule.save!
+    end
+
+    # Returns { attribute_name => { source => precedence } } for the rules set on this record
+    def source_precedences
+      precedence_rules.reject(&:marked_for_destruction?).group_by(&:attribute_name).transform_values { |rules| rules.to_h { |rule| [rule.source, rule.precedence] } }
+    end
+
+    # The precedence a data entry's value is ranked by on this record
+    def laforge_precedence_of(data_entry)
+      laforge_precedence_resolver.precedence(self, data_entry.attribute_name, data_entry.source_id)
+    end
+
+    # The source's global precedence, which breaks ties between equal effective precedences
+    def laforge_global_precedence(source_id)
+      laforge_precedence_resolver.global_precedence(source_id)
     end
 
     def data_source?(source)
@@ -118,6 +166,41 @@ module LaForge
     end
 
     private
+
+    def write_data_entry(attribute_name, value, source, precedence: NOT_GIVEN)
+      existing_data_entry = filter_data_entries_in_memory(attributes: attribute_name, sources: source).first
+      if existing_data_entry
+        existing_data_entry.value = value
+      else
+        data_entries.build(attribute_name: attribute_name, value: value, source_id: source)
+      end
+      write_precedence_rule(attribute_name, source, precedence) unless precedence.equal?(NOT_GIVEN)
+    end
+
+    # Set this record's rule for an attribute and source in memory; nil marks an existing rule for destruction
+    def write_precedence_rule(attribute_name, source, precedence)
+      source_id = DataSource.normalize_source_id(source)
+      rule = precedence_rules.find { |candidate| candidate.attribute_name == attribute_name.to_s && candidate.source_id == source_id }
+
+      if precedence.nil?
+        return unless rule
+
+        if rule.new_record?
+          precedence_rules.target.delete(rule)
+          return
+        end
+        rule.mark_for_destruction
+      else
+        rule ||= precedence_rules.build(attribute_name: attribute_name.to_s, source_id: source_id)
+        rule.instance_variable_set(:@marked_for_destruction, false) # setting a precedence again undoes an unsaved removal
+        rule.precedence = precedence
+      end
+      rule
+    end
+
+    def laforge_precedence_resolver
+      @laforge_precedence_resolver ||= PrecedenceRule::Resolver.new(self.class)
+    end
 
     # Returns the record's entries matching the filters, from the in-memory association: every saved
     # entry (loaded on first use), plus entries built but not yet saved and entries marked for destruction.

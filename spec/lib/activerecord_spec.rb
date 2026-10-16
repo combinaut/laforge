@@ -4,8 +4,8 @@ describe 'ActiveRecordExtensions' do
   context 'querying' do
     let(:record) { ActiveRecordMock.create(name: "Post") }
     let(:record2) { ActiveRecordMock.create(name: "News") }
-    let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
-    let(:data_source2) { LaForge::DataSource.find_or_create_by(name: "guardian", priority: 2) }
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
+    let(:data_source2) { LaForge::DataSource.find_or_create_by!(name: "guardian") { |source| source.precedence = 2 } }
 
     before(:each) do
       LaForge::DataEntry.destroy_all
@@ -102,7 +102,7 @@ describe 'ActiveRecordExtensions' do
 
   describe '#forge!' do
     let(:record) { ActiveRecordMock.create(name: "Post", active: true) }
-    let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
     let(:data_entry) { LaForge::DataEntry.new(record: record, source_id: data_source.id) }
 
     it 'changes the database record' do
@@ -131,11 +131,11 @@ describe 'ActiveRecordExtensions' do
 
   describe '#forge' do
     let(:record) { ActiveRecordMock.create(name: "Post", active: true) }
-    let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
     let(:data_entry) { LaForge::DataEntry.new(record: record, source_id: data_source.id) }
 
-    let(:prioritized_data_source) { LaForge::DataSource.find_or_create_by(name: "guardian", priority: 2) }
-    let(:prioritized_data_entry) { LaForge::DataEntry.new(record: record, source_id: prioritized_data_source.id) }
+    let(:preceding_data_source) { LaForge::DataSource.find_or_create_by!(name: "guardian") { |source| source.precedence = 2 } }
+    let(:preceding_data_entry) { LaForge::DataEntry.new(record: record, source_id: preceding_data_source.id) }
 
     it 'sets the record attributes from the data entries' do
       data_entry.update(attribute_name: "name", value: "Article")
@@ -154,21 +154,24 @@ describe 'ActiveRecordExtensions' do
 
     it 'merges data_entries from multiple sources' do
       data_entry.update(attribute_name: "name", value: "Article")
-      prioritized_data_entry.update(attribute_name: "active", value: false)
+      preceding_data_entry.update(attribute_name: "active", value: false)
 
       expect { record.forge }.to change { record.changes }.to eq({"name"=>["Post", "Article"], "active"=>[true, false]})
     end
 
-    it 'prioritizes based on the data_entry priority' do
-      data_entry.update(attribute_name: "name", value: "Higher Priority", priority: 5)
-      prioritized_data_entry.update(attribute_name: "name", value: "Lower Priority", priority: 3)
+    it "ranks values by the record's precedence for the attribute and source" do
+      data_entry.update(attribute_name: "name", value: "Higher Precedence")
+      preceding_data_entry.update(attribute_name: "name", value: "Lower Precedence")
+      record.update_attribute_source_precedence(:name, data_source, 5)
+      record.update_attribute_source_precedence(:name, preceding_data_source, 3)
 
-      expect { record.forge }.to change { record.name }.from("Post").to("Higher Priority")
+      expect { record.forge }.to change { record.name }.from("Post").to("Higher Precedence")
     end
 
-    it 'breaks a tie in effective priority by the higher source priority' do
-      data_entry.update(attribute_name: "name", value: "From the lower source", priority: 2)
-      prioritized_data_entry.update(attribute_name: "name", value: "From the higher source")
+    it 'breaks a tie in effective precedence by the higher source precedence' do
+      data_entry.update(attribute_name: "name", value: "From the lower source")
+      preceding_data_entry.update(attribute_name: "name", value: "From the higher source")
+      record.update_attribute_source_precedence(:name, data_source, 2)
 
       expect { record.forge }.to change { record.name }.from("Post").to("From the higher source")
     end
@@ -181,24 +184,25 @@ describe 'ActiveRecordExtensions' do
     end
 
     it 'resolves the same winner whatever order the entries are loaded in' do
-      data_entry.update(attribute_name: "name", value: "From the lower source", priority: 2)
-      prioritized_data_entry.update(attribute_name: "name", value: "From the higher source")
+      data_entry.update(attribute_name: "name", value: "From the lower source")
+      preceding_data_entry.update(attribute_name: "name", value: "From the higher source")
+      record.update_attribute_source_precedence(:name, data_source, 2)
       entries = record.data_entries.to_a
 
-      expect([entries, entries.reverse].map { |list| LaForge::DataEntry.in_precedence_order(list).first.value })
+      expect([entries, entries.reverse].map { |list| LaForge::DataEntry.in_precedence_order(list, record: record).first.value })
         .to eq(["From the higher source", "From the higher source"])
     end
 
-    it 'prioritizes based on the data_source priority when priority is not set on the data_entry' do
-      data_entry.update(attribute_name: "name", value: "Lower Priority")
-      prioritized_data_entry.update(attribute_name: "name", value: "Higher Priority")
+    it "ranks values by the source's global precedence when the record has no precedence for the attribute" do
+      data_entry.update(attribute_name: "name", value: "Lower Precedence")
+      preceding_data_entry.update(attribute_name: "name", value: "Higher Precedence")
 
-      expect { record.forge }.to change { record.name }.from("Post").to("Higher Priority")
+      expect { record.forge }.to change { record.name }.from("Post").to("Higher Precedence")
     end
   end
 
   describe '#forge_attributes' do
-    let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
     let(:record) { ActiveRecordMock.create(name: "Post", active: true) }
     let!(:data_entry) { LaForge::DataEntry.create!(record: record, attribute_name: "name", value: "Article", source_id: data_source.id) }
 
@@ -220,15 +224,15 @@ describe 'ActiveRecordExtensions' do
       expect([before_save, record.reload.forge_attributes["count"]]).to eq([2, 2])
     end
 
-    it 'lists attributes in the order forge calls the setters when every entry shares a priority' do
+    it 'lists attributes in the order forge calls the setters when every entry shares a precedence' do
       record.record_data_entries({active: false}, data_source.name)
       record.record_data_entries({count: 3}, data_source.name)
 
       expect(record.forge_attributes.keys).to eq(%w[count active name])
     end
 
-    it 'lists attributes highest priority first, whichever entry wins each' do
-      higher_source = LaForge::DataSource.find_or_create_by(name: "guardian", priority: 2)
+    it 'lists attributes highest precedence first, whichever entry wins each' do
+      higher_source = LaForge::DataSource.find_or_create_by!(name: "guardian") { |source| source.precedence = 2 }
       record.record_data_entries({count: 3}, higher_source.name)
 
       expect(record.forge_attributes.keys.first).to eq("count")
@@ -236,7 +240,7 @@ describe 'ActiveRecordExtensions' do
   end
 
   describe '#record_data_entries' do
-    let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
     let(:record) { ActiveRecordMock.create(name: "Post") }
 
     it 'builds a data_entry for an attribute passed' do
@@ -284,10 +288,10 @@ describe 'ActiveRecordExtensions' do
       expect { record.record_data_entries({name: "Article"}, nil) }.to raise_exception(LaForge::DataSource::Invalid)
     end
 
-    it 'sets the priority when passed' do
-      expect { record.record_data_entries({name: "Article"}, data_source.name, priority: 20) }
-        .to change { record.data_entries.last&.priority }
-        .to(20)
+    it 'sets the precedence for the attribute and source on the record when passed' do
+      expect { record.record_data_entries({name: "Article"}, data_source.name, precedence: 20) }
+        .to change { record.source_precedences }
+        .to("name" => { data_source => 20 })
     end
 
     it 'can set an attribute to a string value' do
@@ -314,18 +318,19 @@ describe 'ActiveRecordExtensions' do
         .to(false)
     end
 
-    it 'keeps the priority of an existing data_entry when re-recorded without one' do
-      record.record_data_entries({name: "Article"}, data_source.name, priority: 20)
+    it 'keeps the precedence for the attribute and source when re-recorded without one' do
+      record.record_data_entries({name: "Article"}, data_source.name, precedence: 20)
       record.record_data_entries({name: "Article 2"}, data_source.name)
 
-      expect(record.data_entries.map { |entry| [entry.value, entry.priority] }).to eq([["Article 2", 20]])
+      expect(record.data_entries.map(&:value)).to eq(["Article 2"])
+      expect(record.source_precedences).to eq("name" => { data_source => 20 })
     end
 
-    it 'clears the priority of an existing data_entry when re-recorded with a nil priority' do
-      record.record_data_entries({name: "Article"}, data_source.name, priority: 20)
-      record.record_data_entries({name: "Article 2"}, data_source.name, priority: nil)
+    it 'removes the precedence for the attribute and source when re-recorded with a nil precedence' do
+      record.record_data_entries({name: "Article"}, data_source.name, precedence: 20)
+      record.record_data_entries({name: "Article 2"}, data_source.name, precedence: nil)
 
-      expect(record.data_entries.map(&:priority)).to eq([nil])
+      expect(record.source_precedences).to be_empty
     end
 
     it 'updates a data_entry for the same attribute from the same source' do
@@ -336,8 +341,8 @@ describe 'ActiveRecordExtensions' do
   end
 
   describe '#data_sources' do
-    let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
-    let(:data_source2) { LaForge::DataSource.find_or_create_by(name: "guardian", priority: 2) }
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
+    let(:data_source2) { LaForge::DataSource.find_or_create_by!(name: "guardian") { |source| source.precedence = 2 } }
     let(:record) { ActiveRecordMock.create(name: "Post") }
 
     before do
@@ -365,7 +370,7 @@ describe 'ActiveRecordExtensions' do
   end
 
   describe '#data_source?' do
-    let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
     let(:record) { ActiveRecordMock.create(name: "Post") }
 
     it 'returns true when the record has a data_entry from the source' do
@@ -379,8 +384,8 @@ describe 'ActiveRecordExtensions' do
   end
 
   describe '#data_source_names' do
-    let(:data_source) { LaForge::DataSource.find_or_create_by(name: "bbc", priority: 1) }
-    let(:data_source2) { LaForge::DataSource.find_or_create_by(name: "guardian", priority: 2) }
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
+    let(:data_source2) { LaForge::DataSource.find_or_create_by!(name: "guardian") { |source| source.precedence = 2 } }
     let(:record) { ActiveRecordMock.create(name: "Post") }
 
     it 'returns a list of sources for the data_entries' do

@@ -1,0 +1,52 @@
+# Moves source and entry priorities into laforge_precedence_rules as precedence rules: each source's priority becomes
+# its global rule, and each entry's custom priority becomes a rule for that record, attribute and source.
+class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
+  def up
+    create_table :laforge_precedence_rules do |t|
+      t.string :record_type, null: false, default: ''
+      t.bigint :record_id, null: false, default: 0
+      t.string :attribute_name, null: false, default: ''
+      t.references :source, null: false, index: false, foreign_key: { to_table: :laforge_data_sources, on_delete: :cascade }
+      t.integer :precedence, null: false
+      t.virtual :global_precedence, type: :integer, as: "CASE WHEN record_type = '' THEN precedence END", stored: true
+      t.timestamps null: false
+      t.index %i[record_type record_id attribute_name source_id], unique: true, name: :index_laforge_precedence_rules_on_scope_and_source
+      t.index :global_precedence, unique: true
+    end
+
+    execute <<~SQL
+      INSERT INTO laforge_precedence_rules (record_type, record_id, attribute_name, source_id, precedence, created_at, updated_at)
+      SELECT '', 0, '', id, priority, NOW(), NOW() FROM laforge_data_sources WHERE priority IS NOT NULL
+    SQL
+
+    execute <<~SQL
+      INSERT INTO laforge_precedence_rules (record_type, record_id, attribute_name, source_id, precedence, created_at, updated_at)
+      SELECT record_type, record_id, attribute_name, source_id, MAX(priority), NOW(), NOW()
+      FROM laforge_data_entries WHERE priority IS NOT NULL
+      GROUP BY record_type, record_id, attribute_name, source_id
+    SQL
+
+    remove_column :laforge_data_entries, :priority
+    remove_column :laforge_data_sources, :priority
+  end
+
+  def down
+    add_column :laforge_data_sources, :priority, :integer
+    add_column :laforge_data_entries, :priority, :integer
+
+    execute <<~SQL
+      UPDATE laforge_data_sources sources
+      JOIN laforge_precedence_rules rules ON rules.source_id = sources.id AND rules.record_type = ''
+      SET sources.priority = rules.precedence
+    SQL
+
+    execute <<~SQL
+      UPDATE laforge_data_entries entries
+      JOIN laforge_precedence_rules rules ON rules.record_type = entries.record_type AND rules.record_id = entries.record_id
+        AND rules.attribute_name = entries.attribute_name AND rules.source_id = entries.source_id
+      SET entries.priority = rules.precedence
+    SQL
+
+    drop_table :laforge_precedence_rules
+  end
+end
