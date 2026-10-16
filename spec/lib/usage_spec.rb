@@ -1,0 +1,433 @@
+require 'spec_helper'
+
+# Common ways of using LaForge to merge several data sources into one record, one group per intention.
+describe 'Usage' do
+  # Runs before the sources below are created
+  before do
+    LaForge::DataEntry.delete_all
+    LaForge::DataSource.where(name: ['Cadastre', 'Business Directory', 'Map Editor', 'Geocoder']).delete_all
+  end
+
+  # Two importers and a map editor whose edits outrank both
+  let!(:cadastre) { LaForge::DataSource.create!(name: 'Cadastre', priority: 31) }
+  let!(:business_directory) { LaForge::DataSource.create!(name: 'Business Directory', priority: 32) }
+  let!(:map_editor) { LaForge::DataSource.create!(name: 'Map Editor', priority: 33) }
+
+  let(:record) { ActiveRecordMock.create!(name: 'Original', active: true, count: 1) }
+
+  # A host model with a setter that is not a column, such as one that maintains an association from a single value
+  let(:virtual_attribute_model) do
+    Class.new(ActiveRecordMock) do
+      attr_reader :phone_number
+
+      def self.name = 'ActiveRecordMock'
+
+      def phone_number=(number)
+        @phone_number = number
+      end
+    end
+  end
+
+  # An importer records every attribute it assigns on its own source, forges once the row has been assigned, and saves
+  # the record itself afterwards
+  describe 'an importer recording each attribute it assigns' do
+    it 'applies the winning value of each attribute and persists the entries with the record' do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.record_data_entries({ name: 'From Map Editor' }, map_editor)
+      record.forge
+      record.save!
+
+      expect(record.reload).to have_attributes(name: 'From Map Editor', count: 5)
+      expect(record.data_entries.count).to eq(3)
+    end
+
+    it 'leaves attributes that have no entries as they are, such as columns the importer writes directly' do
+      record.count = 9 # assigned directly by the importer, not recorded
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre)
+      record.forge!
+
+      expect(record.reload).to have_attributes(name: 'From Cadastre', count: 9)
+    end
+
+    it 'lets a higher source win over a value the importer assigned and recorded in the same run' do
+      # Assign, then record what was assigned, then forge
+      record.record_data_entries({ name: 'From Map Editor' }, map_editor)
+      record.save!
+      record.name = 'From Cadastre'
+      record.record_data_entries(record.slice(:name), cadastre)
+      record.forge
+
+      expect(record.name).to eq('From Map Editor')
+    end
+
+    it 'reports the winning value of every recorded attribute, so changes can be tracked before saving' do
+      record.record_data_entries({ name: 'From Cadastre', active: false }, cadastre)
+      record.record_data_entries({ name: 'From Business Directory' }, business_directory)
+
+      expect(record.forge_attributes).to eq('name' => 'From Business Directory', 'active' => false)
+      expect(record.forge_diff).to eq('name' => ['Original', 'From Business Directory'], 'active' => [true, false])
+    end
+
+    it 'records and forges attributes that are setters rather than columns' do
+      stub_const('PhoneRecord', virtual_attribute_model)
+      phone_record = PhoneRecord.create!(name: 'Corner Café')
+
+      phone_record.record_data_entries({ phone_number: '555-0100' }, cadastre)
+      phone_record.forge
+
+      expect(phone_record.phone_number).to eq('555-0100')
+      expect(phone_record.forge_attributes).to include('phone_number' => '555-0100')
+      expect(phone_record.forge_attributes.slice(*phone_record.attribute_names)).not_to include('phone_number')
+    end
+
+    it 'raises for an attribute the model cannot set' do
+      expect { record.record_data_entries({ nonexistent: 1 }, cadastre) }.to raise_error(LaForge::InvalidAttributeName)
+    end
+  end
+
+  # A map editor's edit is recorded on the highest-priority source so it outranks importers and survives their later runs
+  describe 'map editor overrides' do
+    before do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.forge!
+    end
+
+    it 'applies only the overridden attribute when forging it alone' do
+      record.record_data_entries({ count: 6 }, cadastre) # pending from elsewhere, must not be applied
+      record.record_data_entry(:name, 'From Map Editor', map_editor)
+      record.forge(attributes: :name)
+
+      expect(record).to have_attributes(name: 'From Map Editor', count: 5)
+      expect(record.reload.name).to eq('From Cadastre')
+    end
+
+    it 'persists the override and its value together' do
+      record.record_data_entry(:name, 'From Map Editor', map_editor)
+      record.forge!(attributes: :name)
+
+      expect(record.reload.name).to eq('From Map Editor')
+      expect(record.data_entries.with_source(map_editor).with_attribute(:name)).to exist
+    end
+
+    it 'keeps the override through later importer runs' do
+      record.record_data_entry(:name, 'From Map Editor', map_editor)
+      record.forge!(attributes: :name)
+
+      record.reload.record_data_entries({ name: 'Changed In Cadastre' }, cadastre)
+      record.forge!
+
+      expect(record.reload.name).to eq('From Map Editor')
+    end
+
+    it "falls back to the importer's latest value when the override's entries are destroyed" do
+      record.record_data_entry(:name, 'From Map Editor', map_editor)
+      record.forge!(attributes: :name)
+      record.reload.record_data_entries({ name: 'Changed In Cadastre' }, cadastre)
+      record.forge!
+
+      record.data_entries.with_source(map_editor).with_attribute(:name).destroy_all
+      record.data_entries.reset
+      record.forge!(attributes: :name)
+
+      expect(record.reload.name).to eq('Changed In Cadastre')
+    end
+
+    it 'blanks the attribute instead of falling back when the override is only marked for removal' do
+      record.record_data_entry(:name, 'From Map Editor', map_editor)
+      record.forge!(attributes: :name)
+
+      record.forge! { record.remove_data_entries(attribute_names: :name, sources: map_editor) }
+
+      expect(record.reload.name).to be_nil
+    end
+
+    it 'answers whether an attribute is overridden by querying the entries' do
+      record.record_data_entry(:name, 'From Map Editor', map_editor)
+      record.save!
+
+      expect(record.data_entries.with_source(map_editor.name).with_attribute(:name)).to exist
+      expect(record.data_entries.with_source(map_editor.name).with_attribute(:count)).not_to exist
+    end
+
+    it 'raises when a source is looked up by a name that has no row, which callers guard against' do
+      expect { record.data_entries.with_source('No Such Source').to_a }.to raise_error(LaForge::DataSource::Invalid)
+      expect(LaForge::DataSource.exists?(name: 'No Such Source')).to be(false)
+    end
+  end
+
+  # A value already applied to the record some other way, such as an approved suggested edit, is recorded and saved without
+  # forging
+  describe 'recording without forging' do
+    it 'persists the entries and leaves the record as it is' do
+      record.update!(name: 'Approved')
+      record.record_data_entries({ name: record.read_attribute(:name) }, map_editor)
+      record.save!
+
+      expect(record.reload.name).to eq('Approved')
+      expect(record.data_entries.sole).to have_attributes(attribute_name: 'name', value: 'Approved', source_id: map_editor.id)
+    end
+
+    it 'updates the existing entry when the same source records the attribute again' do
+      record.record_data_entries({ name: 'First' }, map_editor)
+      record.save!
+      record.reload.record_data_entries({ name: 'Second' }, map_editor)
+      record.save!
+
+      expect(record.data_entries.reload.map(&:value)).to eq(['Second'])
+    end
+
+    it 'applies the recorded value at the next forge by any importer' do
+      record.record_data_entries({ name: 'Approved' }, map_editor)
+      record.save!
+
+      record.reload.record_data_entries({ name: 'From Cadastre' }, cadastre)
+      record.forge!
+
+      expect(record.reload.name).to eq('Approved')
+    end
+  end
+
+  # A source can be authoritative for some attributes regardless of its source priority
+  describe 'per-entry priority' do
+    it 'lets an entry outrank a higher-priority source' do
+      record.record_data_entries({ name: 'From Map Editor' }, map_editor)
+      record.record_data_entries({ name: 'From Business Directory' }, business_directory, priority: 100)
+      record.forge!
+
+      expect(record.reload.name).to eq('From Business Directory')
+    end
+
+    it 'keeps the custom priority when the same source records the attribute again without one' do
+      record.record_data_entries({ name: 'From Map Editor' }, map_editor)
+      record.record_data_entries({ name: 'From Business Directory' }, business_directory, priority: 100)
+      record.forge!
+
+      record.reload.record_data_entries({ name: 'From Business Directory Again' }, business_directory)
+      record.forge!
+
+      expect(record.reload.name).to eq('From Business Directory Again')
+    end
+
+    it "sets one record's priority for one attribute and source" do
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre)
+      record.record_data_entries({ name: 'From Business Directory' }, business_directory)
+      record.save!
+
+      record.update_attribute_source_priority(:name, cadastre, 100)
+      record.reload.forge
+
+      expect(record.name).to eq('From Cadastre')
+    end
+  end
+
+  describe 'a source that stops reporting a record' do
+    before do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.record_data_entries({ name: 'From Business Directory', count: 7, active: false }, business_directory)
+      record.forge!
+    end
+
+    it 'blanks the attributes the source was supplying, even where a lower source has a value' do
+      record.forge! { record.remove_data_entries(attribute_names: %i[name count], sources: business_directory) }
+
+      expect(record.reload).to have_attributes(name: nil, count: nil, active: false)
+      expect(record.data_entries.with_source(business_directory).pluck(:attribute_name)).to eq(['active'])
+    end
+
+    it "keeps a higher source's value while blanking the source's own" do
+      record.record_data_entries({ name: 'From Map Editor' }, map_editor)
+      record.forge!
+
+      record.forge! { record.remove_data_entries(attribute_names: %i[name count], sources: business_directory) }
+
+      expect(record.reload).to have_attributes(name: 'From Map Editor', count: nil)
+    end
+
+    it 'deletes entries without changing the attribute when they are removed outside forge and the record saved' do
+      # For columns that cannot be blank: remove after forging, then save with an explicit value
+      record.remove_data_entries(attribute_names: :active, sources: business_directory)
+      record.update!(count: 0)
+
+      expect(record.reload).to have_attributes(active: false, count: 0)
+      expect(record.data_entries.with_source(business_directory).with_attribute(:active)).not_to exist
+    end
+
+    it 'restores the lower source on the next forge once the removed entries are gone' do
+      record.forge! { record.remove_data_entries(attribute_names: :name, sources: business_directory) }
+      record.reload.forge!
+
+      expect(record.reload.name).to eq('From Cadastre')
+    end
+
+    it 'tells whether any other source still has entries on the record, to decide whether to orphan it' do
+      expect(record.data_entries.without_source('Business Directory')).not_to be_empty
+
+      record.data_entries.with_source(cadastre).destroy_all
+      expect(record.data_entries.without_source('Business Directory')).to be_empty
+    end
+  end
+
+  # When an import no longer includes a record, drop the importer's entries and orphan the record unless a source other
+  # than a neutral one still has entries on it
+  describe 'an import orphan sweep' do
+    let!(:geocoder) { LaForge::DataSource.create!(name: 'Geocoder', priority: 34) }
+
+    before do
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre)
+      record.record_data_entries({ active: false }, geocoder)
+      record.save!
+    end
+
+    def still_claimed?(record, source, neutral_sources)
+      neutral_ids = LaForge::DataSource.where(name: neutral_sources).pluck(:id)
+      record.data_entries.with_source(source).destroy_all
+      record.data_entries.without_source(source).where.not(source_id: neutral_ids).exists?
+    end
+
+    it 'counts entries from any other source as a claim that the record exists' do
+      expect(still_claimed?(record, cadastre.name, [])).to be(true)
+    end
+
+    it 'ignores sources that only supply attribute values' do
+      expect(still_claimed?(record, cadastre.name, ['Geocoder'])).to be(false)
+      expect(record.data_entries.reload.map(&:source)).to eq([geocoder])
+    end
+
+    it 'does not change the record, which keeps its values until it is next forged' do
+      still_claimed?(record, cadastre.name, [])
+
+      expect(record.reload.name).to eq('Original')
+    end
+  end
+
+  describe 'inspecting where values came from' do
+    before do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.record_data_entries({ name: 'From Business Directory' }, business_directory, priority: 100)
+      record.save!
+    end
+
+    it "orders an attribute's entries by the priority that decides them" do
+      entries = record.data_entries.includes(:source).group_by(&:attribute_name)['name'].sort_by(&:priority_with_fallback).reverse
+
+      expect(entries.map { |entry| [entry.source.name, entry.priority_with_fallback] }).to eq([['Business Directory', 100], ['Cadastre', 31]])
+    end
+
+    it 'lists the sources a record or one attribute has entries from' do
+      expect(record.data_source_names).to contain_exactly('Cadastre', 'Business Directory')
+      expect(record.data_source_names(attributes: :count)).to eq(['Cadastre'])
+      expect(record.data_source?(business_directory)).to be(true)
+      expect(record.data_source?(map_editor)).to be(false)
+    end
+
+    it 'finds records by source' do
+      other = ActiveRecordMock.create!(name: 'Other')
+      other.record_data_entries({ name: 'Other' }, map_editor)
+      other.save!
+
+      expect(ActiveRecordMock.with_source(business_directory).distinct).to eq([record])
+      expect(ActiveRecordMock.with_attribute_with_source(:name, map_editor).distinct).to eq([other])
+    end
+  end
+
+  # Data migrations that delete a source's entries so that a value written to the column directly, or another source's
+  # value, is not overwritten by the next forge
+  describe "deleting a source's entries outside an import" do
+    before do
+      record.record_data_entries({ name: 'From Business Directory', count: 7 }, business_directory)
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre)
+      record.forge!
+    end
+
+    it 'keeps applying stored entries at every forge until they are deleted' do
+      record.update!(name: 'Written Directly')
+      record.reload.forge!
+
+      expect(record.reload.name).to eq('From Business Directory')
+    end
+
+    it 'lets a directly written value survive later forges once every entry for the attribute is deleted' do
+      LaForge::DataEntry.where(record_type: 'ActiveRecordMock', record_id: record.id, attribute_name: 'count').delete_all
+      record.update!(count: 0)
+      record.reload.forge!
+
+      expect(record.reload.count).to eq(0)
+    end
+
+    it "lets the next source's value win once the outranking source's entries are deleted" do
+      LaForge::DataEntry.with_source('Business Directory').where(record_type: 'ActiveRecordMock', record_id: record.id, attribute_name: 'name').delete_all
+      record.reload.forge!
+
+      expect(record.reload.name).to eq('From Cadastre')
+    end
+
+    it 'finds every record with an entry from a source for an attribute in one query' do
+      ids = LaForge::DataEntry.with_source(business_directory.name).with_attribute(:count).where(record_type: 'ActiveRecordMock').distinct.pluck(:record_id)
+
+      expect(ids).to eq([record.id])
+    end
+  end
+
+  # A reference to another record (a foreign key) is recorded like any attribute, and which source wrote it tells an
+  # importer-made link from one an editor set
+  describe 'a link recorded as an attribute' do
+    it 'tells whether the current value was written by an importer rather than an editor' do
+      record.record_data_entries({ count: 42 }, cadastre)
+      record.forge!
+
+      importer_wrote_it = record.data_entries.with_attribute('count').where.not(source_id: map_editor.id).any? { |entry| entry.value.to_s == record.count.to_s }
+      expect(importer_wrote_it).to be(true)
+    end
+
+    it 'moves the link by replacing every other source entry for it with one from the source taking ownership' do
+      record.record_data_entries({ count: 1 }, cadastre)
+      record.record_data_entries({ count: 2 }, map_editor)
+      record.forge!
+
+      LaForge::DataEntry.where(record: record, attribute_name: 'count').where.not(source_id: business_directory.id).delete_all
+      record.reload.record_data_entry('count', 3, business_directory)
+      record.update!(count: 3)
+      record.reload.forge!
+
+      expect(record.reload.count).to eq(3)
+      expect(record.data_entries.map(&:source)).to eq([business_directory])
+    end
+  end
+
+  describe 'forging a new record' do
+    it 'inserts the forged values rather than the column defaults' do
+      new_record = ActiveRecordMock.new(name: 'New')
+      new_record.record_data_entries({ active: false }, business_directory)
+      new_record.forge!
+
+      expect(new_record.reload.active).to be(false)
+      expect(new_record.data_entries.count).to eq(1)
+    end
+
+    it 'discards entries that were recorded and forged but not saved when the record is reloaded' do
+      record.record_data_entries({ name: 'From Business Directory' }, business_directory)
+      record.forge
+      record.reload
+
+      expect(record.name).to eq('Original')
+      expect(record.data_entries).to be_empty
+    end
+  end
+
+  describe 'data sources' do
+    it 'requires a unique priority and a case-insensitively unique name' do
+      expect(LaForge::DataSource.new(name: 'Other', priority: business_directory.priority)).not_to be_valid
+      expect(LaForge::DataSource.new(name: 'business directory', priority: 99)).not_to be_valid
+      expect(LaForge::DataSource.new(name: 'Other')).not_to be_valid
+    end
+
+    it 'accepts a source as a record, an id or a name wherever one is expected' do
+      [business_directory, business_directory.id, 'Business Directory'].each_with_index do |source, index|
+        record.record_data_entries({ count: index }, source)
+      end
+
+      expect(record.data_entries.map(&:source_id)).to eq([business_directory.id])
+      expect(record.data_entries.first.value).to eq(2)
+    end
+  end
+end
