@@ -266,6 +266,60 @@ describe 'Usage' do
     end
   end
 
+  # An importer wraps its run in `LaForge.with_precedence_cache` so that forging each row doesn't read the global and
+  # model-wide rules again
+  describe 'caching precedence for an import run' do
+    let(:records) { Array.new(3) { |index| ActiveRecordMock.create!(name: "Row #{index}") } }
+
+    def rule_queries(&block)
+      queries = []
+      counter = ->(*, payload) { queries << payload[:sql] if payload[:sql].include?('laforge_precedence_rules') && !payload[:sql].match?(/\A\s*(INSERT|UPDATE|DELETE)/i) }
+      ActiveSupport::Notifications.subscribed(counter, 'sql.active_record', &block)
+      queries
+    end
+
+    def import(rows)
+      rows.each do |row|
+        label = "Row #{records.index(row)}"
+        row.record_data_entries({ name: "#{label} From Cadastre" }, cadastre)
+        row.record_data_entries({ name: "#{label} From Business Directory" }, business_directory)
+        row.forge!
+      end
+    end
+
+    it 'reads the global and model-wide rules once for the whole run' do
+      records
+      cached = rule_queries { LaForge.with_precedence_cache { import(records) } }
+      uncached = rule_queries { import(records.map(&:reload)) }
+
+      expect(cached.grep(/record_type`? = ''/).size).to eq(1)
+      expect(uncached.grep(/record_type`? = ''/).size).to eq(records.size)
+    end
+
+    it 'sees precedence changed through LaForge during the run' do
+      LaForge.with_precedence_cache do
+        import(records.first(1))
+        ActiveRecordMock.update_attribute_source_precedence(:name, cadastre, 100)
+        import(records.last(1))
+      end
+
+      expect(records.first.reload.name).to eq('Row 0 From Business Directory')
+      expect(records.last.reload.name).to eq('Row 2 From Cadastre')
+    end
+
+    it 'does not see precedence changed outside LaForge until the run ends' do
+      LaForge.with_precedence_cache do
+        import(records.first(1))
+        LaForge::PrecedenceRule.where(source_id: cadastre.id).update_all(precedence: 100) # e.g. by SQL from another process
+        import(records.last(1))
+      end
+      import(records.first(1).map(&:reload))
+
+      expect(records.last.reload.name).to eq('Row 2 From Business Directory')
+      expect(records.first.reload.name).to eq('Row 0 From Cadastre')
+    end
+  end
+
   describe 'model-wide precedence' do
     before do
       record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)

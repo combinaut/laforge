@@ -96,6 +96,14 @@ A record's precedence for an attribute is kept when the source records the attri
     MyModel.source_precedences # => the model-wide rules, '' standing for every attribute
   ```
 
+Each forge reads the global and model-wide rules. To read them once for a whole import run, wrap it in `LaForge.with_precedence_cache`. Rules changed through LaForge inside the block take effect immediately; rules changed by SQL or another process are seen once the block ends.
+
+  ```ruby
+    LaForge.with_precedence_cache do
+      rows.each { |row| import(row) } # each import records entries and forges
+    end
+  ```
+
 Equal precedences are broken by the sources' own precedence. To reorder sources, update their precedence; `LaForge::DataSource.by_precedence` lists them highest first and `LaForge::DataSource.maximum_precedence` returns the highest.
 
 ### Querying

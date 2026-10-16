@@ -26,6 +26,11 @@ module LaForge
     validates :source_id, uniqueness: { scope: %i[record_type record_id attribute_name] }
     validate :scope_is_one_of_the_four_levels
 
+    # Clear as soon as a rule changes, so later forges in the same transaction see it, and again on rollback
+    after_save { PrecedenceCache.clear }
+    after_destroy { PrecedenceCache.clear }
+    after_rollback { PrecedenceCache.clear }
+
     attribute :record_type, default: ANY_TYPE
     attribute :record_id, default: ANY_ID
     attribute :attribute_name, default: ANY_ATTRIBUTE
@@ -48,8 +53,9 @@ module LaForge
     class Resolver
       def initialize(model)
         @model = model
-        @model_rules = PrecedenceRule.index_for(PrecedenceRule.for_model(model))
-        @global_rules = PrecedenceRule.index_for(PrecedenceRule.global)
+        type = PrecedenceRule.model_type(model)
+        @model_rules = PrecedenceCache.fetch([:model, type]) { PrecedenceRule.index_for(PrecedenceRule.for_model(model)) }
+        @global_rules = PrecedenceCache.fetch(:global) { PrecedenceRule.index_for(PrecedenceRule.global) }
       end
 
       def precedence(record, attribute_name, source_id)

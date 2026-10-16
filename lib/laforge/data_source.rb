@@ -4,6 +4,7 @@ module LaForge
 
     has_many :data_entries, class_name: 'LaForge::DataEntry'
     has_many :precedence_rules, class_name: 'LaForge::PrecedenceRule', foreign_key: :source_id, dependent: :delete_all
+    after_destroy { PrecedenceCache.clear } # its rules are deleted without callbacks
     has_one :global_precedence_rule, -> { global }, class_name: 'LaForge::PrecedenceRule', foreign_key: :source_id, autosave: true, inverse_of: :source
 
     validates :name, presence: true, uniqueness: { case_sensitive: false }
