@@ -515,29 +515,73 @@ describe 'Usage' do
     end
   end
 
-  # A reference to another record (a foreign key) is recorded like any attribute, and which source wrote it tells an
-  # importer-made link from one an editor set
-  describe 'a link recorded as an attribute' do
-    it 'tells whether the current value was written by an importer rather than an editor' do
-      record.record_data_entries({ count: 42 }, cadastre)
+  # A belongs_to association is recorded by passing the record (or nil); it is stored as the foreign key, and the type
+  # when polymorphic, so the link resolves across sources like any attribute and its entries tell who set it
+  describe 'a belongs_to association' do
+    let(:parent) { ActiveRecordMock.create!(name: 'Parent') }
+    let(:other_parent) { ActiveRecordMock.create!(name: 'Other Parent') }
+
+    it 'records the foreign key and forges the association from the winning source' do
+      record.record_data_entries({ parent: parent }, cadastre)
+      record.record_data_entries({ parent: other_parent }, business_directory)
       record.forge!
 
-      importer_wrote_it = record.data_entries.with_attribute('count').where.not(source_id: map_editor.id).any? { |entry| entry.value.to_s == record.count.to_s }
-      expect(importer_wrote_it).to be(true)
+      expect(record.reload.parent).to eq(other_parent)
+      expect(record.data_entries.map(&:attribute_name).uniq).to eq(['parent_id'])
+    end
+
+    it 'records the type of a polymorphic association too' do
+      record.record_data_entries({ subject: parent }, cadastre)
+      record.forge!
+
+      expect(record.reload.subject).to eq(parent)
+      expect(record.data_entries.to_h { |entry| [entry.attribute_name, entry.value] }).to eq('subject_id' => parent.id, 'subject_type' => 'ActiveRecordMock')
+    end
+
+    it 'clears the association when the winning source records nil' do
+      record.record_data_entries({ parent: parent }, cadastre)
+      record.record_data_entries({ parent: nil }, business_directory)
+      record.forge!
+
+      expect(record.reload.parent).to be_nil
+    end
+
+    it 'raises for a record of the wrong class or one that is not saved' do
+      expect { record.record_data_entries({ parent: LaForge::DataSource.first }, cadastre) }.to raise_error(LaForge::InvalidValue)
+      expect { record.record_data_entries({ parent: ActiveRecordMock.new }, cadastre) }.to raise_error(LaForge::InvalidValue)
+    end
+
+    it 'tells whether the current link was set by an importer rather than an editor' do
+      record.record_data_entries({ parent: parent }, cadastre)
+      record.forge!
+
+      importer_set_it = record.data_entries.with_attribute(:parent_id).where.not(source_id: map_editor.id).any? { |entry| entry.value == record.parent_id }
+      expect(importer_set_it).to be(true)
     end
 
     it 'moves the link by replacing every other source entry for it with one from the source taking ownership' do
-      record.record_data_entries({ count: 1 }, cadastre)
-      record.record_data_entries({ count: 2 }, map_editor)
+      record.record_data_entries({ parent: parent }, cadastre)
+      record.record_data_entries({ parent: other_parent }, map_editor)
       record.forge!
 
-      LaForge::DataEntry.where(record: record, attribute_name: 'count').where.not(source_id: business_directory.id).delete_all
-      record.reload.record_data_entry('count', 3, business_directory)
-      record.update!(count: 3)
-      record.reload.forge!
+      LaForge::DataEntry.where(record: record, attribute_name: 'parent_id').where.not(source_id: business_directory.id).delete_all
+      record.reload.record_data_entries({ parent: parent }, business_directory)
+      record.forge!
 
-      expect(record.reload.count).to eq(3)
+      expect(record.reload.parent).to eq(parent)
       expect(record.data_entries.map(&:source)).to eq([business_directory])
+    end
+  end
+
+  describe 'values that cannot be stored' do
+    it 'raises for a value that would not survive being stored as JSON, such as an object' do
+      expect { record.record_data_entries({ name: Object.new }, cadastre) }.to raise_error(LaForge::InvalidValue)
+      expect { record.record_data_entries({ name: { 'nested' => [Object.new] } }, cadastre) }.to raise_error(LaForge::InvalidValue)
+    end
+
+    it 'accepts strings, numbers, booleans, dates, nil, and arrays and hashes of those' do
+      expect { record.record_data_entries({ name: 'Name', count: 1, active: false }, cadastre) }.not_to raise_error
+      expect(LaForge::DataEntry.storable?([1, 'a', nil, { 'at' => Date.new(2026, 1, 1) }])).to be(true)
     end
   end
 

@@ -121,8 +121,15 @@ module LaForge
     # Record a single piece of information from a source.
     # Optionally pass a precedence for that attribute and source on this record at the same time; it is saved with the
     # record. An existing precedence is kept when none is passed, and removed when nil is passed.
+    # A belongs_to association is recorded as its foreign key (and type, when polymorphic): pass the record or nil.
     def record_data_entry(attribute_name, value, source, precedence: NOT_GIVEN)
+      reflection = self.class.reflect_on_association(attribute_name)
+      if reflection&.belongs_to?
+        return laforge_reference_columns(reflection, value).each { |column, column_value| write_data_entry(column, column_value, source, precedence: precedence) }
+      end
+
       raise InvalidAttributeName, "Cannot set #{attribute_name} on #{self.class.name}" unless respond_to?("#{attribute_name}=")
+      raise InvalidValue, "Cannot record #{value.class} for #{self.class.name}##{attribute_name}; values are stored as JSON, so record a string, number, boolean, date, nil, or an array or hash of those" unless DataEntry.storable?(value)
 
       write_data_entry(attribute_name, value, source, precedence: precedence)
     end
@@ -198,6 +205,22 @@ module LaForge
       rule
     end
 
+    # { foreign_key => id, foreign_type => class name } for a record (or nil) assigned to a belongs_to association
+    def laforge_reference_columns(reflection, target)
+      unless target.nil? || target.is_a?(::ActiveRecord::Base)
+        raise InvalidValue, "#{self.class.name}##{reflection.name} must be recorded as a record or nil, not #{target.class}"
+      end
+      raise InvalidValue, "Cannot record an unsaved #{target.class.name} for #{self.class.name}##{reflection.name}" if target&.new_record?
+      if target && !reflection.polymorphic? && !target.is_a?(reflection.klass)
+        raise InvalidValue, "#{self.class.name}##{reflection.name} must be a #{reflection.klass.name}, not #{target.class.name}"
+      end
+
+      primary_key = reflection.polymorphic? ? target&.class&.primary_key : reflection.association_primary_key
+      columns = { reflection.foreign_key.to_s => target && target[primary_key] }
+      columns[reflection.foreign_type.to_s] = target&.class&.polymorphic_name if reflection.polymorphic?
+      columns
+    end
+
     def laforge_precedence_resolver
       @laforge_precedence_resolver ||= PrecedenceRule::Resolver.new(self.class)
     end
@@ -222,4 +245,5 @@ module LaForge
   end
 
   class InvalidAttributeName < StandardError; end
+  class InvalidValue < StandardError; end
 end
