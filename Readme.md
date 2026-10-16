@@ -303,10 +303,77 @@ Whether another source still has entries on the record tells whether anything el
 - Recorded entries are unsaved until the record is saved. Reloading the record before saving discards them, along with any forged values.
 - `forge` applies every stored entry, so stopping recording an attribute is not enough to stop forging it; its existing entries must be deleted.
 
-## Associations
+## Associations (experimental)
+
+LaForge can track associations alongside attributes. The API is experimental and may change.
 
 A `belongs_to` association needs no declaration: record the associated record, or `nil`, and it is stored as the foreign key (and the type, when polymorphic), resolved across sources like any attribute.
 
   ```ruby
     tenant.record_data_entries({ occupiable: place }, business_directory) # stored as occupiable_id and occupiable_type
   ```
+
+Declare which `has_many` and `has_one` associations are tracked. Tracking an association is about membership: which records belong to it. Keys of join models are derived from the association's reflection; owned records need a `key:` to identify them across sources, except a `has_one` with no key, whose sources all describe its single member.
+
+  ```ruby
+    class Place < ApplicationRecord
+      has_many :place_categories, -> { order(:position) }, dependent: :destroy
+      has_many :categories, through: :place_categories
+      has_many :parcel_links
+      has_many :tenants, as: :occupiable, dependent: :destroy
+      has_one :marker, as: :markable, dependent: :destroy
+
+      laforged associations: {
+        place_categories: {},          # identified by category_id; ordered by position
+        parcel_links: {},              # identified by parcel_id + parcel_link_type_id
+        tenants: { key: :external_id },
+        marker: {}                     # a has_one: recorded as one member hash, or nil for none
+      }
+    end
+  ```
+
+Each source records a report for an association. By default the report is the source's complete member list, which excludes every member it doesn't list. Membership is decided member by member: the highest precedence report with an opinion on a member decides it, and members appear in the order of the highest precedence report that includes them.
+
+  ```ruby
+    # A cadastre import run
+    place.record_data_entries({
+      place_categories: [{ category_id: commercial.id }, { category_id: mixed_use.id }],
+      parcel_links: [{ parcel_id: lot_12.id, parcel_link_type_id: occupies.id, external_id: 'P-1' }]
+    }, cadastre)
+    place.forge!
+
+    # A business directory run lists the tenants
+    place.record_data_entries({
+      tenants: [{ external_id: 'T-1', name: 'Corner Café', opening_hours: [{ day: 1, opens_at: '08:00' }] }]
+    }, business_directory)
+    place.forge!
+
+    # A later cadastre run that no longer lists Mixed Use removes that category
+    place.record_data_entries({ place_categories: [{ category_id: commercial.id }] }, cadastre)
+    place.forge!
+  ```
+
+A source that knows only some of the members records a partial report. It includes or excludes the members it names and leaves the rest to other sources. When its next report no longer includes a member, that member is removed unless another source includes it. Rows that no source has ever reported are left alone.
+
+  ```ruby
+    # A business registry that knows only the businesses it has registered
+    place.record_data_entries({ tenants: [{ external_id: 'T-9', registration_number: 'R-10' }] }, business_registry, partial: true)
+
+    # A map editor removing one imported tenant, and later undoing it
+    place.exclude_association_member(:tenants, { external_id: 'T-2' }, map_editor)
+    place.forget_association_member(:tenants, { external_id: 'T-2' }, map_editor)
+
+    # A map editor adding one category without restating the rest
+    place.include_association_member(:place_categories, { category_id: landmark.id }, map_editor)
+  ```
+
+A complete list from a higher precedence source still decides every member, including ones lower partial reports add, so a source that only adds members needs to rank above the complete lists it adds to.
+
+When an import no longer reports a record at all, use `withdraw_source` rather than destroying the source's entries. It destroys the source's attribute entries and withdraws every member the source reported, so the next forge removes them unless another source includes them. Destroying a partial report's entry instead would leave the members it added in place, since nothing would remember that the source had reported them.
+
+  ```ruby
+    place.withdraw_source(business_registry)
+    place.forge!
+  ```
+
+A member that membership no longer includes is removed the way assigning the collection would remove it, following the association's `dependent:` option. A member's attributes are resolved on the member, from every report that includes it together with entries recorded directly on the member, such as a registration number a business registry records on a tenant, and every precedence rule applies to them as to any attribute. A `precedence:` given while recording a report ranks the report's say on membership only, not the members' attributes. Values reported through a list stay in the list: when the list stops including the member, those values drop out and the next source's take over. `spec/lib/association_importer_scenarios_spec.rb` walks through these cases over several import runs.
