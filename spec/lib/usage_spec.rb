@@ -451,6 +451,15 @@ describe 'Usage' do
       expect(entries.map { |entry| [entry.source.name, entry.effective_precedence] }).to eq([['Business Directory', 100], ['Cadastre', 31]])
     end
 
+    it 'ranks by precedence rules changed since the last forge once the record is reloaded' do
+      record.forge
+      ActiveRecordMock.update_attribute_source_precedence(:name, cadastre, 200)
+      record.reload
+
+      entries = LaForge::DataEntry.in_precedence_order(record.data_entries.to_a, record: record)
+      expect(entries.find { |entry| entry.attribute_name == 'name' }.source).to eq(cadastre)
+    end
+
     it 'lists the sources a record or one attribute has entries from' do
       expect(record.data_source_names).to contain_exactly('Cadastre', 'Business Directory')
       expect(record.data_source_names(attributes: :count)).to eq(['Cadastre'])

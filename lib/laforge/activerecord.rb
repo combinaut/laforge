@@ -127,6 +127,12 @@ module LaForge
       write_data_entry(attribute_name, value, source, precedence: precedence)
     end
 
+    # Forgets the precedence rules read for the last forge, so they are read afresh, as the next forge would
+    def reload(*)
+      @laforge_precedence_resolver = nil
+      super
+    end
+
     # Set the precedence of a source for one attribute of this record, whether or not the source has recorded it yet.
     # Saved immediately on a persisted record, otherwise with the record. Pass nil to remove it.
     def update_attribute_source_precedence(attribute, source, precedence)
