@@ -1,6 +1,7 @@
 require 'spec_helper'
 
-# Common ways of using LaForge to merge several data sources into one record, one group per intention.
+# Common ways of using LaForge to merge several data sources into one record, one group per intention. Association
+# assignment by importers is in association_importer_scenarios_spec.rb.
 describe 'Usage' do
   # Runs before the sources below are created
   before do
