@@ -3,9 +3,28 @@ module LaForge
     self.table_name = "laforge_data_sources"
 
     has_many :data_entries, class_name: 'LaForge::DataEntry'
+    has_many :precedence_rules, class_name: 'LaForge::PrecedenceRule', foreign_key: :source_id, dependent: :delete_all
+    has_one :global_precedence_rule, -> { global }, class_name: 'LaForge::PrecedenceRule', foreign_key: :source_id, autosave: true, inverse_of: :source
 
-    validates :priority, presence: true, uniqueness: true
     validates :name, presence: true, uniqueness: { case_sensitive: false }
+    validates :precedence, presence: true, numericality: { only_integer: true, allow_nil: true }
+    validate :precedence_is_unique
+
+    # Sources ordered from the highest global precedence to the lowest
+    scope :by_precedence, -> { joins(:global_precedence_rule).order(PrecedenceRule.arel_table[:precedence].desc) }
+
+    def self.maximum_precedence
+      PrecedenceRule.global.maximum(:precedence)
+    end
+
+    # The source's global precedence, which ranks its values wherever no more specific rule applies
+    def precedence
+      global_precedence_rule&.precedence
+    end
+
+    def precedence=(value)
+      (global_precedence_rule || build_global_precedence_rule).precedence = value
+    end
 
     def self.normalize_source_ids(sources)
       Array.wrap(sources).map { |source| normalize_source_id(source) }
@@ -32,5 +51,15 @@ module LaForge
 
     # EXCEPTIONS
     class Invalid < StandardError; end
+
+    private
+
+    def precedence_is_unique
+      return if precedence.nil?
+
+      taken = PrecedenceRule.global.where(precedence: precedence)
+      taken = taken.where.not(source_id: id) if persisted?
+      errors.add(:precedence, :taken) if taken.exists?
+    end
   end
 end
