@@ -28,6 +28,17 @@ module LaForge
       end.map(&:first)
     end
 
+    # Whether a value survives being stored as JSON and read back: strings, numbers, booleans, dates and times (stored
+    # as strings), nil, and arrays and hashes of those
+    def self.storable?(value)
+      case value
+      when nil, true, false, String, Symbol, Numeric, Date, Time, ActiveSupport::TimeWithZone then true
+      when Array then value.all? { |item| storable?(item) }
+      when Hash then value.all? { |key, item| (key.is_a?(String) || key.is_a?(Symbol)) && storable?(item) }
+      else false
+      end
+    end
+
     def source_id=(source)
       super DataSource.normalize_source_id(source)
     end
