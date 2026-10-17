@@ -6,7 +6,8 @@ module LaForge
   module ActiveRecord
     extend ActiveSupport::Concern
 
-    # associations: { name => { key: } } tracks has_many associations; keys of join members are derived from the reflection
+    # associations: { name => { key: } } tracks has_many and has_one associations; keys of join members are derived from
+    # the reflection, owned records need a key: (except a has_one's single member)
     def laforged(associations: {})
       has_many :data_entries, as: :record, dependent: :delete_all, autosave: true, class_name: 'LaForge::DataEntry'
       has_many :data_sources, -> { distinct }, through: :data_entries, source: :source, class_name: 'LaForge::DataSource'
@@ -21,13 +22,12 @@ module LaForge
       scope :without_attribute_with_source, ->(attribute, source) { joins(:data_entries).merge(DataEntry.without_attribute(attribute).with_source(source)) }
 
       class_attribute :laforged_associations, instance_writer: false, default: {}
-      # The owners' tracked associations this model is a member of, whose lists can report its attributes
-      class_attribute :laforge_owner_configs, instance_writer: false, default: [] unless respond_to?(:laforge_owner_configs)
 
       configs = associations.to_h { |name, options| [name.to_s, AssociationConfig.new(self, name, **options)] }
       configs.each_value { |config| AssociationTracking.declare(self, config) }
       self.laforged_associations = configs
-      after_save :laforge_remove_replaced_members
+      before_save :laforge_assert_members_forged
+      after_save :laforge_after_save
 
       extend ClassMethods
       include InstanceMethods
@@ -117,9 +117,8 @@ module LaForge
     # attribute with no other entry is left out of the hash.
     def forge_attributes(attributes: nil, sources: nil)
       @laforge_precedence_resolver = nil # read the model-wide and global rules afresh (or from the precedence cache) for each forge
-      @laforge_list_entries = nil
       forged_attrs = {}
-      data_entries = laforge_candidate_entries(attributes: attributes, sources: sources).reject { |data_entry| data_entry.marked_for_destruction? || laforged_associations.key?(data_entry.attribute_name) }
+      data_entries = filter_data_entries_in_memory(attributes: attributes, sources: sources).reject { |data_entry| data_entry.marked_for_destruction? || laforged_associations.key?(data_entry.attribute_name) }
       winners = DataEntry.in_precedence_order(data_entries, record: self).uniq(&:attribute_name).index_by(&:attribute_name)
 
       # The hash's key order is the order `forge` calls the setters, which matters when one setter
@@ -149,7 +148,8 @@ module LaForge
     # Record several pieces of information from the same source.
     # A tracked association's value is the source's whole member list. Pass `partial: true` when the source reports only
     # some members: the value is then the members it includes, or { include: [...], exclude: [...] }, and members other
-    # sources report are left to them.
+    # sources report are left to them. A member is a hash of its key and what the source says about it, or a saved record.
+    # When the owner is forged, the hash's attributes are recorded on the member as the source's entries.
     def record_data_entries(attributes_hash, source, precedence: NOT_GIVEN, partial: false)
       attributes_hash.each do |attribute_name, value|
         if (config = laforged_associations[attribute_name.to_s])
@@ -177,12 +177,6 @@ module LaForge
       raise InvalidValue, "Cannot record #{value.class} for #{self.class.name}##{attribute_name}; values are stored as JSON, so record a string, number, boolean, date, nil, or an array or hash of those" unless DataEntry.storable?(value)
 
       write_data_entry(attribute_name, value, source, precedence: precedence)
-    end
-
-    # Also forgets the model-wide and global rules read for the last forge, so the next ranking reads them again
-    def reload(*)
-      @laforge_precedence_resolver = nil
-      super
     end
 
     # Add one member to the source's report for a tracked association, leaving the rest of its report as it is
@@ -241,14 +235,14 @@ module LaForge
       laforge_precedence_resolver.global_precedence(source_id)
     end
 
-    # Whether the source has entries on this record, or reports it in a tracked association's list
+    # Whether the source has entries on this record
     def data_source?(source)
-      laforge_candidate_entries(sources: source).any?
+      filter_data_entries_in_memory(sources: source).any?
     end
 
-    # The sources with entries on this record, or that report it in a tracked association's list
+    # The sources with entries on this record
     def data_source_names(attributes: nil)
-      laforge_candidate_entries(attributes: attributes).map(&:source).map(&:name).uniq
+      filter_data_entries_in_memory(attributes: attributes).map(&:source).map(&:name).uniq
     end
 
     # Returns { source => [member hashes] } for a tracked association
@@ -256,7 +250,8 @@ module LaForge
       self.class.source_values(name, records: [self])[id] || {}
     end
 
-    # Returns { membership: source, listed_by: [sources], attributes: { attribute => source } } for one member
+    # Returns { membership: source, listed_by: [sources], excluded_by: [sources], attributes: { attribute => source } }
+    # for one member
     def member_sources(name, **member)
       AssociationTracking.member_sources(self, self.class.laforged_association(name), member.stringify_keys)
     end
@@ -267,11 +262,33 @@ module LaForge
       (@laforge_replaced_members ||= []) << [config, record]
     end
 
-    # Tells this member which in-memory owner holds the lists for a tracked association, so lists recorded but not yet
-    # saved count when the member is forged through its owner
-    def laforge_list_owner!(config, owner)
-      (@laforge_list_owners ||= {})[config] = owner
-      @laforge_list_entries = nil
+    # Forgets what was recorded about members but not yet forged, the members a forge replaced, and the precedence rules
+    # read for the last forge, so they are read afresh as a forge would
+    def reload(*)
+      @laforge_member_data = nil
+      @laforge_replaced_members = nil
+      @laforge_precedence_resolver = nil
+      super
+    end
+
+    # { source id => { key values => attributes } } that reports recorded about members of a tracked association, held
+    # until the owner is forged
+    def laforge_member_data(config)
+      ((@laforge_member_data ||= {})[config.name] ||= {})
+    end
+
+    # The changes forging would make to this record if the given sources' attributes were recorded on it, without
+    # recording them
+    def laforge_forge_diff_with(attributes_by_source)
+      entries = data_entries.to_a
+      values = entries.to_h { |entry| [entry, entry.value] }
+      member_data = @laforge_member_data.deep_dup
+      attributes_by_source.each { |source_id, attributes| record_data_entries(attributes, source_id) }
+      forge_diff
+    ensure
+      data_entries.target.replace(entries)
+      values.each { |entry, value| entry.value = value }
+      @laforge_member_data = member_data
     end
 
     private
@@ -324,7 +341,16 @@ module LaForge
       columns
     end
 
-    def laforge_remove_replaced_members
+    # Recorded member attributes are applied only by forging the owner, so saving without forging would lose them
+    def laforge_assert_members_forged
+      pending = (@laforge_member_data || {}).select { |_, by_source| by_source.values.any?(&:any?) }.keys
+      return if pending.empty?
+
+      raise NotForged, "#{self.class.name} #{id}'s #{pending.to_sentence} have member attributes recorded but not forged; forge before saving"
+    end
+
+    # Removes the has_one members a forge replaced
+    def laforge_after_save
       (@laforge_replaced_members || []).each do |config, record|
         case config.reflection.options[:dependent]
         when :destroy, :destroy_async then record.destroy!
@@ -350,52 +376,12 @@ module LaForge
 
     # The association's entries in precedence order, paired with their reports (see MemberList)
     def laforge_association_reports(config)
-      entries = laforge_candidate_entries(attributes: config.name)
+      entries = filter_data_entries_in_memory(attributes: config.name)
       laforge_by_precedence(entries).map { |data_entry| [data_entry, MemberList.new(data_entry.value, marked: data_entry.marked_for_destruction?)] }
     end
 
     def laforge_by_precedence(entries)
       DataEntry.in_precedence_order(entries, record: self)
-    end
-
-    # The record's own entries plus the values its owners' lists report about it, matching the filters
-    def laforge_candidate_entries(attributes: nil, sources: nil)
-      list = filter_data_entries_in_memory(attributes: attributes, sources: sources) + laforge_list_entries
-
-      list.select! { |data_entry| Array.wrap(attributes).map(&:to_s).include?(data_entry.attribute_name) } unless attributes.nil?
-      unless sources.nil?
-        source_ids = DataSource.normalize_source_ids(sources)
-        list.select! { |data_entry| source_ids.include?(data_entry.source_id) }
-      end
-      list.uniq
-    end
-
-    # Unsaved entries standing for what each owner's list says about this member, one per reported attribute. They are
-    # rebuilt from the lists rather than stored, so a source's values disappear when its list stops including the member.
-    def laforge_list_entries
-      @laforge_list_entries ||= self.class.laforge_owner_configs.flat_map do |config|
-        owner = laforge_list_owner_for(config)
-        next [] unless owner
-
-        key = config.record_key(self)
-        owner.send(:laforge_candidate_entries, attributes: config.name).reject(&:marked_for_destruction?).flat_map do |list_entry|
-          member = MemberList.new(list_entry.value).include.find { |listed| config.key_of(listed) == key }
-          next [] unless member
-
-          member.except(*config.key).map { |field, value| DataEntry.new(attribute_name: field, value: value, source_id: list_entry.source_id) }
-        end
-      end
-    end
-
-    def laforge_list_owner_for(config)
-      owner = @laforge_list_owners&.[](config)
-      return owner if owner
-
-      owner_id = self[config.owner_foreign_key]
-      return unless owner_id
-      return if config.owner_type_column && self[config.owner_type_column] != config.owner_class.base_class.polymorphic_name
-
-      config.owner_class.find_by(config.owner_class.primary_key => owner_id)
     end
 
     # Returns the record's entries matching the filters, from the in-memory association: every saved
@@ -419,4 +405,6 @@ module LaForge
 
   class InvalidAttributeName < StandardError; end
   class InvalidValue < StandardError; end
+  class DuplicateMemberKey < StandardError; end
+  class NotForged < StandardError; end
 end

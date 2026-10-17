@@ -1,6 +1,8 @@
 module LaForge
   # Describes a tracked has_many or has_one association, deriving everything it can from the association reflection.
-  # A has_one is tracked as a list of at most one member; with no key, every source describes the same single member.
+  # A has_one is tracked as a list of at most one member; with no key, every source reports the same single member.
+  #
+  # Members are identified by their key: derived from the records a join row references, or given with `key:`.
   class AssociationConfig
     attr_reader :owner_class, :name, :reflection, :key, :order_column
 
@@ -32,6 +34,29 @@ module LaForge
       collection? ? reader.to_a : [reader].compact
     end
 
+    # The current members that can be identified across sources, by key. A row missing a key value cannot be, so LaForge
+    # leaves it alone, as it does any row no source has reported. Raises if several rows share a key, since LaForge cannot
+    # tell which of them a source means.
+    def identified_members_of(owner)
+      members = members_of(owner).reject { |record| blank_key?(record_key(record)) }.group_by { |record| record_key(record) }
+      duplicated = members.select { |_, records| records.size > 1 }
+      if duplicated.any?
+        raise DuplicateMemberKey, "#{owner_class.name} #{owner.id}'s #{name} has several #{klass.name} rows with the same key: " \
+                                  "#{duplicated.keys.map { |values| describe_key(values) }.join('; ')}. Remove the duplicates before forging"
+      end
+
+      members.transform_values(&:first)
+    end
+
+    # "external_id "T-1"" for a key's values, or "no key" for a has_one's single member
+    def describe_key(values)
+      key.zip(values).map { |column, value| "#{column} #{value.inspect}" }.join(', ').presence || 'no key'
+    end
+
+    def blank_key?(key_values)
+      key_values.any?(&:nil?)
+    end
+
     def owner_foreign_key
       reflection.foreign_key.to_s
     end
@@ -56,17 +81,26 @@ module LaForge
       key.map { |column| record[column] }
     end
 
-    # Stringify and validate members recorded for this association, recursing into nested tracked associations. A has_one
-    # is recorded as one member hash, or nil for none, and stored as a list of at most one.
-    def normalize_members(members)
+    # Validates members recorded for this association and returns [key hash, attributes] for each, where the attributes
+    # are what the source says about the member besides its key, to be recorded on the member itself. A member is a hash
+    # of its key and attributes (nested tracked associations included), or a saved record, which contributes only its key.
+    # A has_one is recorded as one member, or nil for none, and stored as a list of at most one. Pass `attributes: false`
+    # for members that can only be named, such as exclusions.
+    def normalize_members(members, attributes: true)
       unless collection?
-        raise ArgumentError, "#{owner_class.name}##{name} must be recorded as one member hash or nil" unless members.nil? || members.is_a?(Hash) || (members.is_a?(Array) && members.size <= 1)
+        unless members.nil? || members.is_a?(Hash) || members.is_a?(::ActiveRecord::Base) || (members.is_a?(Array) && members.size <= 1)
+          raise ArgumentError, "#{owner_class.name}##{name} must be recorded as one member or nil"
+        end
 
         members = Array.wrap(members)
       end
-      raise ArgumentError, "#{owner_class.name}##{name} must be recorded as an array of member hashes" unless members.is_a?(Array)
+      raise ArgumentError, "#{owner_class.name}##{name} must be recorded as an array of members" unless members.is_a?(Array)
 
-      members.map { |member| normalize_member(member) }
+      normalized = members.map { |member| normalize_member(member, attributes: attributes) }
+      repeated = normalized.map { |key_hash, _| key_of(key_hash) }.tally.select { |_, count| count > 1 }.keys
+      raise ArgumentError, "#{owner_class.name}##{name} lists the same member more than once (#{repeated.map { |values| describe_key(values) }.join('; ')})" if repeated.any?
+
+      normalized
     end
 
     # Raise if a member references a record that does not exist
@@ -102,21 +136,34 @@ module LaForge
 
     private
 
-    def normalize_member(member)
+    def normalize_member(member, attributes:)
+      if member.is_a?(::ActiveRecord::Base)
+        raise InvalidValue, "#{owner_class.name}##{name} members must be #{klass.name} records, not #{member.class.name}" unless member.is_a?(klass)
+        raise InvalidValue, "Cannot list an unsaved #{klass.name} in #{owner_class.name}##{name}; save it first, or pass its attributes as a hash" if member.new_record?
+
+        member = key_hash(member)
+      end
       member = member.to_h.stringify_keys
 
       member.each do |field, value|
-        if (nested = nested_config(field))
-          member[field] = nested.normalize_members(value)
+        next if key.include?(field)
+
+        if !attributes
+          raise ArgumentError, "#{owner_class.name}##{name} members are named here by key only (#{key.join(', ')}), not #{field}"
+        elsif (nested = nested_config(field))
+          nested.normalize_members(value) # validated now, recorded on the member when the owner is forged
         elsif field == klass.primary_key || field == owner_foreign_key || field == owner_type_column || !klass.column_names.include?(field)
           raise InvalidAttributeName, "Cannot set #{field} on #{klass.name} members of #{owner_class.name}##{name}"
+        elsif field == order_column
+          raise ArgumentError, "Cannot set #{field} on #{klass.name} members of #{owner_class.name}##{name}; LaForge writes it from the order of the list"
         end
       end
 
       missing = key - member.keys
       raise ArgumentError, "#{owner_class.name}##{name} members must include their key (#{missing.join(', ')} missing)" if missing.any?
+      raise ArgumentError, "#{owner_class.name}##{name} members must have a value for each key column (#{key.join(', ')})" if blank_key?(key_of(member))
 
-      member
+      [key_hash(member), member.except(*key)]
     end
 
     # Every belongs_to on the member other than the one pointing back at the owner identifies a join member

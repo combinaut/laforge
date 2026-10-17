@@ -3,7 +3,7 @@ require 'spec_helper'
 # Association assignment as importers drive it, run end to end across several import runs.
 #
 # Every run records everything the source currently says about a record, including whole association lists, then
-# forges. An orphan sweep destroys a source's entries for records it no longer reports, without forging, and closes a
+# forges. A tenant's attributes, reported in the place's list, are recorded on the tenant itself. An orphan sweep destroys a source's entries for records it no longer reports, without forging, and closes a
 # record only when no other source still has entries on it. Map editor edits are recorded on the highest-precedence source.
 #
 # Sources, lowest to highest: cadastre, business directory, business registry, map editor.
@@ -263,10 +263,12 @@ describe 'Association assignment by importers' do
       expect(tenants_of(place).map(&:first)).to eq(%w[T-1 T-3])
     end
 
-    it 'restores the tenant when the editor forgets the removal' do
+    it "restores the tenant on the importer's next run after the editor forgets the removal" do
       place.reload.forget_association_member(:tenants, { external_id: 'T-2' }, map_editor)
       place.forge!
+      expect(tenants_of(place).map(&:first)).to eq(%w[T-1]) # the list names T-2, but its name was discarded with it
 
+      import(place.reload, business_directory, tenants: [tenant('T-1'), tenant('T-2')])
       expect(tenants_of(place).map(&:first)).to eq(%w[T-1 T-2])
     end
   end
