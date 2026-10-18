@@ -26,7 +26,6 @@ module LaForge
       configs = associations.to_h { |name, options| [name.to_s, AssociationConfig.new(self, name, **options)] }
       configs.each_value { |config| AssociationTracking.declare(self, config) }
       self.laforged_associations = configs
-      before_save :laforge_assert_members_forged
       after_save :laforge_after_save
 
       extend ClassMethods
@@ -201,7 +200,7 @@ module LaForge
       transaction do
         filter_data_entries_in_memory(sources: source).each do |data_entry|
           if (config = laforged_associations[data_entry.attribute_name])
-            AssociationTracking.withdraw(self, config, data_entry)
+            AssociationTracking.withdraw(config, data_entry)
             data_entry.save! if data_entry.persisted?
           else
             data_entries.destroy(data_entry)
@@ -262,44 +261,52 @@ module LaForge
       (@laforge_replaced_members ||= []) << [config, record]
     end
 
-    # Forgets what was recorded about members but not yet forged, the members a forge replaced, and the precedence rules
-    # read for the last forge, so they are read afresh as a forge would
+    # Forgets the members a forge replaced and the precedence rules read for the last forge, so they are read afresh as a
+    # forge would
     def reload(*)
-      @laforge_member_data = nil
       @laforge_replaced_members = nil
       @laforge_precedence_resolver = nil
       super
     end
 
-    # { source id => { key values => attributes } } that reports recorded about members of a tracked association, held
-    # until the owner is forged
-    def laforge_member_data(config)
-      ((@laforge_member_data ||= {})[config.name] ||= {})
-    end
-
-    # The changes forging would make to this record if the given sources' attributes were recorded on it, without
-    # recording them
-    def laforge_forge_diff_with(attributes_by_source)
+    # The changes forging would make to this record if what its owner's reports say about it, as [[source id, attributes,
+    # recorded at], ...], were recorded on it, without recording it
+    def laforge_forge_diff_with(reported)
       entries = data_entries.to_a
-      values = entries.to_h { |entry| [entry, entry.value] }
-      member_data = @laforge_member_data.deep_dup
-      attributes_by_source.each { |source_id, attributes| record_data_entries(attributes, source_id) }
+      values = entries.to_h { |entry| [entry, [entry.value, entry.recorded_at]] }
+      reported.each { |source_id, attributes, recorded_at| laforge_record_reported(attributes, source_id, recorded_at) }
       forge_diff
     ensure
       data_entries.target.replace(entries)
-      values.each { |entry, value| entry.value = value }
-      @laforge_member_data = member_data
+      values.each { |entry, (value, recorded_at)| entry.value = value; entry.recorded_at = recorded_at }
+    end
+
+    # Records what a source said about this record in its owner's report at `recorded_at`, already validated there,
+    # leaving out each attribute this record has a newer value for from the same source, so an older report does not
+    # undo it. Returns whether anything was recorded.
+    def laforge_record_reported(attributes, source, recorded_at)
+      newer = filter_data_entries_in_memory(sources: source).select { |entry| entry.recorded_at && entry.recorded_at > recorded_at }.map(&:attribute_name)
+      attributes = attributes.except(*newer)
+
+      attributes.each do |attribute_name, value|
+        if (config = laforged_associations[attribute_name])
+          AssociationTracking.record(self, config, value, source, precedence: NOT_GIVEN, recorded_at: recorded_at)
+        else
+          write_data_entry(attribute_name, value, source, recorded_at: recorded_at)
+        end
+      end
+      attributes.any?
     end
 
     private
 
-    def write_data_entry(attribute_name, value, source, precedence: NOT_GIVEN)
-      existing_data_entry = filter_data_entries_in_memory(attributes: attribute_name, sources: source).first
-      if existing_data_entry
-        existing_data_entry.value = value
-      else
-        data_entries.build(attribute_name: attribute_name, value: value, source_id: source)
-      end
+    # An entry's recorded_at is when its value last changed by being recorded, so a report kept for later can be told
+    # apart from a newer value
+    def write_data_entry(attribute_name, value, source, precedence: NOT_GIVEN, recorded_at: Time.current)
+      data_entry = filter_data_entries_in_memory(attributes: attribute_name, sources: source).first
+      data_entry ||= data_entries.build(attribute_name: attribute_name, source_id: DataSource.normalize_source_id(source))
+      data_entry.value = value
+      data_entry.recorded_at = recorded_at if data_entry.new_record? || data_entry.will_save_change_to_value?
       write_precedence_rule(attribute_name, source, precedence) unless precedence.equal?(NOT_GIVEN)
     end
 
@@ -339,14 +346,6 @@ module LaForge
       columns = { reflection.foreign_key.to_s => target && target[primary_key] }
       columns[reflection.foreign_type.to_s] = target&.class&.polymorphic_name if reflection.polymorphic?
       columns
-    end
-
-    # Recorded member attributes are applied only by forging the owner, so saving without forging would lose them
-    def laforge_assert_members_forged
-      pending = (@laforge_member_data || {}).select { |_, by_source| by_source.values.any?(&:any?) }.keys
-      return if pending.empty?
-
-      raise NotForged, "#{self.class.name} #{id}'s #{pending.to_sentence} have member attributes recorded but not forged; forge before saving"
     end
 
     # Removes the has_one members a forge replaced
@@ -406,5 +405,4 @@ module LaForge
   class InvalidAttributeName < StandardError; end
   class InvalidValue < StandardError; end
   class DuplicateMemberKey < StandardError; end
-  class NotForged < StandardError; end
 end

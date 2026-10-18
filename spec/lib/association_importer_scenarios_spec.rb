@@ -266,7 +266,7 @@ describe 'Association assignment by importers' do
     it "restores the tenant on the importer's next run after the editor forgets the removal" do
       place.reload.forget_association_member(:tenants, { external_id: 'T-2' }, map_editor)
       place.forge!
-      expect(tenants_of(place).map(&:first)).to eq(%w[T-1]) # the list names T-2, but its name was discarded with it
+      expect(tenants_of(place).map(&:first)).to eq(%w[T-1]) # the list names T-2, but its name was destroyed with it when the editor removed it
 
       import(place.reload, business_directory, tenants: [tenant('T-1'), tenant('T-2')])
       expect(tenants_of(place).map(&:first)).to eq(%w[T-1 T-2])

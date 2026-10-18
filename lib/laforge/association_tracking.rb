@@ -4,10 +4,11 @@ module LaForge
   # Each source's entry on the owner holds its report of the members by key (see MemberList). Membership is decided per
   # member by the highest-precedence report with an opinion on it.
   #
-  # What a source says about a member besides its key is held on the owner until it is forged, then recorded on the
-  # member as that source's entries, like any attributes recorded on the member directly. So nothing is created for a
-  # member that membership excludes, and a member's attributes are resolved on the member alone. The owner's forge
-  # forges the members it records on; any other member is forged on its own.
+  # What a source says about a member besides its key is kept in its report as pending until a forge of the owner
+  # includes the member, then recorded on the member as that source's entries, like any attributes recorded on the member
+  # directly. So nothing is created for a member that membership excludes, its attributes wait in the report until
+  # membership includes it, and a member's attributes are resolved on the member alone. The owner's forge forges the
+  # members it records on; any other member is forged on its own.
   module AssociationTracking
     extend self
 
@@ -18,7 +19,7 @@ module LaForge
 
     # A complete report replaces the source's previous one. A partial report does too, and withdraws the members the
     # source reported before but no longer includes or excludes.
-    def record(owner, config, members, source, precedence:, partial: false)
+    def record(owner, config, members, source, precedence:, partial: false, recorded_at: Time.current)
       raise ArgumentError, "#{owner.class.name}##{config.name} is a has_one, which takes a complete report" if partial && !config.collection?
 
       if partial
@@ -31,19 +32,19 @@ module LaForge
       end
       keys = included.map(&:first)
       config.assert_references_exist!(keys)
+      pending = included.map { |key_hash, attributes| MemberList.pending_item(key_hash, attributes, recorded_at) }
 
       value =
         if partial
           reported = (keys + excluded).map { |member| config.key_of(member) }
           previous = report(owner, config, source)
           withdrawn = previous ? (previous.include + previous.withdrawn).map { |member| config.key_hash(member) }.uniq.reject { |member| reported.include?(config.key_of(member)) } : []
-          MemberList.partial(include: keys, exclude: excluded, withdrawn: withdrawn)
+          MemberList.partial(include: keys, exclude: excluded, withdrawn: withdrawn, pending: pending)
         else
-          keys
+          MemberList.value(include: keys, pending: pending)
         end
 
-      owner.laforge_member_data(config)[DataSource.normalize_source_id(source)] = included.to_h { |key_hash, attributes| [config.key_of(key_hash), attributes] }.reject { |_, attributes| attributes.empty? }
-      owner.send(:write_data_entry, config.name, value, source, precedence: precedence)
+      owner.send(:write_data_entry, config.name, value, source, precedence: precedence, recorded_at: recorded_at)
     end
 
     # Changes one member in the source's report: :include adds it, :exclude removes it even if other sources include
@@ -54,27 +55,26 @@ module LaForge
       key = config.key_of(member)
       previous = report(owner, config, source)
       others = ->(list) { (list || []).reject { |listed| config.key_of(listed) == key } }
+      pending = (previous&.pending || []).reject { |item| config.key_of(item['key']) == key }
+      pending << MemberList.pending_item(member, attributes, Time.current) if action == :include
 
       value =
         if previous && !previous.partial?
-          others.(previous.include) + (action == :include ? [member] : [])
+          MemberList.value(include: others.(previous.include) + (action == :include ? [member] : []), pending: pending)
         else
           withdrawn = others.(previous&.withdrawn)
           withdrawn << config.key_hash(member) if action == :forget && previous&.decision(config, key) == :include
           MemberList.partial(include: others.(previous&.include) + (action == :include ? [member] : []),
                              exclude: others.(previous&.exclude) + (action == :exclude ? [config.key_hash(member)] : []),
-                             withdrawn: withdrawn)
+                             withdrawn: withdrawn, pending: pending)
         end
 
-      data = owner.laforge_member_data(config)[DataSource.normalize_source_id(source)] ||= {}
-      data.delete(key)
-      data[key] = attributes if attributes.any?
       owner.send(:write_data_entry, config.name, value, source)
     end
 
-    # The source no longer reports anything for the association: every member it reported is withdrawn
-    def withdraw(owner, config, entry)
-      owner.laforge_member_data(config).delete(entry.source_id)
+    # The source no longer reports anything for the association: every member it reported is withdrawn, and what it said
+    # about members not yet recorded on them is dropped
+    def withdraw(config, entry)
       entry.value = MemberList.partial(withdrawn: MemberList.new(entry.value).reported_keys(config))
     end
 
@@ -84,19 +84,17 @@ module LaForge
 
       existing = config.identified_members_of(owner)
       included, undecided = resolve(config, reports, existing)
-      data = owner.laforge_member_data(config)
+      pending = pending_by_key(config, reports)
 
       described = []
       records = included.filter_map do |member|
         key = config.key_of(member)
-        attributes = member_attributes(data, key)
-        record = existing.delete(key) || build(owner, config, config.key_hash(member), described: attributes.any?)
+        items = pending.fetch(key, [])
+        record = existing.delete(key) || build(owner, config, config.key_hash(member), described: items.any?)
         next unless record
 
-        if attributes.any?
-          attributes.each { |source_id, values| record.record_data_entries(values, source_id) }
-          described << record
-        end
+        recorded = items.map { |source_id, attributes, recorded_at| record.laforge_record_reported(attributes, source_id, recorded_at) }
+        described << record if recorded.any?
         record
       end
       records += undecided.map { |key| existing.delete(key) }
@@ -105,7 +103,7 @@ module LaForge
       end
 
       described.each(&:forge)
-      data.clear
+      clear_pending(config, reports, included.map { |member| config.key_of(member) })
 
       if config.collection?
         existing.each_value { |record| config.remove(record) }
@@ -123,20 +121,20 @@ module LaForge
 
       existing = config.identified_members_of(owner)
       included, undecided = resolve(config, reports, existing)
-      data = owner.laforge_member_data(config)
+      pending = pending_by_key(config, reports)
       keys = included.map { |member| config.key_of(member) } + undecided
 
       changed = included.filter_map do |member|
         record = existing[config.key_of(member)]
-        attributes = member_attributes(data, config.key_of(member))
-        next unless record && attributes.any?
+        items = pending.fetch(config.key_of(member), [])
+        next unless record && items.any?
 
-        changes = record.laforge_forge_diff_with(attributes)
+        changes = record.laforge_forge_diff_with(items)
         config.key_hash(record).merge(changes) if changes.any?
       end
 
       added, skipped = included.reject { |member| existing.key?(config.key_of(member)) }.partition do |member|
-        member_attributes(data, config.key_of(member)).any? || new_member(owner, config, config.key_hash(member)).valid?
+        pending.key?(config.key_of(member)) || new_member(owner, config, config.key_hash(member)).valid?
       end
 
       {
@@ -160,15 +158,19 @@ module LaForge
       members_by_owner = member_records.group_by { |record| record[config.owner_foreign_key] }
 
       owner_ids.each_with_object({}) do |owner_id, result|
-        lists = entries.select { |entry| entry.record_id == owner_id }.to_h { |entry| [entry.source, MemberList.new(entry.value).include] }
+        reports = entries.select { |entry| entry.record_id == owner_id }.to_h { |entry| [entry.source, MemberList.new(entry.value)] }
         rows = (members_by_owner[owner_id] || []).reject { |record| config.blank_key?(config.record_key(record)) }.index_by { |record| config.record_key(record) }
-        sources = (lists.keys + rows.values.flat_map { |record| (member_entries[record.id] || []).map(&:source) }).uniq
+        sources = (reports.keys + rows.values.flat_map { |record| (member_entries[record.id] || []).map(&:source) }).uniq
 
         values = sources.to_h do |source|
-          listed = (lists[source] || []).map { |member| with_member_attributes(config, member, rows[config.key_of(member)], member_entries, source) }
+          report = reports[source]
+          listed = (report&.include || []).map do |member|
+            pending = report.pending.find { |item| config.key_of(item['key']) == config.key_of(member) }
+            with_member_attributes(config, member, rows[config.key_of(member)], member_entries, source, pending)
+          end
           unlisted = rows.values.reject { |record| listed.any? { |member| config.key_of(member) == config.record_key(record) } }
                          .select { |record| (member_entries[record.id] || []).any? { |entry| entry.source == source } }
-                         .map { |record| with_member_attributes(config, config.key_hash(record), record, member_entries, source) }
+                         .map { |record| with_member_attributes(config, config.key_hash(record), record, member_entries, source, nil) }
           [source, listed + unlisted]
         end
 
@@ -194,9 +196,13 @@ module LaForge
 
     private
 
-    # [[source id, attributes], ...] that sources said about the member with the given key, in the order they were recorded
-    def member_attributes(data, key)
-      data.filter_map { |source_id, by_key| [source_id, by_key[key]] if by_key.key?(key) }
+    # { key values => [[source id, attributes, recorded at], ...] } for what the reports say about members besides their
+    # keys and has not yet been recorded on them, oldest first, so the entries are created in the order they were reported
+    def pending_by_key(config, reports)
+      items = reports.flat_map do |entry, report|
+        report.pending.map { |item| [config.key_of(item['key']), [entry.source_id, item['attributes'], Time.iso8601(item['recorded_at'])]] }
+      end
+      items.sort_by { |_, (_, _, recorded_at)| recorded_at }.group_by(&:first).transform_values { |pairs| pairs.map(&:last) }
     end
 
     # A new member built as the association's `build` would, with its scope's attributes. A collection member is added to
@@ -223,6 +229,17 @@ module LaForge
       end
     end
 
+    # Drops from the reports what they say about the included members, which the forge has now recorded on them. The
+    # report's recorded_at is kept, since the source said nothing new.
+    def clear_pending(config, reports, keys)
+      reports.each do |entry, report|
+        remaining = report.pending.reject { |item| keys.include?(config.key_of(item['key'])) }
+        next if remaining.size == report.pending.size
+
+        entry.value = report.with_pending(remaining)
+      end
+    end
+
     # The source's own current report on the owner, if it has one
     def report(owner, config, source)
       entry = owner.send(:filter_data_entries_in_memory, attributes: config.name, sources: source).first
@@ -245,11 +262,17 @@ module LaForge
       [included, undecided]
     end
 
-    # A member's values from a source: its key from the source's list, with the source's entries on the member
-    def with_member_attributes(config, member, record, member_entries, source)
-      return member unless record
-
-      member.merge((member_entries[record.id] || []).select { |entry| entry.source == source }.to_h { |entry| [entry.attribute_name, entry.value] })
+    # A member's values from a source: its key from the source's list, with the source's entries on the member and what
+    # the source's report says about it that has not been recorded on it yet, unless the member has a newer value
+    def with_member_attributes(config, member, record, member_entries, source, pending)
+      entries = record ? (member_entries[record.id] || []).select { |entry| entry.source == source } : []
+      values = entries.to_h { |entry| [entry.attribute_name, entry.value] }
+      if pending
+        recorded_at = Time.iso8601(pending['recorded_at'])
+        newer = entries.select { |entry| entry.recorded_at && entry.recorded_at > recorded_at }.map(&:attribute_name)
+        values.merge!(pending['attributes'].except(*newer))
+      end
+      member.merge(values)
     end
   end
 end

@@ -12,7 +12,12 @@ module LaForge
 
     delegate :precedence, to: :source, prefix: true, allow_nil: true
 
-    # Returns this entry's effective precedence on its record
+    # recorded_at is when a source said the value, which an older report pending on an owner is compared with. Recording
+    # through LaForge sets it; an entry created any other way gets the time it is saved.
+    before_save { self.recorded_at ||= Time.current }
+
+    # The precedence this entry's value is ranked by: the most specific precedence rule for its record, attribute and
+    # source, falling back to the source's global precedence
     def effective_precedence
       record.laforge_precedence_of(self)
     end

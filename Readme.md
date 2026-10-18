@@ -27,6 +27,8 @@ Key features:
 
   Upgrading an existing install? See [Upgrading](#upgrading).
 
+  Upgrading from a version without `recorded_at` on data entries? `rails generate laforge:recorded_at` creates a migration that adds it, filled from `updated_at`.
+
 3. Add laforge to your model.
 
   ```ruby
@@ -365,10 +367,12 @@ A source reports an association's members as a list of hashes. Each hash holds t
     place.forge!
   ```
 
-The report stored on the place holds only the members' keys. Forging the place records each member's attributes on the member itself as that source's entries, exactly as if the source had recorded them on the member directly. It then forges the member, which applies the member's own tracked associations in turn. So:
+The report stored on the place lists the members by key, and keeps what the source says about each one until a forge of the place includes that member. That forge records the member's attributes on the member itself as that source's entries, exactly as if the source had recorded them on the member directly, and removes them from the report. It then forges the member, which applies the member's own tracked associations in turn. So:
 
 - A member's attributes are resolved on the member, with every other source's entries on it, under its precedence rules.
-- Nothing is created for a member that membership excludes, and the attributes reported for it are discarded.
+- Nothing is created for a member that membership excludes. What the source said about it waits in the source's report, and is used if membership later includes it, until the source's next report replaces it.
+- The owner can be saved after recording and forged later: nothing is lost in between.
+- An attribute the member already has a newer value for from the same source, recorded on the member directly, is not overwritten by an older report. An entry's `recorded_at` is when its value was recorded; `updated_at` keeps its usual meaning.
 - A new member is built as the association's own `build` would, with the association scope's attributes.
 - The owner's forge forges only the members it records attributes on. A member edited in some other way is forged on its own.
 - Members appear in the order of the highest precedence list that includes them. If the association's scope orders by an integer column, LaForge writes the order there, so lists cannot set that column.
@@ -381,8 +385,6 @@ A member can also be listed as a saved record, which contributes only its key. T
   ```
 
 Listing an unsaved record raises: save it first, or pass its attributes as a hash.
-
-Saving the owner after recording member attributes but before forging raises `LaForge::NotForged`, since the attributes are applied only by forging the owner. A list of keys alone can be saved and forged later.
 
 ### Partial reports and single-member edits
 
@@ -427,7 +429,7 @@ A `precedence:` given while recording a list ranks that report's say on membersh
 
 ### When a member can't be created
 
-When membership includes a member that does not exist and the forge has no attributes for it, because the source that reported them was outranked when it recorded them, the forge builds the member from its key alone. If that member is invalid, as a tenant without a name is, the forge skips it, logs a warning and lists it under `skipped:` in `forge_diff`, until a source reports it again with its attributes.
+When membership includes a member that does not exist and no report says anything about it besides its key, the forge builds the member from its key. This happens when a source lists a member by key alone, and when a member was removed and destroyed, taking what was recorded on it, and membership later includes it again, such as when a map editor undoes an exclusion. If that member is invalid, as a tenant without a name is, the forge skips it, logs a warning and lists it under `skipped:` in `forge_diff`, until a source reports it with its attributes.
 
 ### When a source stops reporting
 
@@ -442,7 +444,7 @@ A source's attributes on a member stay there when its list drops the member but 
 
 When an import no longer reports a record at all, choose between two things, as for attributes:
 
-- **Retract what the source said:** `withdraw_source` destroys the source's attribute entries and withdraws every member it reported, so the next forge removes those members unless another source includes them.
+- **Retract what the source said:** `withdraw_source` destroys the source's attribute entries and withdraws every member it reported, so the next forge removes those members unless another source includes them. What its reports said about members not yet recorded on them is dropped; what was already recorded on a member stays there until you withdraw the source from that member too.
 - **Stop tracking what the source said:** destroying the source's entries leaves the association as it is. The members the source added stay, as attribute values stay when their entries are destroyed, and are treated from then on as rows no source has reported: left alone by partial reports, removed by a complete list that doesn't include them.
 
   ```ruby
@@ -453,7 +455,7 @@ When an import no longer reports a record at all, choose between two things, as 
 ### Inspecting associations
 
   ```ruby
-    place.source_values(:tenants)        # => { business_directory => [{ 'external_id' => 'T-1', 'name' => 'Corner Café' }], ... }
+    place.source_values(:tenants)        # => { business_directory => [{ 'external_id' => 'T-1', 'name' => 'Corner Café' }], ... }, including what reports hold for members not yet recorded on
     Place.source_values(:tenants, records: places)                  # the same for many records, in a constant number of queries
     place.member_sources(:tenants, external_id: 'T-1')
     # => { membership: map_editor, listed_by: [map_editor, business_directory], excluded_by: [],

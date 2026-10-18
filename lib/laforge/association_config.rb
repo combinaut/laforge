@@ -151,11 +151,13 @@ module LaForge
         if !attributes
           raise ArgumentError, "#{owner_class.name}##{name} members are named here by key only (#{key.join(', ')}), not #{field}"
         elsif (nested = nested_config(field))
-          nested.normalize_members(value) # validated now, recorded on the member when the owner is forged
+          nested.normalize_members(value) # validated now, recorded on the member when a forge of the owner includes it
         elsif field == klass.primary_key || field == owner_foreign_key || field == owner_type_column || !klass.column_names.include?(field)
           raise InvalidAttributeName, "Cannot set #{field} on #{klass.name} members of #{owner_class.name}##{name}"
         elsif field == order_column
           raise ArgumentError, "Cannot set #{field} on #{klass.name} members of #{owner_class.name}##{name}; LaForge writes it from the order of the list"
+        elsif !DataEntry.storable?(value)
+          raise InvalidValue, "Cannot record #{value.class} for #{field} on #{klass.name} members of #{owner_class.name}##{name}; values are stored as JSON, so record a string, number, boolean, date, nil, or an array or hash of those"
         end
       end
 

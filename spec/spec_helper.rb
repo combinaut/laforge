@@ -42,6 +42,7 @@ ActiveRecord::Schema.define(version: 0) do
     t.string :attribute_name, null: false
     t.belongs_to :source, null: false, index: false
     t.json :value
+    t.datetime :recorded_at, precision: 6, null: false
     t.timestamps null: false
   end
 

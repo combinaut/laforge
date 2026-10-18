@@ -13,13 +13,15 @@ require 'spec_helper'
 #   source's report remembers the members it stopped including, which are removed unless another source includes them.
 #   Rows no source has ever reported are left alone.
 # - Member attributes: a member in a report is a hash of its key and what the source says about it, or a saved record.
-#   Forging the owner records the hash's attributes on the member as that source's entries, as if the source had
-#   recorded them on the member directly, and forges the member. Attributes for a member that membership excludes are
-#   discarded, and nothing is created for it. A member's attributes are resolved on the member alone, under its
-#   precedence rules, and stay there when a source's list drops it while another source keeps it.
-# - A member that membership includes but that doesn't exist is created from its key when the forge has no attributes
-#   for it, unless it is invalid with its key alone; then the forge skips it and logs a warning until a source reports
-#   it with its attributes.
+#   The hash's attributes are kept in the report as pending until a forge of the owner includes the member; that forge
+#   records them on the member as that source's entries, as if the source had recorded them on the member directly, and
+#   forges the member. Nothing is created for a member that membership excludes; its attributes wait in the report until
+#   membership includes it, or the source's next report replaces them. A member's attributes are resolved on the member
+#   alone, under its precedence rules, and stay there when a source's list drops it while another source keeps it. An
+#   attribute the member has a newer value for from the same source is not recorded.
+# - A member that membership includes but that doesn't exist is created from its key when no report has attributes for
+#   it, unless it is invalid with its key alone; then the forge skips it and logs a warning until a source reports it
+#   with its attributes.
 #
 # Removal: forge has exactly the effect of assigning the resolved collection to the association, nothing more.
 # Destroying records is otherwise out of scope. Every place a row is deleted, noted for later consideration:
@@ -161,38 +163,34 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([cafe, bakery])
     end
 
-    it "creates a join row from its key when a lower-precedence source's list takes over, and its columns with that source's next report", capability: 'C46' do
+    it "creates a join row with its columns when a lower-precedence source's list takes over", capability: 'C46' do
       place.record_data_entries({ reported_parcel_links: [parcel_link(lot_14, occupies, active: false)] }, low)
       place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies)] }, high)
       place.forge!
+      expect(parcel_link_row(place, lot_14, occupies)).to be_nil
 
       place.data_entries.with_source(high).with_attribute(:reported_parcel_links).destroy_all
       place.reload.forge!
-      expect(parcel_link_row(place, lot_14, occupies)).to have_attributes(active: true) # the excluded row's columns were discarded
-
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_14, occupies, active: false)] }, low)
-      place.forge!
-      expect(parcel_link_row(place, lot_14, occupies)).to have_attributes(active: false)
+      expect(parcel_link_row(place, lot_14, occupies)).to have_attributes(active: false) # kept in the low report until now
     end
 
-    it "skips an owned record a lower-precedence source's list includes once it takes over, if it is invalid with its key alone, until the source reports it again", capability: 'C47' do
-      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low)
+    it "creates an owned record with the attributes a lower-precedence source's list gave it once that list takes over, and skips one it named by key alone if it is invalid with its key alone", capability: 'C47' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A', opening_hours: week('08:00')), { external_id: 'T-3' }] }, low)
       place.record_data_entries({ tenants: [tenant('T-2', name: 'Harbor Books')] }, high)
       place.forge!
       expect(Tenant.pluck(:external_id)).to eq(['T-2'])
 
       place.data_entries.with_source(high).with_attribute(:tenants).destroy_all
       place.reload
-      expect(place.forge_diff['tenants']).to eq(added: [], removed: [{ 'external_id' => 'T-2' }], changed: [], skipped: [{ 'external_id' => 'T-1' }])
+      expect(place.forge_diff['tenants']).to eq(added: [{ 'external_id' => 'T-1' }], removed: [{ 'external_id' => 'T-2' }], changed: [], skipped: [{ 'external_id' => 'T-3' }])
       log = StringIO.new
       allow(place).to receive(:logger).and_return(Logger.new(log))
       place.forge!
-      expect(place.reload.tenants).to be_empty # noted: T-2 destroyed per `dependent: :destroy`; T-1 skipped
-      expect(log.string).to include(%(LaForge skipped the Tenant with external_id "T-1" in Place #{place.id}'s tenants)).and include("Name can't be blank")
 
-      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low)
-      place.forge!
-      expect(place.reload.tenants.map { |record| [record.external_id, record.name, record.unit] }).to eq([['T-1', 'Corner Café', '1A']])
+      corner_cafe = place.reload.tenants.sole # noted: T-2 destroyed per `dependent: :destroy`
+      expect([corner_cafe.external_id, corner_cafe.name, corner_cafe.unit]).to eq(['T-1', 'Corner Café', '1A'])
+      expect(corner_cafe.opening_hours.pluck(:day, :opens_at)).to eq(week('08:00').map(&:values))
+      expect(log.string).to include(%(LaForge skipped the Tenant with external_id "T-3" in Place #{place.id}'s tenants)).and include("Name can't be blank")
     end
 
     it 'treats an empty list as a value that wins like any other', capability: 'C12' do
@@ -573,14 +571,55 @@ describe 'Association tracking capabilities' do
       expect { place.record_data_entries({ tenants: [Marker.create!(label: 'Pin')] }, low) }.to raise_error(LaForge::InvalidValue, /must be Tenant records/)
     end
 
-    it 'raises when an owner is saved with member attributes recorded but not forged', capability: 'C72' do
+    it 'keeps member attributes in the report until a forge records them, so the owner can be saved and forged later', capability: 'C72' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
-      expect { place.save! }.to raise_error(LaForge::NotForged, /tenants have member attributes recorded but not forged/)
-
-      place.forge!
-      expect(place.reload.tenants.count).to eq(1)
-      place.record_data_entries({ tenants: [{ external_id: 'T-1' }] }, high) # a key alone can be saved and forged later
       place.save!
+      expect(place.data_entries.with_source(low).with_attribute(:tenants).sole.value).to match(
+        'include' => [{ 'external_id' => 'T-1' }],
+        'pending' => [{ 'key' => { 'external_id' => 'T-1' }, 'attributes' => { 'name' => 'Corner Café' }, 'recorded_at' => String }]
+      )
+
+      place.reload.forge!
+      expect(place.reload.tenants.pluck(:external_id, :name)).to eq([['T-1', 'Corner Café']])
+      expect(place.data_entries.with_source(low).with_attribute(:tenants).sole.value).to eq([{ 'external_id' => 'T-1' }])
+    end
+
+    it 'keeps what a report says about a member while membership excludes it, until the source reports it again or is withdrawn', capability: 'C78' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Harbor Books')] }, low)
+      place.record_data_entries({ tenants: [tenant('T-2', name: 'Harbor Books')] }, high)
+      place.forge!
+      pending = -> { LaForge::MemberList.new(place.reload.data_entries.with_source(low).with_attribute(:tenants).sole.value).pending }
+      expect(pending.().map { |item| item['key'] }).to eq([{ 'external_id' => 'T-1' }]) # T-2's attributes are on T-2 now
+
+      place.include_association_member(:tenants, tenant('T-1', name: 'Corner Café Ltd'), low)
+      place.save!
+      expect(pending.().map { |item| item['attributes'] }).to eq([{ 'name' => 'Corner Café Ltd' }])
+
+      place.record_data_entries({ tenants: [{ external_id: 'T-1' }, { external_id: 'T-2' }] }, low) # its next report says nothing about T-1 besides its key
+      place.save!
+      expect(pending.()).to be_empty
+
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
+      place.save!
+      place.withdraw_source(low)
+      expect(pending.()).to be_empty
+    end
+
+    it 'does not let what an older report says about a member undo a newer value from the same source', capability: 'C79' do
+      travel_to(Time.utc(2026, 1, 1)) do
+        place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low)
+        place.record_data_entries({ tenants: [] }, high)
+        place.forge!
+      end
+
+      travel_to(Time.utc(2026, 2, 1)) do # the tenant is created another way, and the same source names it directly
+        corner_cafe = place.tenants.create!(external_id: 'T-1', name: 'Corner Café')
+        corner_cafe.forge! { corner_cafe.record_data_entries({ name: 'Corner Café & Co' }, low) }
+      end
+
+      place.data_entries.with_source(high).with_attribute(:tenants).destroy_all
+      place.reload.forge!
+      expect(place.reload.tenants.pluck(:name, :unit)).to eq([['Corner Café & Co', '1A']])
     end
 
     it 'raises for a member listed twice, and for rows sharing a key, rather than choosing one', capability: 'C73' do
