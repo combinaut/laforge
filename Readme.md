@@ -358,7 +358,7 @@ Track the join association, not the `has_many :through` itself. `has_and_belongs
 
 ### Recording a source's members
 
-A source reports an association's members as a list of hashes. Each hash holds the member's key and whatever the source says about the member, including the member's own tracked associations. By default the list is complete: the source says these are all the members, which excludes every member it doesn't list. `mode:` says otherwise: `:partial` for the members a source knows about (see [Partial reports](#partial-reports)), and `:edit` for changes to the members named (see [Edits](#edits)).
+A source reports an association's members as a list of hashes. Each hash holds the member's key and whatever the source says about the member, including the member's own tracked associations. By default the list is complete: the source says these are all the members, which excludes every other member that a report has named. Rows no report has named are left alone (see [How membership is decided](#how-membership-is-decided)). `mode:` says otherwise: `:partial` for the members a source knows about (see [Partial reports](#partial-reports)), and `:edit` for changes to the members named (see [Edits](#edits)).
 
   ```ruby
     # A business directory run. The importer finds the tenants it reported before by its own means, and names them by id.
@@ -506,7 +506,11 @@ Excluding a member keyed by primary key without a `tombstone_matcher` raises `Ar
 
 Membership is decided member by member. The highest precedence report with an opinion on a member decides it: a complete list has an opinion on every member, and a partial report only on the members it names. So a complete list from a higher precedence source excludes members that lower partial reports add, and a source that only adds members needs to rank above the complete lists it adds to.
 
-Rows that no source has ever reported, such as ones created before an association was tracked, are left alone by partial reports. A complete list excludes them like any other member it doesn't list.
+**Rows no report has named are left alone,** by complete lists as well as partial reports. LaForge cannot tell a row created before an association was tracked from one created outside LaForge since, so it removes neither: a complete list only excludes members that some report has named, by its key, in an include, exclude or withdrawal.
+
+- **Adopting LaForge on an existing model needs no backfill.** An importer's first complete report names the rows it finds, by `id`, and from then on a complete list that stops naming one removes it. Rows that no feed mentions stay until someone removes them explicitly, such as an editor's exclusion.
+- **A row nobody reports stays,** such as one added by hand outside LaForge, until a source names it.
+- **Destroying a report forgets what it named.** Its members are then rows no report has named, and are left alone. To retract what a source said, so that its members are removed unless another source includes them, withdraw it instead (see [When a source stops reporting](#when-a-source-stops-reporting)).
 
 A `precedence:` given while recording a list ranks that report's say on membership only. The attributes in the list are recorded at the source's usual precedence. To make a source authoritative for a member attribute, give it a model-wide or per-record precedence on the member's model:
 
@@ -539,7 +543,7 @@ A source that records on a member directly, and also reports a complete list on 
 When an import no longer reports a record at all, choose between two things, as for attributes:
 
 - **Retract what the source said:** `withdraw_source` destroys the source's attribute entries and withdraws every member it reported, so the next forge removes those members unless another source includes them. What its reports said about members not yet recorded on them is dropped, and the next forge withdraws the source from every member another source keeps, as above.
-- **Stop tracking what the source said:** destroying the source's entries leaves the association as it is. The members the source added stay, as attribute values stay when their entries are destroyed, and are treated from then on as rows no source has reported: left alone by partial reports, removed by a complete list that doesn't include them.
+- **Stop tracking what the source said:** destroying the source's entries leaves the association as it is. The members the source added stay, as attribute values stay when their entries are destroyed, and are treated from then on as rows no report has named, which every report leaves alone.
 
   ```ruby
     place.withdraw_source(business_registry)
@@ -550,7 +554,7 @@ When an import no longer reports a record at all, choose between two things, as 
 
 Each source's report for an association is one data entry on the owner, named after the association:
 
-- A complete report is stored as an array of member keys, such as `[{ 'id' => 7 }, { 'id' => 9 }]`.
+- A complete report is stored as an array of member keys, such as `[{ 'id' => 7 }, { 'id' => 9 }]`, or as `{ 'include' => [...], 'withdrawn' => [...] }` while it remembers members it used to include.
 - A partial report is stored as `{ 'partial' => true, 'include' => [...], 'exclude' => [...], 'withdrawn' => [...] }`, with `'tombstones' => [...]` when it has excluded members whose rows are gone; they are excluded by `{ 'tombstone' => '<token>' }`. `withdrawn` holds the keys of members the source used to include, until the next forge has acted on them; see below.
 - What a source said about a member besides its key waits under `'pending'`, with when it was said, until a forge records it on the member. A complete report with anything pending is stored as `{ 'include' => [...], 'pending' => [...] }`.
 - A new member is keyed `{ 'new' => '<placeholder>' }` until the forge that creates it is saved.
@@ -568,7 +572,7 @@ Everything else is ordinary data entries on the members themselves. A forge of t
 
 Nothing is written until the owner is saved. Once it is, the reports name new members by their ids, and the entries step 4 withdrew are destroyed.
 
-The withdrawn keys exist because LaForge leaves alone rows that no source has reported. A member that a partial report stops including, or that `withdraw_source` withdraws, would otherwise look like such a row, and stay. The withdrawn keys mark it for one forge, which removes it unless another source includes it, and withdraws the source from it if it is kept. Then they go.
+The withdrawn keys exist because LaForge leaves alone rows that no report has named. A member that a report stops naming, or that `withdraw_source` withdraws, would otherwise look like such a row, and stay. The withdrawn keys mark it for one forge, which removes it unless another source includes it, and withdraws the source from it if it is kept. Then they go.
 
 ### Inspecting associations
 

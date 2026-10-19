@@ -17,8 +17,8 @@ module LaForge
       config.reflection.autosave = true
     end
 
-    # A complete report replaces the source's previous one. A partial report does too, and withdraws the members the
-    # source reported before but no longer includes or excludes.
+    # A report replaces the source's previous one, and withdraws the members the source included before and no longer
+    # names, so the next forge removes them unless another source includes them.
     def record(owner, config, members, source, precedence:, partial: false, recorded_at: Time.current)
       raise ArgumentError, "#{owner.class.name}##{config.name} is a has_one, which takes a complete report" if partial && !config.collection?
 
@@ -35,16 +35,16 @@ module LaForge
       config.assert_references_exist!(owner, keys)
       pending = included.map { |key_hash, attributes| MemberList.pending_item(key_hash, attributes, recorded_at) }
 
+      reported = (keys + excluded).map { |member| config.key_of(member) }
+      previous = report(owner, config, source)
+      withdrawn = previous ? (previous.include + previous.withdrawn).map { |member| config.key_hash(member) }.uniq.reject { |member| reported.include?(config.key_of(member)) || config.unsaved?(member) } : []
       value =
         if partial
-          reported = (keys + excluded).map { |member| config.key_of(member) }
-          previous = report(owner, config, source)
-          withdrawn = previous ? (previous.include + previous.withdrawn).map { |member| config.key_hash(member) }.uniq.reject { |member| reported.include?(config.key_of(member)) || config.unsaved?(member) } : []
           # An exclusion whose member is gone outlasts the report, as the source could not name it again
           kept = previous ? previous.exclude.select { |member| config.tombstone?(member) && !reported.include?(config.key_of(member)) } : []
           MemberList.partial(include: keys, exclude: excluded + kept, withdrawn: withdrawn, pending: pending, tombstones: previous&.tombstones || [])
         else
-          MemberList.value(include: keys, pending: pending)
+          MemberList.value(include: keys, withdrawn: withdrawn, pending: pending)
         end
 
       owner.send(:write_data_entry, config.name, value, source, precedence: precedence, recorded_at: recorded_at)
@@ -78,7 +78,9 @@ module LaForge
 
       value =
         if previous && !previous.partial?
-          MemberList.value(include: others.(previous.include) + (action == :include ? [member] : []), pending: pending)
+          withdrawn = others.(previous.withdrawn)
+          withdrawn << config.key_hash(member) if action != :include && previous.decision(config, key) == :include
+          MemberList.value(include: others.(previous.include) + (action == :include ? [member] : []), withdrawn: withdrawn, pending: pending)
         else
           withdrawn = others.(previous&.withdrawn)
           withdrawn << config.key_hash(member) if action == :forget && previous&.decision(config, key) == :include
@@ -446,12 +448,14 @@ module LaForge
         next if entry.marked_for_destruction?
 
         report = MemberList.new(entry.value)
-        next unless report.partial? && report.withdrawn.any?
+        next unless report.withdrawn.any?
 
-        if report.include.empty? && report.exclude.empty? && report.pending.empty?
+        if !report.partial?
+          entry.value = MemberList.value(include: report.include, pending: report.pending) # an empty complete list still says something
+        elsif report.include.empty? && report.exclude.empty? && report.pending.empty?
           entry.mark_for_destruction
         else
-          entry.value = MemberList.partial(include: report.include, exclude: report.exclude, pending: report.pending)
+          entry.value = MemberList.partial(include: report.include, exclude: report.exclude, pending: report.pending, tombstones: report.tombstones)
         end
       end
     end
@@ -463,16 +467,18 @@ module LaForge
     end
 
     # The member hashes the reports include, in order (the highest-precedence report's order first), and the keys of
-    # existing rows that no report has an opinion on and none withdrew, which are left as they are
+    # existing rows that are left as they are: rows no report has ever named, such as ones that existed before the
+    # association was tracked or were created outside LaForge, and rows no report has an opinion on and none withdrew
     def resolve(config, reports, existing)
       decision = ->(key) { reports.lazy.filter_map { |_, report| report.decision(config, key) }.first }
+      named = reports.flat_map { |_, report| report.reported_keys(config) }.map { |member| config.key_of(member) }.to_set
 
       candidates = reports.flat_map { |_, report| report.include }.uniq { |member| config.key_of(member) }
       included = config.drop_dangling(candidates.select { |member| decision.(config.key_of(member)) == :include })
       included_keys = included.map { |member| config.key_of(member) }
 
       undecided = existing.keys.reject do |key|
-        included_keys.include?(key) || decision.(key) || reports.any? { |_, report| report.withdrew?(config, key) }
+        included_keys.include?(key) || (named.include?(key) && (decision.(key) || reports.any? { |_, report| report.withdrew?(config, key) }))
       end
 
       [included, undecided]

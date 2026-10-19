@@ -11,10 +11,12 @@ require 'spec_helper'
 #   (members it includes or excludes). A report names members by key: the records a join row references, `key:` columns,
 #   or else the primary key, where a member named without an id is new and named by a placeholder until it is created
 #   and the owner saved. An id must be one of the owner's members. An explicitly excluded member keyed by id is destroyed,
-#   and its exclusion keeps a tombstone, which `tombstone_matcher:` recognises in what sources report later. Membership is decided per member by the
-#   highest-precedence report with an opinion on it; a complete list excludes every member it doesn't list. A partial
-#   source's report remembers the members it stopped including, which are removed unless another source includes them.
-#   Rows no source has ever reported are left alone.
+#   and its exclusion keeps a tombstone, which `tombstone_matcher:` recognises in what sources report later.
+#   Membership is decided per member by the highest-precedence report with an opinion on it; a complete list excludes
+#   every member some report named that it doesn't list. A report remembers the members it stopped including, which
+#   are removed unless another source includes them. Rows no report has named, such as ones from before the association
+#   was tracked, are left alone by every report, and destroying a report forgets what it named; withdrawing a source
+#   retracts it.
 # - Member attributes: a member in a report is a hash of its key and what the source says about it, or a saved record.
 #   The hash's attributes are kept in the report as pending until a forge of the owner includes the member; that forge
 #   records them on the member as that source's entries, as if the source had recorded them on the member directly, and
@@ -159,18 +161,21 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([bakery])
     end
 
-    it "falls back to the next source's list when the winning source's entry is removed", capability: 'C08' do
+    it "falls back to the next source's list when the winning source is withdrawn, and keeps the members only it named when its entry is destroyed", capability: 'C08' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
       place.record_data_entries({ place_categories: categories(florist) }, high)
       place.forge!
 
-      # Destroyed rather than marked, as removing a map editor's override does: a marked entry forges as an
-      # empty value (C38), a missing one falls back
-      place.data_entries.with_source(high).with_attribute(:place_categories).destroy_all
+      place.withdraw_source(high)
+      place.forge!
+      expect(categories_of(place)).to eq([cafe, bakery])
+
+      place.record_data_entries({ place_categories: categories(florist) }, high)
+      place.forge!
+      place.data_entries.with_source(high).with_attribute(:place_categories).destroy_all # stops tracking what high said
       place.data_entries.reset
       place.forge!
-
-      expect(categories_of(place)).to eq([cafe, bakery])
+      expect(categories_of(place)).to eq([cafe, bakery, florist]) # no report names florist, so it is left alone, like a row from before tracking
     end
 
     it "creates a join row with its columns when a lower-precedence source's list takes over", capability: 'C46' do
@@ -192,7 +197,7 @@ describe 'Association tracking capabilities' do
       expect(Tenant.pluck(:external_id)).to eq(['T-2']) # noted: T-3 destroyed per `dependent: :destroy`, as high's list leaves it out
       harbor_maps = Tenant.find_by!(external_id: 'T-2')
 
-      place.data_entries.with_source(high).with_attribute(:tenants).destroy_all
+      place.withdraw_source(high)
       place.reload
       expect(place.forge_diff['tenants']).to eq(
         added: [{ 'external_id' => 'T-1', 'name' => 'Corner Café', 'unit' => '1A', 'opening_hours' => week('08:00').map(&:stringify_keys) }],
@@ -603,18 +608,23 @@ describe 'Association tracking capabilities' do
       expect(place.member_sources(:tenants, id: corner_cafe.id)[:listed_by] - [low]).to eq([top])
     end
 
-    it 'leaves rows added another way alone for partial reports, and removes them when a complete list leaves them out', capability: 'C69' do
-      added_by_hand = place.tenants.create!(name: 'Added By Hand')
-
-      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low, mode: :partial)
+    it 'leaves rows no report has named alone, even when a complete list leaves them out, and removes a member a complete list stops naming', capability: 'C69' do
+      added_by_hand = place.tenants.create!(name: 'Added By Hand') # as rows from before the association was tracked are
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Harbor Books')] }, low)
       expect(place.forge_diff['tenants']).to include(removed: [])
       place.forge!
-      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Added By Hand', 'Corner Café')
+      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Added By Hand', 'Corner Café', 'Harbor Books')
 
-      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, high)
-      expect(place.forge_diff['tenants']).to include(removed: [{ 'id' => added_by_hand.id }])
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
+      expect(place.forge_diff['tenants']).to include(removed: [{ 'id' => Tenant.find_by!(external_id: 'T-2').id }])
       place.forge!
-      expect(place.reload.tenants.pluck(:name)).to eq(['Corner Café']) # noted: destroyed per `dependent: :destroy`
+      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Added By Hand', 'Corner Café') # noted: Harbor Books destroyed per `dependent: :destroy`
+
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), { id: added_by_hand.id }] }, low)
+      place.forge!
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
+      place.forge!
+      expect(place.reload.tenants.pluck(:name)).to eq(['Corner Café']) # once a report names a row, a complete list can remove it
     end
 
     it "records a member's attributes on the member as the source's entries, keeping only its key in the list", capability: 'C63' do

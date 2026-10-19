@@ -147,7 +147,8 @@ module LaForge
 
     # Record several pieces of information from the same source.
     # `mode:` says what a tracked association's value is:
-    # - :complete (the default): the source's whole member list, which excludes every member it doesn't list.
+    # - :complete (the default): the source's whole member list, which excludes every other member some report has named.
+    #   Rows no report has named are left alone.
     # - :partial: the members this source knows about, as a list of members it includes or as
     #   { include: [...], exclude: [...] }. Members other sources report are left to them, and it replaces the source's
     #   previous report, so a member it no longer includes is withdrawn.

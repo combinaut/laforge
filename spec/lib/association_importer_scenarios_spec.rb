@@ -41,11 +41,10 @@ describe 'Association assignment by importers' do
     record
   end
 
-  # An orphan sweep: drop the source's entries without forging; close the record only when no other source has entries
-  # on it or reports it in a list
+  # An orphan sweep: withdraw the source without forging; close the record only when no other source has entries on it or
+  # reports it in a list
   def sweep(record, source)
-    record.data_entries.with_source(source).destroy_all
-    record.data_entries.reset
+    record.withdraw_source(source)
     record.update!(status: 'closed') if record.has_attribute?(:status) && (record.data_source_names - [source.name]).empty?
   end
 
@@ -138,8 +137,7 @@ describe 'Association assignment by importers' do
     it "reverts to the importer's latest list when the map editor's override is removed" do
       import(place.reload, cadastre, place_categories: categories(cafe, bakery, florist))
 
-      place.data_entries.with_source(map_editor).with_attribute(:place_categories).destroy_all
-      place.data_entries.reset
+      place.withdraw_source(map_editor)
       place.forge!(attributes: :place_categories)
 
       expect(categories_of(place)).to eq([cafe, bakery, florist])
