@@ -326,14 +326,14 @@ describe 'Association assignment by importers' do
   describe 'an importer that reports only the tenants it knows about' do
     before do
       import(place, business_directory, tenants: [tenant('T-1')])
-      place.reload.record_data_entries({ tenants: [tenant('T-9', unit: '9Z')] }, business_registry, partial: true)
+      place.reload.record_data_entries({ tenants: [tenant('T-9', unit: '9Z')] }, business_registry, mode: :partial)
       place.forge!
     end
 
     it 'adds its tenants alongside the full list, and removes them when its next run no longer includes them' do
       expect(tenants_of(place)).to eq([['T-1', 'Tenant T-1', nil], ['T-9', 'Tenant T-9', '9Z']])
 
-      place.reload.record_data_entries({ tenants: [] }, business_registry, partial: true)
+      place.reload.record_data_entries({ tenants: [] }, business_registry, mode: :partial)
       place.forge!
 
       expect(tenants_of(place).map(&:first)).to eq(%w[T-1])

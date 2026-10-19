@@ -146,24 +146,28 @@ module LaForge
     end
 
     # Record several pieces of information from the same source.
-    # A tracked association's value is the source's whole member list. Pass `partial: true` when the source reports only
-    # some members: the value is then the members it includes, or { include: [...], exclude: [...] }, and members other
-    # sources report are left to them. Pass `edit: true` to change only the members named, as an editor does: the value
-    # is then the members to include, or { include: [...], exclude: [...], forget: [...] }, the rest of the source's
-    # report is kept, and the members' nested lists are edits too. Edits also accept the shapes a Rails form submits:
-    # `*_attributes` for a tracked association, and `*_ids` (see Payload).
+    # `mode:` says what a tracked association's value is:
+    # - :complete (the default): the source's whole member list, which excludes every member it doesn't list.
+    # - :partial: the members this source knows about, as a list of members it includes or as
+    #   { include: [...], exclude: [...] }. Members other sources report are left to them, and it replaces the source's
+    #   previous report, so a member it no longer includes is withdrawn.
+    # - :edit: changes to the members named, as an editor makes them: a list of members to include, or
+    #   { include: [...], exclude: [...], forget: [...] }. The rest of the source's report is kept, the members' nested
+    #   lists are edits too, and the shapes a Rails form submits are accepted: `*_attributes` for a tracked association,
+    #   and `*_ids` (see Payload).
     # A member is a hash of its key and what the source says about it, or a saved record; where members are keyed by
     # primary key, a hash without an id is a new member. When the owner is forged, the hash's attributes are recorded on
     # the member as the source's entries.
-    def record_data_entries(attributes_hash, source, precedence: NOT_GIVEN, partial: false, edit: false)
-      raise ArgumentError, 'Pass partial: true or edit: true, not both' if partial && edit
+    def record_data_entries(attributes_hash, source, precedence: NOT_GIVEN, mode: :complete)
+      raise ArgumentError, "Unknown mode #{mode.inspect}; pass :complete, :partial or :edit" unless %i[complete partial edit].include?(mode)
 
+      edit = mode == :edit
       Payload.translate(self.class, attributes_hash, (self unless new_record?), edit: edit).each do |attribute_name, value|
         if edit && (config = laforged_associations[attribute_name.to_s])
           AssociationTracking.edit(self, config, value, source, precedence: precedence)
         elsif (config = laforged_associations[attribute_name.to_s])
           options = { precedence: precedence }
-          options[:partial] = true if partial
+          options[:partial] = true if mode == :partial
           AssociationTracking.record(self, config, value, source, **options)
         else
           record_data_entry(attribute_name, value, source, precedence: precedence)

@@ -242,8 +242,8 @@ describe 'Association tracking capabilities' do
 
   describe 'partial reports' do
     it "keeps every member that partial reports include, the highest-precedence report's members first", capability: 'C49' do
-      place.record_data_entries({ place_categories: categories(cafe) }, low, partial: true)
-      place.record_data_entries({ place_categories: categories(bakery) }, high, partial: true)
+      place.record_data_entries({ place_categories: categories(cafe) }, low, mode: :partial)
+      place.record_data_entries({ place_categories: categories(bakery) }, high, mode: :partial)
       place.forge!
 
       expect(categories_of(place)).to eq([bakery, cafe])
@@ -261,20 +261,20 @@ describe 'Association tracking capabilities' do
     end
 
     it 'removes a member a partial source stops including, unless another source still includes it', capability: 'C51' do
-      place.record_data_entries({ place_categories: categories(cafe, bakery) }, low, partial: true)
-      place.record_data_entries({ place_categories: categories(bakery) }, high, partial: true)
+      place.record_data_entries({ place_categories: categories(cafe, bakery) }, low, mode: :partial)
+      place.record_data_entries({ place_categories: categories(bakery) }, high, mode: :partial)
       place.forge!
 
-      place.record_data_entries({ place_categories: [] }, low, partial: true)
+      place.record_data_entries({ place_categories: [] }, low, mode: :partial)
       place.forge!
 
       expect(categories_of(place)).to eq([bakery])
     end
 
     it 'lets a complete list exclude what lower partial reports include, but not what higher ones include', capability: 'C52' do
-      place.record_data_entries({ place_categories: categories(florist) }, low, partial: true)
+      place.record_data_entries({ place_categories: categories(florist) }, low, mode: :partial)
       place.record_data_entries({ place_categories: categories(cafe) }, high)
-      place.record_data_entries({ place_categories: categories(bookstore) }, top, partial: true)
+      place.record_data_entries({ place_categories: categories(bookstore) }, top, mode: :partial)
       place.forge!
 
       expect(categories_of(place)).to eq([bookstore, cafe])
@@ -282,15 +282,15 @@ describe 'Association tracking capabilities' do
 
     it 'leaves rows that no source has reported alone when only partial reports exist', capability: 'C53' do
       place.place_categories.create!(category: bookstore)
-      place.record_data_entries({ place_categories: categories(cafe) }, low, partial: true)
+      place.record_data_entries({ place_categories: categories(cafe) }, low, mode: :partial)
       place.forge!
 
       expect(categories_of(place)).to eq([cafe, bookstore])
     end
 
     it 'withdraws everything a source reported when it stops reporting the record, keeping what others include', capability: 'C54' do
-      place.record_data_entries({ name: 'From Low', tenants: [tenant('T-1', name: 'Corner Café')] }, low, partial: true)
-      place.record_data_entries({ tenants: [tenant('T-2', name: 'Harbor Books')] }, high, partial: true)
+      place.record_data_entries({ name: 'From Low', tenants: [tenant('T-1', name: 'Corner Café')] }, low, mode: :partial)
+      place.record_data_entries({ tenants: [tenant('T-2', name: 'Harbor Books')] }, high, mode: :partial)
       place.forge!
 
       place.withdraw_source(low)
@@ -311,7 +311,7 @@ describe 'Association tracking capabilities' do
 
     it 'includes some members and excludes others in one partial report', capability: 'C75' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
-      place.record_data_entries({ place_categories: { include: categories(florist), exclude: categories(cafe) } }, high, partial: true)
+      place.record_data_entries({ place_categories: { include: categories(florist), exclude: categories(cafe) } }, high, mode: :partial)
       place.forge!
 
       expect(categories_of(place)).to eq([florist, bakery])
@@ -322,23 +322,23 @@ describe 'Association tracking capabilities' do
       place.forge!
       corner_cafe = place.tenants.sole
 
-      place.record_data_entries({ tenants: { include: [{ id: corner_cafe.id, opening_hours: { include: [{ day: 3, opens_at: '10:00' }], exclude: [{ day: 2 }] } }] } }, top, edit: true)
-      place.record_data_entries({ tenants: [{ id: corner_cafe.id, unit: '9Z' }, { name: 'Harbor Books' }] }, top, edit: true) # a second edit before forging
+      place.record_data_entries({ tenants: { include: [{ id: corner_cafe.id, opening_hours: { include: [{ day: 3, opens_at: '10:00' }], exclude: [{ day: 2 }] } }] } }, top, mode: :edit)
+      place.record_data_entries({ tenants: [{ id: corner_cafe.id, unit: '9Z' }, { name: 'Harbor Books' }] }, top, mode: :edit) # a second edit before forging
       place.forge!
 
       expect(corner_cafe.reload).to have_attributes(name: 'Corner Café', unit: '9Z')
       expect(corner_cafe.opening_hours.pluck(:day, :opens_at)).to eq([[1, '08:00'], [3, '10:00']])
       expect(place.tenants.pluck(:name)).to contain_exactly('Corner Café', 'Harbor Books')
 
-      place.record_data_entries({ tenants: { exclude: [{ id: corner_cafe.id }] } }, top, edit: true)
+      place.record_data_entries({ tenants: { exclude: [{ id: corner_cafe.id }] } }, top, mode: :edit)
       place.forge!
       expect(place.reload.tenants.pluck(:name)).to eq(['Harbor Books'])
     end
 
-    it 'rejects edits that are not a list or { include:, exclude:, forget: }, and edit: with partial:', capability: 'C88' do
-      expect { place.record_data_entries({ tenants: { add: [] } }, top, edit: true) }.to raise_error(ArgumentError, /edits are a list of members, or \{ include:, exclude:, forget: \}, not add/)
-      expect { place.record_data_entries({ tenants: [{ name: 'Corner Café', opening_hours: { add: [] } }] }, top, edit: true) }.to raise_error(ArgumentError, /opening_hours edits are/)
-      expect { place.record_data_entries({ tenants: [] }, top, edit: true, partial: true) }.to raise_error(ArgumentError, /not both/)
+    it 'rejects edits that are not a list or { include:, exclude:, forget: }, and unknown modes', capability: 'C88' do
+      expect { place.record_data_entries({ tenants: { add: [] } }, top, mode: :edit) }.to raise_error(ArgumentError, /edits are a list of members, or \{ include:, exclude:, forget: \}, not add/)
+      expect { place.record_data_entries({ tenants: [{ name: 'Corner Café', opening_hours: { add: [] } }] }, top, mode: :edit) }.to raise_error(ArgumentError, /opening_hours edits are/)
+      expect { place.record_data_entries({ tenants: [] }, top, mode: :edits) }.to raise_error(ArgumentError, /Unknown mode :edits; pass :complete, :partial or :edit/)
     end
 
     it 'reports which sources include and which exclude a member', capability: 'C56' do
@@ -414,12 +414,12 @@ describe 'Association tracking capabilities' do
     it "withdraws a source's attributes from a member when its partial report stops including it while another source keeps it", capability: 'C62' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low)
       place.forge!
-      place.record_data_entries({ tenants: [tenant('T-1', unit: '2B')] }, high, partial: true)
+      place.record_data_entries({ tenants: [tenant('T-1', unit: '2B')] }, high, mode: :partial)
       place.forge!
       corner_cafe = place.reload.tenants.sole
       expect(corner_cafe.unit).to eq('2B')
 
-      place.record_data_entries({ tenants: [] }, high, partial: true)
+      place.record_data_entries({ tenants: [] }, high, mode: :partial)
       place.forge!
 
       expect(corner_cafe.reload.unit).to eq('1A')
@@ -605,7 +605,7 @@ describe 'Association tracking capabilities' do
     it 'leaves rows added another way alone for partial reports, and removes them when a complete list leaves them out', capability: 'C69' do
       added_by_hand = place.tenants.create!(name: 'Added By Hand')
 
-      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low, partial: true)
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low, mode: :partial)
       expect(place.forge_diff['tenants']).to include(removed: [])
       place.forge!
       expect(place.reload.tenants.pluck(:name)).to contain_exactly('Added By Hand', 'Corner Café')
@@ -770,7 +770,7 @@ describe 'Association tracking capabilities' do
           '2' => { 'name' => 'Florist', '_destroy' => '0' }
         }
       ).permit!
-      place.record_data_entries(params, top, edit: true)
+      place.record_data_entries(params, top, mode: :edit)
       place.forge!
 
       expect(place.reload.name).to eq('Harbor Hall')
@@ -783,7 +783,7 @@ describe 'Association tracking capabilities' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
       place.forge!
 
-      place.record_data_entries({ category_ids: ['', cafe.id.to_s, florist.id.to_s] }, top, edit: true)
+      place.record_data_entries({ category_ids: ['', cafe.id.to_s, florist.id.to_s] }, top, mode: :edit)
       place.forge!
       expect(categories_of(place)).to eq([cafe, florist])
 
@@ -792,10 +792,10 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([cafe, florist, bookstore])
     end
 
-    it 'raises for form payloads of associations that are not tracked, and for form payloads without edit: true', capability: 'C91' do
-      expect { place.record_data_entries({ parcel_links_attributes: [{ parcel_id: lot_12.id }] }, top, edit: true) }.to raise_error(LaForge::InvalidAttributeName, /Cannot record Place#parcel_links_attributes: parcel_links is not a tracked association/)
-      expect { place.record_data_entries({ parcel_link_ids: [] }, top, edit: true) }.to raise_error(LaForge::InvalidAttributeName, /Cannot record Place#parcel_link_ids/)
-      expect { place.record_data_entries({ tenants_attributes: [] }, top) }.to raise_error(ArgumentError, /record it with edit: true/)
+    it 'raises for form payloads of associations that are not tracked, and for form payloads in another mode', capability: 'C91' do
+      expect { place.record_data_entries({ parcel_links_attributes: [{ parcel_id: lot_12.id }] }, top, mode: :edit) }.to raise_error(LaForge::InvalidAttributeName, /Cannot record Place#parcel_links_attributes: parcel_links is not a tracked association/)
+      expect { place.record_data_entries({ parcel_link_ids: [] }, top, mode: :edit) }.to raise_error(LaForge::InvalidAttributeName, /Cannot record Place#parcel_link_ids/)
+      expect { place.record_data_entries({ tenants_attributes: [] }, top) }.to raise_error(ArgumentError, /record it with mode: :edit/)
       expect { place.record_data_entries({ tenants: [{ name: 'Florist', opening_hours_attributes: [] }] }, top) }.to raise_error(ArgumentError, /Tenant#opening_hours_attributes describes edits/)
     end
   end
@@ -829,7 +829,7 @@ describe 'Association tracking capabilities' do
 
     it 'rejects more than one member and partial reports', capability: 'C59' do
       expect { place.record_data_entries({ marker: [{}, {}] }, low) }.to raise_error(ArgumentError)
-      expect { place.record_data_entries({ marker: { label: 'A' } }, low, partial: true) }.to raise_error(ArgumentError)
+      expect { place.record_data_entries({ marker: { label: 'A' } }, low, mode: :partial) }.to raise_error(ArgumentError)
     end
 
     it 'creates the member when forging a new owner', capability: 'C60' do

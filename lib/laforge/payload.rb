@@ -1,5 +1,5 @@
 module LaForge
-  # Translates the shapes a Rails form submits into the edits `record_data_entries(..., edit: true)` takes, at every
+  # Translates the shapes a Rails form submits into the edits `record_data_entries(..., mode: :edit)` takes, at every
   # level, so a controller can record its permitted params as they are:
   #
   # - `tenants_attributes`, an array or a hash keyed by index of member hashes, as `accepts_nested_attributes_for` takes,
@@ -59,7 +59,7 @@ module LaForge
     end
 
     def require_edit!(model, field, edit)
-      raise ArgumentError, "#{model.name}##{field} describes edits, as a Rails form submits them; record it with edit: true" unless edit
+      raise ArgumentError, "#{model.name}##{field} describes edits, as a Rails form submits them; record it with mode: :edit" unless edit
     end
 
     def nested_attributes(config, value, owner)

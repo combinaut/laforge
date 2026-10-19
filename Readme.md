@@ -357,7 +357,7 @@ Track the join association, not the `has_many :through` itself. `has_and_belongs
 
 ### Recording a source's members
 
-A source reports an association's members as a list of hashes. Each hash holds the member's key and whatever the source says about the member, including the member's own tracked associations. By default the list is complete: the source says these are all the members, which excludes every member it doesn't list.
+A source reports an association's members as a list of hashes. Each hash holds the member's key and whatever the source says about the member, including the member's own tracked associations. By default the list is complete: the source says these are all the members, which excludes every member it doesn't list. `mode:` says otherwise: `:partial` for the members a source knows about (see [Partial reports](#partial-reports)), and `:edit` for changes to the members named (see [Edits](#edits)).
 
   ```ruby
     # A business directory run. The importer finds the tenants it reported before by its own means, and names them by id.
@@ -396,7 +396,7 @@ A saved record suits a member created or edited on its own:
 
   ```ruby
     tenant = place.tenants.create!(name: 'Harbor Books')
-    place.record_data_entries({ tenants: [tenant] }, map_editor, partial: true)
+    place.record_data_entries({ tenants: [tenant] }, map_editor, mode: :partial)
   ```
 
 Until a forge creates a new member, its source's report names it by a placeholder. Once the owner is saved, the placeholder is replaced by the new row's `id`. Forging again before saving reuses the member already built, rather than building another.
@@ -411,14 +411,14 @@ An `id` must be one of the owner's current members. LaForge does not move a reco
 
 ### Partial reports
 
-A source that knows only some of the members records a partial report. It includes, or excludes, the members it names and leaves the rest to other sources. When its next report no longer includes a member, that member is removed unless another source includes it.
+A source that knows only some of the members records a partial report, with `mode: :partial`. It includes, or excludes, the members it names and leaves the rest to other sources. When its next report no longer includes a member, that member is removed unless another source includes it.
 
   ```ruby
     # A business registry that knows only the businesses it has registered
-    place.record_data_entries({ tenants: [{ id: harbor_books.id, registration_number: 'R-10' }] }, business_registry, partial: true)
+    place.record_data_entries({ tenants: [{ id: harbor_books.id, registration_number: 'R-10' }] }, business_registry, mode: :partial)
 
     # Including some members and excluding others
-    place.record_data_entries({ tenants: { include: [harbor_books], exclude: [corner_cafe] } }, business_registry, partial: true)
+    place.record_data_entries({ tenants: { include: [harbor_books], exclude: [corner_cafe] } }, business_registry, mode: :partial)
 
     # A map editor removing one imported tenant, and later undoing it
     place.exclude_association_member(:tenants, corner_cafe, map_editor)
@@ -430,7 +430,7 @@ A source that knows only some of the members records a partial report. It includ
 
 ### Edits
 
-An editor changes only what it names. `edit: true` applies a payload as single-member edits, at every level: each member listed under `include:` is added to the source's report, with the attributes given, each under `exclude:` is removed even if other sources include it, and each under `forget:` drops the source's opinion on it. A plain list includes each member. The rest of the source's report stays as it is.
+An editor changes only what it names. `mode: :edit` applies a payload as single-member edits, at every level: each member listed under `include:` is added to the source's report, with the attributes given, each under `exclude:` is removed even if other sources include it, and each under `forget:` drops the source's opinion on it. A plain list includes each member. The rest of the source's report stays as it is.
 
   ```ruby
     place.record_data_entries({
@@ -442,7 +442,7 @@ An editor changes only what it names. `edit: true` applies a payload as single-m
         ],
         exclude: [{ id: old_florist.id }]
       }
-    }, map_editor, edit: true)
+    }, map_editor, mode: :edit)
     place.forge!
   ```
 
@@ -458,7 +458,7 @@ Edits also accept the shapes a Rails form submits, at every level, so a controll
     # params[:place] => { name: 'Harbor Hall', category_ids: ['', '3', '7'],
     #                     tenants_attributes: { '0' => { id: '12', unit: '2B', opening_hours_attributes: { '0' => { id: '40', _destroy: '1' } } },
     #                                           '1' => { name: 'Florist' } } }
-    place.record_data_entries(params.require(:place).permit!, map_editor, edit: true)
+    place.record_data_entries(params.require(:place).permit!, map_editor, mode: :edit)
     place.forge!
   ```
 
@@ -466,7 +466,7 @@ Edits also accept the shapes a Rails form submits, at every level, so a controll
 - `category_ids` includes the ids listed and excludes the current members left out, so a member another source adds later, which the form never showed, is not excluded. It edits the tracked association it names, or the tracked join association a `has_many :through` goes through, such as `place_categories` for `categories`.
 - Members keyed by other columns than the primary key, such as opening hours keyed by day, are named by the key of the row their `id` names.
 - Ids may be strings, as forms submit them.
-- `*_attributes` or `*_ids` for an association that is not tracked raise `LaForge::InvalidAttributeName`, rather than being recorded as an attribute LaForge cannot forge. Save such associations outside LaForge. Without `edit: true`, these shapes raise `ArgumentError`, since they describe edits.
+- `*_attributes` or `*_ids` for an association that is not tracked raise `LaForge::InvalidAttributeName`, rather than being recorded as an attribute LaForge cannot forge. Save such associations outside LaForge. In another mode, these shapes raise `ArgumentError`, since they describe edits.
 
 Anything else in the form, such as an association's own metadata stored outside the member, is up to the controller. A has_one takes a complete report, so it can't be edited.
 
