@@ -257,11 +257,11 @@ describe 'Association tracking capabilities' do
 
     it 'lets a higher-precedence source exclude one member that a lower source includes, and forget the exclusion', capability: 'C50' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
-      place.exclude_association_member(:place_categories, { category_id: cafe.id }, top)
+      place.record_data_entries({ place_categories: { exclude: [{ category_id: cafe.id }] } }, top, mode: :edit)
       place.forge!
       expect(categories_of(place)).to eq([bakery])
 
-      place.forget_association_member(:place_categories, { category_id: cafe.id }, top)
+      place.record_data_entries({ place_categories: { forget: [{ category_id: cafe.id }] } }, top, mode: :edit)
       place.forge!
       expect(categories_of(place)).to eq([cafe, bakery])
     end
@@ -308,8 +308,8 @@ describe 'Association tracking capabilities' do
 
     it 'adds members one at a time to a report without replacing the rest of it', capability: 'C55' do
       place.record_data_entries({ place_categories: categories(cafe) }, low)
-      place.include_association_member(:place_categories, { category_id: florist.id }, top)
-      place.include_association_member(:place_categories, { category_id: bakery.id }, top)
+      place.record_data_entries({ place_categories: { include: [{ category_id: florist.id }] } }, top, mode: :edit)
+      place.record_data_entries({ place_categories: { include: [{ category_id: bakery.id }] } }, top, mode: :edit)
       place.forge!
 
       expect(categories_of(place)).to eq([florist, bakery, cafe])
@@ -349,7 +349,7 @@ describe 'Association tracking capabilities' do
 
     it 'reports which sources include and which exclude a member', capability: 'C56' do
       place.record_data_entries({ place_categories: categories(cafe) }, low)
-      place.exclude_association_member(:place_categories, { category_id: cafe.id }, top)
+      place.record_data_entries({ place_categories: { exclude: [{ category_id: cafe.id }] } }, top, mode: :edit)
 
       expect(place.member_sources(:place_categories, category_id: cafe.id)).to include(membership: nil, listed_by: [low], excluded_by: [top])
     end
@@ -437,7 +437,7 @@ describe 'Association tracking capabilities' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A', opening_hours: week('08:00', days: [1]))] }, low)
       place.forge!
       corner_cafe = place.tenants.sole
-      place.include_association_member(:tenants, { id: corner_cafe.id, name: 'Corner Café' }, top)
+      place.record_data_entries({ tenants: { include: [{ id: corner_cafe.id, name: 'Corner Café' }] } }, top, mode: :edit)
       place.forge!
 
       place.record_data_entries({ tenants: [] }, low)
@@ -454,7 +454,7 @@ describe 'Association tracking capabilities' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low)
       place.forge!
       corner_cafe = place.tenants.sole
-      place.include_association_member(:tenants, { id: corner_cafe.id, name: 'Corner Café' }, top)
+      place.record_data_entries({ tenants: { include: [{ id: corner_cafe.id, name: 'Corner Café' }] } }, top, mode: :edit)
       place.forge!
 
       place.withdraw_source(low)
@@ -604,7 +604,7 @@ describe 'Association tracking capabilities' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
       place.forge!
       corner_cafe = place.tenants.first
-      place.include_association_member(:tenants, { id: corner_cafe.id }, top) # listed by key only
+      place.record_data_entries({ tenants: { include: [{ id: corner_cafe.id }] } }, top, mode: :edit) # listed by key only
       place.save!
 
       expect(corner_cafe.data_source_names).to contain_exactly('low')
@@ -712,7 +712,7 @@ describe 'Association tracking capabilities' do
       other_cafe = other.tenants.create!(name: 'Corner Café')
 
       expect { place.record_data_entries({ tenants: [{ id: other_cafe.id, name: 'Corner Café' }] }, low) }.to raise_error(LaForge::InvalidValue, /Tenant #{other_cafe.id} is not one of Place #{place.id}'s tenants. LaForge does not move records between owners/)
-      expect { place.include_association_member(:tenants, other_cafe, low) }.to raise_error(LaForge::InvalidValue, /is not one of Place #{place.id}'s tenants/)
+      expect { place.record_data_entries({ tenants: { include: [other_cafe] } }, low, mode: :edit) }.to raise_error(LaForge::InvalidValue, /is not one of Place #{place.id}'s tenants/)
       expect { Place.new.record_data_entries({ tenants: [{ id: other_cafe.id }] }, low) }.to raise_error(LaForge::InvalidValue, /is not one of Place nil's tenants/)
       expect { place.record_data_entries({ tenants: [{ id: 0 }] }, low) }.to raise_error(LaForge::InvalidValue, /Tenant 0 is not one of/)
     end
@@ -725,7 +725,7 @@ describe 'Association tracking capabilities' do
       pending = -> { LaForge::MemberList.new(place.reload.data_entries.with_source(low).with_attribute(:tenants).sole.value).pending }
       expect(pending.().map { |item| item['attributes'] }).to eq([{ 'external_id' => 'T-1', 'name' => 'Corner Café' }]) # T-2's attributes are on T-2 now
 
-      place.include_association_member(:tenants, { id: harbor_books.id, name: 'Harbor Books Ltd' }, high)
+      place.record_data_entries({ tenants: { include: [{ id: harbor_books.id, name: 'Harbor Books Ltd' }] } }, high, mode: :edit)
       place.save!
       expect(LaForge::MemberList.new(place.reload.data_entries.with_source(high).with_attribute(:tenants).sole.value).pending.map { |item| item['attributes'] }).to eq([{ 'name' => 'Harbor Books Ltd' }])
 
@@ -770,8 +770,8 @@ describe 'Association tracking capabilities' do
     it 'rejects the order column and validates nested lists when recording', capability: 'C74' do
       expect { place.record_data_entries({ place_categories: [{ category_id: cafe.id, position: 3 }] }, low) }.to raise_error(ArgumentError, /LaForge writes it from the order of the list/)
       expect { place.record_data_entries({ tenants: [tenant('T-1', opening_hours: [{ opens_at: '08:00' }])] }, low) }.to raise_error(ArgumentError, /must include their key \(day missing\)/)
-      expect { place.exclude_association_member(:tenants, place.tenants.create!(name: 'Corner Café').attributes.slice('id', 'name'), top) }.to raise_error(ArgumentError, /named here by key only \(id\), not name/)
-      expect { place.exclude_association_member(:tenants, { name: 'Corner Café' }, top) }.to raise_error(ArgumentError, /named here by id, which a new member does not have yet/)
+      expect { place.record_data_entries({ tenants: { exclude: [place.tenants.create!(name: 'Corner Café').attributes.slice('id', 'name')] } }, top, mode: :edit) }.to raise_error(ArgumentError, /named here by key only \(id\), not name/)
+      expect { place.record_data_entries({ tenants: { exclude: [{ name: 'Corner Café' }] } }, top, mode: :edit) }.to raise_error(ArgumentError, /named here by id, which a new member does not have yet/)
     end
   end
 
@@ -824,14 +824,14 @@ describe 'Association tracking capabilities' do
     def exclude_corner_cafe
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Harbor Books')] }, low)
       place.forge!
-      place.exclude_association_member(:tenants, { id: Tenant.find_by!(name: 'Corner Café').id }, top)
+      place.record_data_entries({ tenants: { exclude: [{ id: Tenant.find_by!(name: 'Corner Café').id }] } }, top, mode: :edit)
       place.forge!
     end
 
     it 'destroys an excluded member and keeps a tombstone that keeps it out when a lower source reports it again', capability: 'C92' do
       exclude_corner_cafe
       expect(Tenant.pluck(:name)).to eq(['Harbor Books'])
-      tombstone = place.reload.laforge_tombstones(:tenants).sole
+      tombstone = place.reload.data_entries.tombstones(:tenants).sole
       expect([tombstone.source, tombstone.attributes['name'], tombstone.excluded_at]).to match([top, 'Corner Café', be_within(1.minute).of(Time.current)])
 
       place.record_data_entries({ tenants: [{ name: 'Corner Café', unit: '1A' }, tenant('T-2', name: 'Harbor Books')] }, low)
@@ -845,20 +845,20 @@ describe 'Association tracking capabilities' do
       exclude_corner_cafe
       place.reload.record_data_entries({ tenants: [tenant('T-2')] }, top, mode: :partial)
       place.forge!
-      expect(place.reload.laforge_tombstones(:tenants).size).to eq(1)
+      expect(place.reload.data_entries.tombstones(:tenants).size).to eq(1)
 
       place.withdraw_source(top)
-      expect(place.reload.laforge_tombstones(:tenants)).to be_empty
+      expect(place.reload.data_entries.tombstones(:tenants)).to be_empty
     end
 
     it 'can only be forgotten, by the tombstone or its to_h', capability: 'C94' do
       exclude_corner_cafe
-      tombstone = place.reload.laforge_tombstones(:tenants).sole
+      tombstone = place.reload.data_entries.tombstones(:tenants).sole
 
-      expect { place.include_association_member(:tenants, tombstone, top) }.to raise_error(ArgumentError, /can only be forgotten, which lets sources add the member again/)
-      place.forget_association_member(:tenants, tombstone.to_h, top)
+      expect { place.record_data_entries({ tenants: { include: [tombstone] } }, top, mode: :edit) }.to raise_error(ArgumentError, /can only be forgotten, which lets sources add the member again/)
+      place.record_data_entries({ tenants: { forget: [tombstone.to_h] } }, top, mode: :edit)
       place.save!
-      expect(place.reload.laforge_tombstones(:tenants)).to be_empty
+      expect(place.reload.data_entries.tombstones(:tenants)).to be_empty
     end
 
     it 'raises, saying what to declare, for an exclusion that could not outlast its row', capability: 'C95' do
@@ -870,7 +870,7 @@ describe 'Association tracking capabilities' do
       corner_cafe = unmatched_place.tenants.create!(name: 'Corner Café')
 
       message = /Cannot exclude Tenant #{corner_cafe.id} from UnmatchedPlace #{unmatched_place.id}'s tenants: excluding it destroys it.*Declare tombstone_matcher: on UnmatchedPlace's tenants.*tombstone_matcher: ->\(tenant, tombstones\)/
-      expect { unmatched_place.exclude_association_member(:tenants, corner_cafe, top) }.to raise_error(ArgumentError, message)
+      expect { unmatched_place.record_data_entries({ tenants: { exclude: [corner_cafe] } }, top, mode: :edit) }.to raise_error(ArgumentError, message)
       expect { unmatched_place.record_data_entries({ tenants: { exclude: [corner_cafe] } }, top, mode: :partial) }.to raise_error(ArgumentError, message)
       expect { unmatched_place.record_data_entries({ tenants_attributes: [{ id: corner_cafe.id, _destroy: '1' }] }, top, mode: :edit) }.to raise_error(ArgumentError, message)
     end
@@ -1082,6 +1082,23 @@ describe 'Association tracking capabilities' do
     it 'derives join model keys from the association reflection', capability: 'C39' do
       expect(Place.laforged_association(:place_categories).key).to eq(%w[category_id])
       expect(Place.laforged_association(:reported_parcel_links).key).to eq(%w[parcel_id parcel_link_type_id])
+    end
+
+    it 'raises for a method the model already defines that laforged would replace, and lets one defined after it wrap LaForge\'s', capability: 'C98' do
+      stub_const('CollidingPlace', Class.new(ActiveRecord::Base))
+      CollidingPlace.table_name = 'places'
+      CollidingPlace.define_method(:source_values) { |*| :own }
+      CollidingPlace.define_singleton_method(:source_precedences) { :own }
+      expect { CollidingPlace.laforged }.to raise_error(ArgumentError, /CollidingPlace already defines #source_values, .source_precedences, which `laforged` would replace. Rename CollidingPlace's methods, or, to wrap LaForge's and call super, define them after `laforged`/)
+
+      stub_const('WrappingPlace', Class.new(ActiveRecord::Base))
+      WrappingPlace.table_name = 'places'
+      WrappingPlace.laforged
+      WrappingPlace.define_method(:forge) { |**options| super(**options).tap { @wrapped = true } }
+      wrapping_place = WrappingPlace.create!(name: 'Harbor Building')
+      wrapping_place.forge
+      expect(wrapping_place.instance_variable_get(:@wrapped)).to be(true)
+      expect { WrappingPlace.laforged }.not_to raise_error # declaring again finds LaForge's own methods
     end
 
     it 'keys owned records by primary key unless key: names other columns', capability: 'C40' do

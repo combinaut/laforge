@@ -354,6 +354,8 @@ Tracking a `has_many` or `has_one` association is about membership: which record
     end
   ```
 
+`laforged` raises if the model already defines a method LaForge adds, such as `forge` or `source_values`, rather than replacing it without a word. A method meant to wrap LaForge's and call `super` is defined after `laforged`.
+
 Track the join association, not the `has_many :through` itself. `has_and_belongs_to_many` and `has_one :through` are not supported.
 
 ### Recording a source's members
@@ -420,13 +422,6 @@ A source that knows only some of the members records a partial report, with `mod
 
     # Including some members and excluding others
     place.record_data_entries({ tenants: { include: [harbor_books], exclude: [corner_cafe] } }, business_registry, mode: :partial)
-
-    # A map editor removing one imported tenant, and later undoing it
-    place.exclude_association_member(:tenants, corner_cafe, map_editor)
-    place.forget_association_member(:tenants, corner_cafe, map_editor)
-
-    # A map editor adding one category without restating the rest
-    place.include_association_member(:place_categories, { category_id: landmark.id }, map_editor)
   ```
 
 ### Edits
@@ -449,7 +444,16 @@ An editor changes only what it names. `mode: :edit` applies a payload as single-
 
 A member's nested lists in an edit are edits too, so `opening_hours` above changes two days and leaves the others to the sources that report them. Edits made before a forge add up: each keeps what it said about a member, and the forge records them in order, so a later edit of the same attribute wins and an edit of another attribute keeps the first. Excluding or forgetting a member drops what earlier edits said about it.
 
-`include_association_member`, `exclude_association_member` and `forget_association_member` make one such edit.
+One member at a time is the same call with one member in it:
+
+  ```ruby
+    # A map editor removing one imported tenant, and later undoing it
+    place.record_data_entries({ tenants: { exclude: [corner_cafe] } }, map_editor, mode: :edit)
+    place.record_data_entries({ tenants: { forget: [corner_cafe] } }, map_editor, mode: :edit)
+
+    # A map editor adding one category without restating the rest
+    place.record_data_entries({ place_categories: [{ category_id: landmark.id }] }, map_editor, mode: :edit)
+  ```
 
 ### Recording a Rails form
 
@@ -492,12 +496,12 @@ The matcher receives an unsaved member built from what a source reported, and an
   ```ruby
     place.record_data_entries({ tenants_attributes: [{ id: 12, _destroy: '1' }] }, map_editor, mode: :edit)
     place.forge!                        # Tenant 12 is destroyed, and the map editor's report keeps its tombstone
-    place.laforge_tombstones(:tenants)  # => [#<LaForge::Tombstone source: map_editor, attributes: { 'name' => 'Corner Café', ... }, excluded_at: ...>]
+    place.data_entries.tombstones(:tenants)  # => [#<LaForge::Tombstone source: map_editor, attributes: { 'name' => 'Corner Café', ... }, excluded_at: ...>]
   ```
 
 - **Each forge** checks the new members that reports name against the tombstones, before membership is decided. A member a tombstone matches is decided as the excluded member: a source that ranks below the excluding source cannot add it again, and a source that ranks above it can, which creates it and drops the tombstone.
 - **Code that creates members itself,** such as an importer that builds and saves a tenant rather than reporting it on the place, asks before saving a new one. `LaForge.tombstone_blocking(tenant, source)` returns the tombstone that keeps it out, with the same precedence rule, or nil.
-- **A tombstone lasts** through the excluding source's later reports, until the source forgets it, which lets sources add the member again: `place.forget_association_member(:tenants, tombstone, map_editor)`. Withdrawing the source drops its tombstones too.
+- **A tombstone lasts** through the excluding source's later reports, until the source forgets it, which lets sources add the member again: `place.record_data_entries({ tenants: { forget: [tombstone] } }, map_editor, mode: :edit)`. Withdrawing the source drops its tombstones too.
 - **Associations that need no tombstones:** join rows and associations with `key:` name something that outlasts the row, so their exclusions hold already, and a has_one takes only complete reports. Declaring `tombstone_matcher:` on one raises.
 
 Excluding a member keyed by primary key without a `tombstone_matcher` raises `ArgumentError` when the exclusion is recorded, naming what to declare, rather than letting the member come back at the next import.

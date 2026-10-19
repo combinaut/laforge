@@ -10,7 +10,15 @@ module LaForge
     # else by the foreign keys of the records a join row references, else by primary key (a has_one's single member needs
     # no key)
     def laforged(associations: {})
-      has_many :data_entries, as: :record, dependent: :delete_all, autosave: true, class_name: 'LaForge::DataEntry'
+      LaForge::ActiveRecord.assert_no_collisions!(self)
+
+      has_many :data_entries, as: :record, dependent: :delete_all, autosave: true, class_name: 'LaForge::DataEntry' do
+        # The tombstones of a tracked association: members a source excluded whose rows are gone (see Tombstone)
+        def tombstones(name)
+          owner = proxy_association.owner
+          AssociationTracking.tombstones(owner, owner.class.laforged_association(name))
+        end
+      end
       has_many :data_sources, -> { distinct }, through: :data_entries, source: :source, class_name: 'LaForge::DataSource'
       has_many :precedence_rules, as: :record, dependent: :delete_all, autosave: true, class_name: 'LaForge::PrecedenceRule'
 
@@ -31,6 +39,24 @@ module LaForge
 
       extend ClassMethods
       include InstanceMethods
+    end
+
+    # Methods LaForge defines on purpose over Active Record's own, calling super
+    OVERRIDES = %i[reload].freeze
+
+    # Raise when a model already defines a method LaForge is about to add, which LaForge would otherwise replace without
+    # a word. A model method meant to wrap LaForge's, calling super, is defined after `laforged`, and is not checked; nor
+    # is a model that already has LaForge's methods, since declaring again leaves them where they are.
+    def self.assert_no_collisions!(model)
+      instance_names = model.include?(InstanceMethods) ? [] : InstanceMethods.public_instance_methods(false) + InstanceMethods.private_instance_methods(false) - OVERRIDES
+      instance = instance_names.select { |name| model.method_defined?(name) || model.private_method_defined?(name) }
+      class_names = model.singleton_class.include?(ClassMethods) ? [] : ClassMethods.public_instance_methods(false)
+      klass = class_names.select { |name| model.respond_to?(name) }
+      return if instance.empty? && klass.empty?
+
+      names = instance.map { |name| "##{name}" } + klass.map { |name| ".#{name}" }
+      raise ArgumentError, "#{model.name} already defines #{names.join(', ')}, which `laforged` would replace. Rename #{model.name}'s " \
+                           "#{names.one? ? 'method' : 'methods'}, or, to wrap LaForge's and call super, define #{names.one? ? 'it' : 'them'} after `laforged`"
     end
   end
 
@@ -193,22 +219,6 @@ module LaForge
       write_data_entry(attribute_name, value, source, precedence: precedence)
     end
 
-    # Add one member to the source's report for a tracked association, leaving the rest of its report as it is
-    def include_association_member(name, member, source)
-      AssociationTracking.edit_member(self, self.class.laforged_association(name), member, source, :include)
-    end
-
-    # Remove one member through the source's report, even if lower-precedence sources include it
-    def exclude_association_member(name, member, source)
-      AssociationTracking.edit_member(self, self.class.laforged_association(name), member, source, :exclude)
-    end
-
-    # Drop the source's opinion on one member, so membership falls to the other sources. Forgetting one of the source's
-    # tombstones (see laforge_tombstones) lets sources add the member it was again.
-    def forget_association_member(name, member, source)
-      AssociationTracking.edit_member(self, self.class.laforged_association(name), member, source, :forget)
-    end
-
     # For an orphan sweep: the source no longer reports this record. Destroys its attribute entries and withdraws every
     # member it reported in tracked associations, so the next forge removes those members unless another source still
     # includes them. Saved immediately, without forging. Precedence rules for the source are kept.
@@ -240,12 +250,14 @@ module LaForge
       precedence_rules.reject(&:marked_for_destruction?).group_by(&:attribute_name).transform_values { |rules| rules.to_h { |rule| [rule.source, rule.precedence] } }
     end
 
-    # Returns the effective precedence of `data_entry` on this record
+    # @api private
+    # The precedence a data entry's value is ranked by on this record
     def laforge_precedence_of(data_entry)
       laforge_precedence_resolver.precedence(self, data_entry.attribute_name, data_entry.source_id)
     end
 
-    # Returns the global precedence of the source with `source_id`, or `-Float::INFINITY` when it has none
+    # @api private
+    # The source's global precedence, which breaks ties between equal effective precedences
     def laforge_global_precedence(source_id)
       laforge_precedence_resolver.global_precedence(source_id)
     end
@@ -265,11 +277,7 @@ module LaForge
       self.class.source_values(name, records: [self])[id] || {}
     end
 
-    # The tombstones of a tracked association: members a source excluded whose rows are gone (see Tombstone)
-    def laforge_tombstones(name)
-      AssociationTracking.tombstones(self, self.class.laforged_association(name))
-    end
-
+    # @api private
     # Whether one source's value for an attribute of this record outranks another's, by effective precedence, then the
     # sources' global precedence
     def laforge_outranks?(attribute_name, source_id, other_source_id)
@@ -283,12 +291,14 @@ module LaForge
       AssociationTracking.member_sources(self, self.class.laforged_association(name), member.stringify_keys)
     end
 
+    # @api private
     # Schedules a has_one member that forge replaced or dropped for removal once this owner is saved, per the
     # association's dependent option, so forging alone writes nothing
     def laforge_remove_on_save(config, record)
       (@laforge_replaced_members ||= []) << [config, record]
     end
 
+    # @api private
     # Withdraws a source from this member in memory, as its owner's forge does when the source's report there excludes or
     # withdrew it: its attribute entries are dropped, and destroyed when the owner is saved, and its reports for this
     # record's tracked associations become withdrawals. Returns whether the source had anything on this record.
@@ -305,11 +315,13 @@ module LaForge
       entries.any?
     end
 
+    # @api private
     # Schedules an entry a forge withdrew from one of this owner's members for destruction once this owner is saved
     def laforge_destroy_on_save(data_entry)
       (@laforge_withdrawn_entries ||= []) << data_entry
     end
 
+    # @api private
     # The new members forges have built for a tracked association and that are not saved yet, by placeholder key
     def laforge_created_members(config)
       (@laforge_created_members ||= {})[config.name] ||= {}
@@ -325,6 +337,7 @@ module LaForge
       super
     end
 
+    # @api private
     # The changes forging would make to this record if what its owner's reports say about it, as [[source id, attributes,
     # recorded at, edit, precedence], ...], were recorded on it, without recording it
     def laforge_forge_diff_with(reported)
@@ -337,6 +350,7 @@ module LaForge
       values.each { |entry, (value, recorded_at)| entry.value = value; entry.recorded_at = recorded_at }
     end
 
+    # @api private
     # Records what a source said about this record in its owner's report at `recorded_at`, already validated there,
     # leaving out each attribute this record has a newer value for from the same source, so an older report does not
     # undo it. Lists from an edit are recorded as edits, and a precedence given with the report is given to everything it

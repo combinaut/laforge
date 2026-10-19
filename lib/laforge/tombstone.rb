@@ -1,7 +1,7 @@
 module LaForge
   # An excluded member whose row is gone, as the report that excluded it remembers it. Its source is the one that
   # excluded it. `record` is an unsaved member built from what it was, which a tombstone matcher compares with what a
-  # source reports. Pass a tombstone, or its `to_h`, to `forget_association_member` to let sources add the member again.
+  # source reports. Pass a tombstone, or its `to_h`, to a `forget:` edit to let sources add the member again.
   class Tombstone
     attr_reader :owner, :config, :source_id, :key, :attributes, :excluded_at
 

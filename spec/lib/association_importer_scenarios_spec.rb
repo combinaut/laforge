@@ -276,13 +276,13 @@ describe 'Association assignment by importers' do
   describe 'a map editor removing one imported tenant' do
     before do
       import(place, business_directory, tenants: [tenant('T-1'), tenant('T-2')])
-      place.reload.exclude_association_member(:tenants, { id: Tenant.find_by!(external_id: 'T-2').id }, map_editor)
+      place.reload.record_data_entries({ tenants: { exclude: [{ id: Tenant.find_by!(external_id: 'T-2').id }] } }, map_editor, mode: :edit)
       place.forge!
     end
 
     it 'destroys the tenant and keeps it out of later imports that report it again as new, while new tenants still arrive' do
       expect(tenants_of(place).map(&:first)).to eq(%w[T-1]) # noted: destroyed per `dependent: :destroy`
-      expect(place.reload.laforge_tombstones(:tenants).map { |tombstone| [tombstone.source, tombstone.attributes['name']] }).to eq([[map_editor, 'Tenant T-2']])
+      expect(place.reload.data_entries.tombstones(:tenants).map { |tombstone| [tombstone.source, tombstone.attributes['name']] }).to eq([[map_editor, 'Tenant T-2']])
 
       2.times { import(place.reload, business_directory, tenants: [tenant('T-1'), tenant('T-2'), tenant('T-3')]) }
 
@@ -290,13 +290,13 @@ describe 'Association assignment by importers' do
     end
 
     it "brings the tenant back on the importer's next run once the editor forgets the removal" do
-      place.reload.forget_association_member(:tenants, place.laforge_tombstones(:tenants).sole, map_editor)
+      place.reload.record_data_entries({ tenants: { forget: [place.data_entries.tombstones(:tenants).sole] } }, map_editor, mode: :edit)
       place.save!
 
       import(place.reload, business_directory, tenants: [tenant('T-1'), tenant('T-2')])
 
       expect(tenants_of(place).map(&:first)).to eq(%w[T-1 T-2])
-      expect(place.laforge_tombstones(:tenants)).to be_empty
+      expect(place.data_entries.tombstones(:tenants)).to be_empty
     end
 
     it 'lets a source that outranks the editor for tenants add the tenant again' do
@@ -305,7 +305,7 @@ describe 'Association assignment by importers' do
       import(place.reload, business_directory, tenants: [tenant('T-1'), tenant('T-2')])
 
       expect(tenants_of(place).map(&:first)).to eq(%w[T-1 T-2])
-      expect(place.laforge_tombstones(:tenants)).to be_empty # the tenant has a row again
+      expect(place.data_entries.tombstones(:tenants)).to be_empty # the tenant has a row again
     end
   end
 
@@ -323,7 +323,7 @@ describe 'Association assignment by importers' do
 
     before do
       %w[T-1 T-2].each { |external_id| import_row(place, business_directory, external_id) }
-      place.reload.exclude_association_member(:tenants, { id: Tenant.find_by!(external_id: 'T-2').id }, map_editor)
+      place.reload.record_data_entries({ tenants: { exclude: [{ id: Tenant.find_by!(external_id: 'T-2').id }] } }, map_editor, mode: :edit)
       place.forge!
     end
 
@@ -345,7 +345,7 @@ describe 'Association assignment by importers' do
       ListedPlace.laforged(associations: { tenants: { key: :external_id } })
 
       import(listed_place, business_directory, tenants: [listed('T-1'), listed('T-2')])
-      listed_place.reload.exclude_association_member(:tenants, { external_id: 'T-2' }, map_editor)
+      listed_place.reload.record_data_entries({ tenants: { exclude: [{ external_id: 'T-2' }] } }, map_editor, mode: :edit)
       listed_place.forge!
     end
 
@@ -360,7 +360,7 @@ describe 'Association assignment by importers' do
     end
 
     it "restores the tenant on the importer's next run after the editor forgets the removal" do
-      listed_place.reload.forget_association_member(:tenants, { external_id: 'T-2' }, map_editor)
+      listed_place.reload.record_data_entries({ tenants: { forget: [{ external_id: 'T-2' }] } }, map_editor, mode: :edit)
       listed_place.forge!
       expect(tenants_of(listed_place).map(&:first)).to eq(%w[T-1]) # the list names T-2, but its name was destroyed with it when the editor removed it
 
