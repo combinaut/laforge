@@ -19,8 +19,10 @@ require 'spec_helper'
 #   records them on the member as that source's entries, as if the source had recorded them on the member directly, and
 #   forges the member. Nothing is created for a member that membership excludes; its attributes wait in the report until
 #   membership includes it, or the source's next report replaces them. A member's attributes are resolved on the member
-#   alone, under its precedence rules, and stay there when a source's list drops it while another source keeps it. An
-#   attribute the member has a newer value for from the same source is not recorded.
+#   alone, under its precedence rules. When a source's report drops a member another source keeps, the forge withdraws
+#   the source from the member, down its own lists; an attribute no other source has an entry for keeps its value.
+#   Withdrawn keys are dropped once a forge settles them, and an emptied partial report with them. An attribute the
+#   member has a newer value for from the same source is not recorded.
 # - A member that membership includes but that doesn't exist is created from its key when no report has attributes for
 #   it, unless it is invalid with its key alone; then the forge skips it and logs a warning until a source reports it
 #   with its attributes. A member named by an id that is no longer one of the owner's is skipped the same way.
@@ -39,7 +41,7 @@ require 'spec_helper'
 #   still includes it, from its key or from what sources then report about it. One keyed by primary key is not; a source
 #   reporting it without its id creates a new one. Attribute entries never resurrect a record by themselves.
 #
-# Every example carries a `capability:` id. Retired ids (C09 C10 C11 C23 C35 C48 C66 C67 C76) are not reused.
+# Every example carries a `capability:` id. Retired ids (C09 C10 C11 C23 C35 C48 C66 C67 C76 C82 C83 C84) are not reused.
 describe 'Association tracking capabilities' do
   include ActiveSupport::Testing::TimeHelpers
 
@@ -385,21 +387,52 @@ describe 'Association tracking capabilities' do
       expect(corner_cafe.reload.name).to eq('Corner Café')
     end
 
-    it "keeps a source's attributes on a member after its list drops it while another source keeps it, until the source withdraws them", capability: 'C62' do
+    it "withdraws a source's attributes from a member when its partial report stops including it while another source keeps it", capability: 'C62' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low)
       place.forge!
       place.record_data_entries({ tenants: [tenant('T-1', unit: '2B')] }, high, partial: true)
       place.forge!
-      expect(place.reload.tenants.first.unit).to eq('2B')
+      corner_cafe = place.reload.tenants.sole
+      expect(corner_cafe.unit).to eq('2B')
 
       place.record_data_entries({ tenants: [] }, high, partial: true)
       place.forge!
-      corner_cafe = place.reload.tenants.first
-      expect(corner_cafe.unit).to eq('2B')
 
-      corner_cafe.withdraw_source(high)
-      corner_cafe.forge!
       expect(corner_cafe.reload.unit).to eq('1A')
+      expect(corner_cafe.data_source?(high)).to be(false)
+      expect(place.reload.data_source?(high)).to be(false) # its report, settled and empty, is gone
+    end
+
+    it "withdraws a source from a member its complete list leaves out while another source keeps it, including the member's own lists", capability: 'C85' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A', opening_hours: week('08:00', days: [1]))] }, low)
+      place.forge!
+      corner_cafe = place.tenants.sole
+      place.include_association_member(:tenants, { id: corner_cafe.id, name: 'Corner Café' }, top)
+      place.forge!
+
+      place.record_data_entries({ tenants: [] }, low)
+      expect(place.forge_diff['tenants']).to include(removed: [])
+      place.forge!
+
+      expect(corner_cafe.reload).to have_attributes(name: 'Corner Café', unit: '1A') # no other source has a unit, so it stays, as withdraw_source leaves it
+      expect(corner_cafe.opening_hours).to be_empty
+      expect(corner_cafe.data_source?(low)).to be(false)
+      expect(LaForge::DataEntry.where(record_type: 'OpeningHour')).to be_empty # noted: the opening hour was destroyed per `dependent: :destroy`
+    end
+
+    it 'withdraws a source from the members it reported when it is withdrawn from the owner, and drops its settled reports', capability: 'C86' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low)
+      place.forge!
+      corner_cafe = place.tenants.sole
+      place.include_association_member(:tenants, { id: corner_cafe.id, name: 'Corner Café' }, top)
+      place.forge!
+
+      place.withdraw_source(low)
+      place.forge!
+
+      expect(corner_cafe.reload.data_entries.pluck(:attribute_name)).to eq(['name']) # top's
+      expect(corner_cafe.data_source?(low)).to be(false)
+      expect(place.reload.data_source?(low)).to be(false)
     end
   end
 

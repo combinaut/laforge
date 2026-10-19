@@ -72,6 +72,19 @@ module LaForge
       owner.send(:write_data_entry, config.name, value, source)
     end
 
+    # Each source whose report excludes or withdrew a member the forge keeps is withdrawn from that member, as the source
+    # no longer says anything about it: its entries on the member go, and its reports there become withdrawals, which the
+    # member's forge applies in turn. Returns the members to forge.
+    def withdraw_from_members(owner, config, reports, records)
+      records.select do |record|
+        next false if record.new_record?
+
+        key = config.record_key(record)
+        withdrawing = reports.select { |_, report| report.decision(config, key) == :exclude || report.withdrew?(config, key) }
+        withdrawing.map { |entry, _| record.laforge_withdraw(entry.source_id, owner) }.any?
+      end
+    end
+
     # The source no longer reports anything for the association: every member it reported is withdrawn, and what it said
     # about members not yet recorded on them is dropped, along with new members it reported that were never created
     def withdraw(config, entry)
@@ -105,8 +118,10 @@ module LaForge
         record[config.order_column] = index if config.order_column
       end
 
-      described.each(&:forge)
+      described += withdraw_from_members(owner, config, reports, records)
+      described.uniq.each(&:forge)
       clear_pending(config, reports, included_keys)
+      prune_withdrawn(config, reports)
 
       if config.collection?
         existing.each_value { |record| config.remove(record) }
@@ -280,6 +295,23 @@ module LaForge
         next if remaining.size == report.pending.size
 
         entry.value = report.with_pending(remaining)
+      end
+    end
+
+    # Drops the withdrawn keys the forge has now settled. A partial report left with nothing in it is destroyed with the
+    # owner's next save, since the source no longer says anything about the association.
+    def prune_withdrawn(config, reports)
+      reports.each do |entry, _|
+        next if entry.marked_for_destruction?
+
+        report = MemberList.new(entry.value)
+        next unless report.partial? && report.withdrawn.any?
+
+        if report.include.empty? && report.exclude.empty? && report.pending.empty?
+          entry.mark_for_destruction
+        else
+          entry.value = MemberList.partial(include: report.include, exclude: report.exclude, pending: report.pending)
+        end
       end
     end
 

@@ -263,6 +263,27 @@ module LaForge
       (@laforge_replaced_members ||= []) << [config, record]
     end
 
+    # Withdraws a source from this member in memory, as its owner's forge does when the source's report there excludes or
+    # withdrew it: its attribute entries are dropped, and destroyed when the owner is saved, and its reports for this
+    # record's tracked associations become withdrawals. Returns whether the source had anything on this record.
+    def laforge_withdraw(source_id, owner)
+      entries = filter_data_entries_in_memory(sources: source_id).reject(&:marked_for_destruction?)
+      entries.each do |data_entry|
+        if (config = laforged_associations[data_entry.attribute_name])
+          AssociationTracking.withdraw(config, data_entry)
+        else
+          data_entries.target.delete(data_entry)
+          owner.laforge_destroy_on_save(data_entry) if data_entry.persisted?
+        end
+      end
+      entries.any?
+    end
+
+    # Schedules an entry a forge withdrew from one of this owner's members for destruction once this owner is saved
+    def laforge_destroy_on_save(data_entry)
+      (@laforge_withdrawn_entries ||= []) << data_entry
+    end
+
     # The new members forges have built for a tracked association and that are not saved yet, by placeholder key
     def laforge_created_members(config)
       (@laforge_created_members ||= {})[config.name] ||= {}
@@ -273,6 +294,7 @@ module LaForge
     def reload(*)
       @laforge_replaced_members = nil
       @laforge_created_members = nil
+      @laforge_withdrawn_entries = nil
       @laforge_precedence_resolver = nil
       super
     end
@@ -356,10 +378,13 @@ module LaForge
       columns
     end
 
-    # Removes the has_one members a forge replaced, and names the members a forge created by their new ids in the reports
+    # Names the members a forge created by their new ids in the reports, destroys the entries it withdrew from members, and
+    # removes the has_one members it replaced
     def laforge_after_save
       (@laforge_created_members || {}).each { |name, created| AssociationTracking.name_created(self, laforged_associations.fetch(name), created) }
       @laforge_created_members = nil
+      DataEntry.where(id: @laforge_withdrawn_entries.map(&:id)).delete_all if @laforge_withdrawn_entries
+      @laforge_withdrawn_entries = nil
       (@laforge_replaced_members || []).each do |config, record|
         case config.reflection.options[:dependent]
         when :destroy, :destroy_async then record.destroy!

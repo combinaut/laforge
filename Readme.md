@@ -462,16 +462,13 @@ With a key other than the primary key, when membership includes a member that do
 
 A member that membership no longer includes is removed the way assigning the collection without it would remove it, following the association's `dependent:` option: destroyed for `:destroy`, deleted for `:delete_all`, and detached by nullifying its foreign key otherwise. Everything recorded on a destroyed member goes with it.
 
-A source's attributes on a member stay there when its list drops the member but another source keeps it. Withdraw the source from the member when its attributes should go too:
+When a source's report drops a member that another source keeps, because its complete list leaves the member out, or its partial report excludes it or stops including it, the forge withdraws the source from that member: its entries on the member are destroyed when the owner is saved, and its reports for the member's own tracked associations are withdrawn in turn, down every level. Each of the member's attributes then falls back to the other sources' entries. An attribute no other source has an entry for keeps its value, as it does when `withdraw_source` destroys a record's entries, so withdrawing never leaves a member invalid.
 
-  ```ruby
-    tenant.withdraw_source(business_registry)
-    tenant.forge!
-  ```
+A source that records on a member directly, and also reports a complete list on its owner, should list that member: its complete list is its whole say on which members it describes.
 
 When an import no longer reports a record at all, choose between two things, as for attributes:
 
-- **Retract what the source said:** `withdraw_source` destroys the source's attribute entries and withdraws every member it reported, so the next forge removes those members unless another source includes them. What its reports said about members not yet recorded on them is dropped; what was already recorded on a member stays there until you withdraw the source from that member too.
+- **Retract what the source said:** `withdraw_source` destroys the source's attribute entries and withdraws every member it reported, so the next forge removes those members unless another source includes them. What its reports said about members not yet recorded on them is dropped, and the next forge withdraws the source from every member another source keeps, as above.
 - **Stop tracking what the source said:** destroying the source's entries leaves the association as it is. The members the source added stay, as attribute values stay when their entries are destroyed, and are treated from then on as rows no source has reported: left alone by partial reports, removed by a complete list that doesn't include them.
 
   ```ruby
