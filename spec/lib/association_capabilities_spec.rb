@@ -898,6 +898,89 @@ describe 'Association tracking capabilities' do
     end
   end
 
+  describe 'merging duplicates' do
+    let(:duplicate) { Place.create!(name: 'Harbor Bldg') }
+
+    it 'moves attribute entries, keeping the duplicate\'s on a conflict with merge and the survivor\'s with reverse_merge', capability: 'C99' do
+      other_survivor = Place.create!(name: 'Harbor Building')
+      other_duplicate = Place.create!(name: 'Harbor Bldg')
+      [[place, duplicate], [other_survivor, other_duplicate]].each do |survivor, copy|
+        survivor.forge! { survivor.record_data_entries({ name: 'Harbor Building' }, low) }
+        copy.forge! { copy.record_data_entries({ name: 'Harbor Bldg' }, low) }
+      end
+
+      report = LaForge.merge(place, duplicate)
+      expect(report).to include(entries_moved: 0, entries_conflicting: [{ attribute: 'name', source: low, kept: :duplicate }])
+      expect(place.data_entries.sole.value).to eq('Harbor Bldg')
+      expect(duplicate.data_entries).to be_empty # left for the application to archive
+
+      LaForge.reverse_merge(other_survivor, other_duplicate)
+      expect(other_survivor.data_entries.sole.value).to eq('Harbor Building')
+    end
+
+    it 'moves per-record precedence rules the same way', capability: 'C100' do
+      place.update_attribute_source_precedence(:name, low, 10)
+      duplicate.update_attribute_source_precedence(:name, low, 50)
+      duplicate.update_attribute_source_precedence(:name, high, 5)
+
+      report = LaForge.merge(place, duplicate)
+
+      expect(report).to include(precedence_rules_moved: 1, precedence_rules_conflicting: [{ attribute: 'name', source: low, kept: :duplicate }])
+      expect(place.source_precedences['name']).to eq(low => 50, high => 5)
+    end
+
+    it 'moves owned members with their ids and what was recorded on them, combining each source\'s reports and tombstones', capability: 'C101' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
+      place.forge!
+      duplicate.record_data_entries({ tenants: [tenant('T-2', name: 'Harbor Books', opening_hours: week('08:00', days: [1])), { name: 'Florist' }] }, low)
+      duplicate.forge!
+      harbor_books = duplicate.tenants.find_by!(name: 'Harbor Books')
+      duplicate.record_data_entries({ tenants: { exclude: [{ id: duplicate.tenants.find_by!(name: 'Florist').id }] } }, top, mode: :edit)
+      duplicate.forge!
+
+      report = LaForge.merge(place, duplicate)
+
+      expect(report[:members_moved]).to eq('tenants' => [harbor_books.id])
+      low_report = LaForge::MemberList.new(place.data_entries.with_source(low).with_attribute(:tenants).sole.value)
+      expect(low_report.include.filter_map { |member| member['id'] }).to contain_exactly(place.tenants.find_by!(name: 'Corner Café').id, harbor_books.id)
+      place.forge!
+      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Corner Café', 'Harbor Books')
+      expect(harbor_books.reload.opening_hours.pluck(:day)).to eq([1])
+      expect(place.data_entries.tombstones(:tenants).map { |tombstone| tombstone.attributes['name'] }).to eq(['Florist'])
+
+      place.record_data_entries({ tenants: [{ name: 'Florist' }] }, low, mode: :partial)
+      place.forge!
+      expect(place.reload.tenants.pluck(:name)).not_to include('Florist') # the duplicate's removal still holds
+    end
+
+    it 'merges a join row both records have into the survivor\'s, and moves the rest', capability: 'C102' do
+      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies, external_id: 'P-1')] }, low)
+      place.forge!
+      duplicate.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies, external_id: 'D-1'), parcel_link(lot_14, leases)] }, low)
+      duplicate.forge!
+      kept = parcel_link_row(place, lot_12, occupies)
+      removed = parcel_link_row(duplicate, lot_12, occupies)
+
+      report = LaForge.merge(place, duplicate)
+      place.forge!
+
+      expect(report[:members_merged]).to eq('reported_parcel_links' => [{ kept: kept.id, removed: removed.id }])
+      expect(place.reload.parcel_links.map { |row| [row.parcel, row.parcel_link_type, row.external_id] }).to contain_exactly([lot_12, occupies, 'D-1'], [lot_14, leases, nil])
+      expect(ParcelLink.exists?(removed.id)).to be(false) # noted: the duplicate's row is destroyed once merged
+      expect(duplicate.reload.parcel_links).to be_empty
+    end
+
+    it 'raises, saying why, for records it cannot merge', capability: 'C103' do
+      expect { LaForge.merge(place, Tenant.create!(name: 'Corner Café')) }.to raise_error(ArgumentError, /merges two records of the same model, not Place #{place.id} and Tenant/)
+      expect { LaForge.merge(place, place) }.to raise_error(ArgumentError, /Cannot merge Place #{place.id} into itself/)
+      expect { LaForge.merge(place, Place.new(name: 'New')) }.to raise_error(ArgumentError, /Cannot merge an unsaved Place; save it first/)
+      expect { LaForge.merge(cafe, bakery) }.to raise_error(ArgumentError, /Cannot merge Category records: Category is not declared with `laforged`/)
+
+      duplicate.record_data_entries({ name: 'Harbor Bldg' }, low)
+      expect { LaForge.merge(place, duplicate) }.to raise_error(ArgumentError, /Place #{duplicate.id} has unsaved data entries or precedence rules; save it, or forge! it, before merging/)
+    end
+  end
+
   describe 'has_one' do
     it 'forges the single member from every source that reports it, updating the same row on later runs', capability: 'C57' do
       place.record_data_entries({ marker: { label: 'Harbor', icon: 'pin' } }, low)

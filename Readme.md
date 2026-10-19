@@ -302,6 +302,24 @@ Whether another source still has entries on the record tells whether anything el
 
 A source that lists a member of a tracked association without saying anything about it has no entries on the member, so it isn't among the member's sources; `member_sources` on the owner reports it (see [Inspecting associations](#inspecting-associations)).
 
+### Merging duplicate records
+
+When two records turn out to be the same, merge what LaForge holds for the duplicate into the survivor, then forge the survivor:
+
+  ```ruby
+    report = LaForge.merge(survivor, duplicate)          # on a conflict, the duplicate's entry wins, as the argument does in Hash#merge
+    report = LaForge.reverse_merge(survivor, duplicate)  # on a conflict, the survivor's entry wins
+    survivor.forge!
+    duplicate.archive!                                   # the duplicate is left to the application
+  ```
+
+- **Attribute entries and per-record precedence rules** move to the survivor. Where both records have one for the same attribute and source, that's a conflict, and the function decides which is kept. The other is destroyed.
+- **Members of tracked associations** move to the survivor with their ids and everything recorded on them. Where both records have a member with the same key, as two join rows naming the same category do, the survivor's row is kept: the duplicate's row is merged into it the same way, forged, and destroyed.
+- **Each source's reports** on the two records are combined, so the survivor's report names every member either named, and keeps both records' tombstones. Where the reports disagree about a member, the winner's opinion is kept.
+- **Not touched:** associations LaForge doesn't track, and the duplicate itself, which is left with no LaForge data for the application to archive or destroy.
+
+The report says what moved and what conflicted: `{ entries_moved:, entries_conflicting: [{ attribute:, source:, kept: }], precedence_rules_moved:, precedence_rules_conflicting: [...], members_moved: { 'tenants' => [ids] }, members_merged: { 'place_categories' => [{ kept:, removed: }] } }`. Both records must be saved, of the same model, and have no unsaved entries or rules. The merge runs in a transaction and is saved immediately.
+
 ### Pitfalls
 
 - Recorded entries are unsaved until the record is saved. Reloading the record before saving discards them, along with any forged values.
