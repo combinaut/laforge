@@ -518,6 +518,28 @@ When an import no longer reports a record at all, choose between two things, as 
     place.forge!
   ```
 
+### How it works
+
+Each source's report for an association is one data entry on the owner, named after the association:
+
+- A complete report is stored as an array of member keys, such as `[{ 'id' => 7 }, { 'id' => 9 }]`.
+- A partial report is stored as `{ 'partial' => true, 'include' => [...], 'exclude' => [...], 'withdrawn' => [...] }`. `withdrawn` holds the keys of members the source used to include, until the next forge has acted on them; see below.
+- What a source said about a member besides its key waits under `'pending'`, with when it was said, until a forge records it on the member. A complete report with anything pending is stored as `{ 'include' => [...], 'pending' => [...] }`.
+- A new member is keyed `{ 'new' => '<placeholder>' }` until the forge that creates it is saved.
+
+Everything else is ordinary data entries on the members themselves. A forge of the owner then:
+
+1. Decides membership member by member, from the highest-precedence report with an opinion on each.
+2. Finds or builds each included member, and records on it what the reports hold pending for it, oldest first.
+3. Withdraws each source whose report excludes or withdrew a member it keeps from that member.
+4. Forges the members it recorded on or withdrew from, which applies their own tracked associations the same way.
+5. Removes what it recorded from the reports' pending, and drops the withdrawn keys it has acted on. A partial report left with nothing in it is destroyed.
+6. Removes the members membership no longer includes, per the association's `dependent:` option.
+
+Nothing is written until the owner is saved. Once it is, the reports name new members by their ids, and the entries step 3 withdrew are destroyed.
+
+The withdrawn keys exist because LaForge leaves alone rows that no source has reported. A member that a partial report stops including, or that `withdraw_source` withdraws, would otherwise look like such a row, and stay. The withdrawn keys mark it for one forge, which removes it unless another source includes it, and withdraws the source from it if it is kept. Then they go.
+
 ### Inspecting associations
 
   ```ruby
