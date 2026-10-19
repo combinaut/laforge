@@ -150,13 +150,15 @@ module LaForge
     # some members: the value is then the members it includes, or { include: [...], exclude: [...] }, and members other
     # sources report are left to them. Pass `edit: true` to change only the members named, as an editor does: the value
     # is then the members to include, or { include: [...], exclude: [...], forget: [...] }, the rest of the source's
-    # report is kept, and the members' nested lists are edits too. A member is a hash of its key and what the source says about it, or a saved record;
-    # where members are keyed by primary key, a hash without an id is a new member. When the owner is forged, the hash's
-    # attributes are recorded on the member as the source's entries.
+    # report is kept, and the members' nested lists are edits too. Edits also accept the shapes a Rails form submits:
+    # `*_attributes` for a tracked association, and `*_ids` (see Payload).
+    # A member is a hash of its key and what the source says about it, or a saved record; where members are keyed by
+    # primary key, a hash without an id is a new member. When the owner is forged, the hash's attributes are recorded on
+    # the member as the source's entries.
     def record_data_entries(attributes_hash, source, precedence: NOT_GIVEN, partial: false, edit: false)
       raise ArgumentError, 'Pass partial: true or edit: true, not both' if partial && edit
 
-      attributes_hash.each do |attribute_name, value|
+      Payload.translate(self.class, attributes_hash, (self unless new_record?), edit: edit).each do |attribute_name, value|
         if edit && (config = laforged_associations[attribute_name.to_s])
           AssociationTracking.edit(self, config, value, source, precedence: precedence)
         elsif (config = laforged_associations[attribute_name.to_s])

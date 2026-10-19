@@ -48,8 +48,10 @@ module LaForge
     end
 
     # Applies a source's edits: each member named is included, excluded or forgotten as edit_member does, and the rest of
-    # the source's report is left as it is
+    # the source's report is left as it is. A has_one's edit is its single member, recorded as a complete report.
     def edit(owner, config, value, source, precedence: NOT_GIVEN, recorded_at: Time.current)
+      return record(owner, config, value, source, precedence: precedence, recorded_at: recorded_at) unless config.collection?
+
       config.edits(value).each { |action, member| edit_member(owner, config, member, source, action, recorded_at: recorded_at) }
       owner.send(:write_precedence_rule, config.name, source, precedence) unless precedence.equal?(NOT_GIVEN)
     end

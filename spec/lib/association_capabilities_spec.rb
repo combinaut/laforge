@@ -335,10 +335,9 @@ describe 'Association tracking capabilities' do
       expect(place.reload.tenants.pluck(:name)).to eq(['Harbor Books'])
     end
 
-    it 'rejects edits that are not a list or { include:, exclude:, forget: }, edits of a has_one, and edit: with partial:', capability: 'C88' do
+    it 'rejects edits that are not a list or { include:, exclude:, forget: }, and edit: with partial:', capability: 'C88' do
       expect { place.record_data_entries({ tenants: { add: [] } }, top, edit: true) }.to raise_error(ArgumentError, /edits are a list of members, or \{ include:, exclude:, forget: \}, not add/)
       expect { place.record_data_entries({ tenants: [{ name: 'Corner Café', opening_hours: { add: [] } }] }, top, edit: true) }.to raise_error(ArgumentError, /opening_hours edits are/)
-      expect { place.record_data_entries({ marker: { label: 'Pin' } }, top, edit: true) }.to raise_error(ArgumentError, /has_one, which takes a complete report/)
       expect { place.record_data_entries({ tenants: [] }, top, edit: true, partial: true) }.to raise_error(ArgumentError, /not both/)
     end
 
@@ -753,6 +752,51 @@ describe 'Association tracking capabilities' do
       expect { place.record_data_entries({ tenants: [tenant('T-1', opening_hours: [{ opens_at: '08:00' }])] }, low) }.to raise_error(ArgumentError, /must include their key \(day missing\)/)
       expect { place.exclude_association_member(:tenants, place.tenants.create!(name: 'Corner Café').attributes.slice('id', 'name'), top) }.to raise_error(ArgumentError, /named here by key only \(id\), not name/)
       expect { place.exclude_association_member(:tenants, { name: 'Corner Café' }, top) }.to raise_error(ArgumentError, /named here by id, which a new member does not have yet/)
+    end
+  end
+
+  describe 'Rails form payloads' do
+    it 'records nested attributes as a form submits them, multiple levels deep, as edits', capability: 'C89' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', opening_hours: week('08:00', days: [1, 2])), tenant('T-2', name: 'Harbor Books')] }, low)
+      place.forge!
+      corner_cafe, harbor_books = place.tenants.order(:external_id).to_a
+      tuesday = corner_cafe.opening_hours.find_by!(day: 2)
+
+      params = ActionController::Parameters.new(
+        'name' => 'Harbor Hall',
+        'tenants_attributes' => {
+          '0' => { 'id' => corner_cafe.id.to_s, 'unit' => '2B', 'opening_hours_attributes' => { '0' => { 'id' => tuesday.id.to_s, '_destroy' => '1' }, '1' => { 'day' => '3', 'opens_at' => '10:00' } } },
+          '1' => { 'id' => harbor_books.id.to_s, '_destroy' => 'true' },
+          '2' => { 'name' => 'Florist', '_destroy' => '0' }
+        }
+      ).permit!
+      place.record_data_entries(params, top, edit: true)
+      place.forge!
+
+      expect(place.reload.name).to eq('Harbor Hall')
+      expect(place.tenants.pluck(:name)).to contain_exactly('Corner Café', 'Florist')
+      expect(corner_cafe.reload.unit).to eq('2B')
+      expect(corner_cafe.opening_hours.pluck(:day, :opens_at)).to eq([[1, '08:00'], [3, '10:00']])
+    end
+
+    it 'records *_ids as edits that include the ids checked and exclude the current members left unchecked', capability: 'C90' do
+      place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
+      place.forge!
+
+      place.record_data_entries({ category_ids: ['', cafe.id.to_s, florist.id.to_s] }, top, edit: true)
+      place.forge!
+      expect(categories_of(place)).to eq([cafe, florist])
+
+      place.record_data_entries({ place_categories: categories(cafe, bakery, bookstore) }, low) # an import adding a category the form never showed
+      place.forge!
+      expect(categories_of(place)).to eq([cafe, florist, bookstore])
+    end
+
+    it 'raises for form payloads of associations that are not tracked, and for form payloads without edit: true', capability: 'C91' do
+      expect { place.record_data_entries({ parcel_links_attributes: [{ parcel_id: lot_12.id }] }, top, edit: true) }.to raise_error(LaForge::InvalidAttributeName, /Cannot record Place#parcel_links_attributes: parcel_links is not a tracked association/)
+      expect { place.record_data_entries({ parcel_link_ids: [] }, top, edit: true) }.to raise_error(LaForge::InvalidAttributeName, /Cannot record Place#parcel_link_ids/)
+      expect { place.record_data_entries({ tenants_attributes: [] }, top) }.to raise_error(ArgumentError, /record it with edit: true/)
+      expect { place.record_data_entries({ tenants: [{ name: 'Florist', opening_hours_attributes: [] }] }, top) }.to raise_error(ArgumentError, /Tenant#opening_hours_attributes describes edits/)
     end
   end
 

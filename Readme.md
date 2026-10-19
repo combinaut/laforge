@@ -448,7 +448,27 @@ An editor changes only what it names. `edit: true` applies a payload as single-m
 
 A member's nested lists in an edit are edits too, so `opening_hours` above changes two days and leaves the others to the sources that report them. Edits made before a forge add up: each keeps what it said about a member, and the forge records them in order, so a later edit of the same attribute wins and an edit of another attribute keeps the first. Excluding or forgetting a member drops what earlier edits said about it.
 
-`include_association_member`, `exclude_association_member` and `forget_association_member` make one such edit. A has_one takes a complete report, so it can't be edited.
+`include_association_member`, `exclude_association_member` and `forget_association_member` make one such edit.
+
+### Recording a Rails form
+
+Edits also accept the shapes a Rails form submits, at every level, so a controller can record its permitted params as they are, whether or not the model declares `accepts_nested_attributes_for`:
+
+  ```ruby
+    # params[:place] => { name: 'Harbor Hall', category_ids: ['', '3', '7'],
+    #                     tenants_attributes: { '0' => { id: '12', unit: '2B', opening_hours_attributes: { '0' => { id: '40', _destroy: '1' } } },
+    #                                           '1' => { name: 'Florist' } } }
+    place.record_data_entries(params.require(:place).permit!, map_editor, edit: true)
+    place.forge!
+  ```
+
+- `tenants_attributes`, an array or a hash keyed by index, becomes edits of `tenants`: a member with a truthy `_destroy` is excluded by its `id`, and any other is included. A has_one's becomes its single member, or none when destroyed.
+- `category_ids` includes the ids listed and excludes the current members left out, so a member another source adds later, which the form never showed, is not excluded. It edits the tracked association it names, or the tracked join association a `has_many :through` goes through, such as `place_categories` for `categories`.
+- Members keyed by other columns than the primary key, such as opening hours keyed by day, are named by the key of the row their `id` names.
+- Ids may be strings, as forms submit them.
+- `*_attributes` or `*_ids` for an association that is not tracked raise `LaForge::InvalidAttributeName`, rather than being recorded as an attribute LaForge cannot forge. Save such associations outside LaForge. Without `edit: true`, these shapes raise `ArgumentError`, since they describe edits.
+
+Anything else in the form, such as an association's own metadata stored outside the member, is up to the controller. A has_one takes a complete report, so it can't be edited.
 
 Exclusions name members by key only, so a member keyed by primary key can be excluded only once it exists.
 

@@ -184,6 +184,7 @@ module LaForge
         member = key_hash(member)
       end
       member = member.to_h.stringify_keys
+      key.each { |column| member[column] = klass.type_for_attribute(column).cast(member[column]) if member.key?(column) } # ids from params are strings
       if primary_keyed? && member[klass.primary_key].nil?
         raise ArgumentError, "#{owner_class.name}##{name} members are named here by #{klass.primary_key}, which a new member does not have yet" unless attributes
 
@@ -197,7 +198,7 @@ module LaForge
         if !attributes
           raise ArgumentError, "#{owner_class.name}##{name} members are named here by key only (#{key.join(', ')}), not #{field}"
         elsif (nested = nested_config(field)) # validated now, recorded on the member when a forge of the owner includes it
-          if edit && nested.collection?
+          if edit && nested.collection? && !value.nil?
             nested.edits(value).each { |action, nested_member| nested.normalize_members([nested_member], attributes: action == :include, edit: true) }
           else
             nested.normalize_members(value)
