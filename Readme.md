@@ -472,7 +472,19 @@ Anything else in the form, such as an association's own metadata stored outside 
 
 Exclusions name members by key only, so a member keyed by primary key can be excluded only once it exists.
 
-An exclusion names a row, so it lasts only as long as the row is one of the owner's members. Once the exclusion removes it, a source that still reports it no longer finds it among the owner's members, reports it as new, and it comes back. Where an editor's removal must outlast later imports, key the association on an identifier every source shares, with `key:`: an exclusion of `{ external_id: 'T-2' }` then holds whatever happens to the row.
+An exclusion names a row, so it lasts only as long as the row is one of the owner's members. For example, a map editor removes Tenant 12, which the business directory imports each night:
+
+  ```ruby
+    place.record_data_entries({ tenants_attributes: [{ id: 12, _destroy: '1' }] }, map_editor, mode: :edit)
+    place.forge! # Tenant 12 is destroyed, per `has_many :tenants, dependent: :destroy`
+  ```
+
+That night the business directory still lists the tenant. Its importer looks for it among the place's tenants, finds nothing, since Tenant 12 is gone, and reports it as new. The forge creates Tenant 13, and the map editor's exclusion of Tenant 12 does not apply to it, so the tenant is back.
+
+Where an editor's removal must outlast later imports, use one of these:
+
+- Hide the member instead of removing it: record an attribute such as `status: 'closed'` on it as the editor, and leave closed members out where they are shown. The row stays in the tracked association, so the importer keeps finding it, and the editor's value keeps winning. Leaving closed members out of the tracked association's own scope would undo this: the importer would no longer find the member, and would report it as new.
+- Key the association on an identifier every source shares, with `key:`. An exclusion of `{ external_id: 'T-2' }` then holds whatever happens to the row.
 
 ### How membership is decided
 
