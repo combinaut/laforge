@@ -107,8 +107,8 @@ module LaForge
     # of its key and attributes (nested tracked associations included), or a saved record, which contributes only its key.
     # Where members are keyed by primary key, a hash without one is a new member, named by a placeholder. A has_one is
     # recorded as one member, or nil for none, and stored as a list of at most one. Pass `attributes: false` for members
-    # that can only be named, such as exclusions.
-    def normalize_members(members, attributes: true)
+    # that can only be named, such as exclusions. Pass `edit: true` for members of edits, whose nested lists are edits too.
+    def normalize_members(members, attributes: true, edit: false)
       unless collection?
         unless members.nil? || members.is_a?(Hash) || members.is_a?(::ActiveRecord::Base) || (members.is_a?(Array) && members.size <= 1)
           raise ArgumentError, "#{owner_class.name}##{name} must be recorded as one member or nil"
@@ -118,11 +118,27 @@ module LaForge
       end
       raise ArgumentError, "#{owner_class.name}##{name} must be recorded as an array of members" unless members.is_a?(Array)
 
-      normalized = members.map { |member| normalize_member(member, attributes: attributes) }
+      normalized = members.map { |member| normalize_member(member, attributes: attributes, edit: edit) }
       repeated = normalized.map { |key_hash, _| key_of(key_hash) }.tally.select { |_, count| count > 1 }.keys
       raise ArgumentError, "#{owner_class.name}##{name} lists the same member more than once (#{repeated.map { |values| describe_key(values) }.join('; ')})" if repeated.any?
 
       normalized
+    end
+
+    # [[action, member], ...] for a source's edits, given as a list of members to include, or as
+    # { include: [...], exclude: [...], forget: [...] }
+    def edits(value)
+      raise ArgumentError, "#{owner_class.name}##{name} is a has_one, which takes a complete report" unless collection?
+
+      lists = value.is_a?(Hash) ? value.to_h.stringify_keys : { 'include' => value }
+      unknown = lists.keys - %w[include exclude forget]
+      raise ArgumentError, "#{owner_class.name}##{name} edits are a list of members, or { include:, exclude:, forget: }, not #{unknown.join(', ')}" if unknown.any?
+
+      lists.flat_map do |action, members|
+        raise ArgumentError, "#{owner_class.name}##{name} edits must list members as an array for #{action}" unless members.is_a?(Array)
+
+        members.map { |member| [action.to_sym, member] }
+      end
     end
 
     # Raise if a member references a record that does not exist, or is named by an id that is not one of the owner's
@@ -160,7 +176,7 @@ module LaForge
 
     private
 
-    def normalize_member(member, attributes:)
+    def normalize_member(member, attributes:, edit:)
       if member.is_a?(::ActiveRecord::Base)
         raise InvalidValue, "#{owner_class.name}##{name} members must be #{klass.name} records, not #{member.class.name}" unless member.is_a?(klass)
         raise InvalidValue, "Cannot list an unsaved #{klass.name} in #{owner_class.name}##{name}; save it first, or pass its attributes as a hash" if member.new_record?
@@ -180,8 +196,12 @@ module LaForge
 
         if !attributes
           raise ArgumentError, "#{owner_class.name}##{name} members are named here by key only (#{key.join(', ')}), not #{field}"
-        elsif (nested = nested_config(field))
-          nested.normalize_members(value) # validated now, recorded on the member when a forge of the owner includes it
+        elsif (nested = nested_config(field)) # validated now, recorded on the member when a forge of the owner includes it
+          if edit && nested.collection?
+            nested.edits(value).each { |action, nested_member| nested.normalize_members([nested_member], attributes: action == :include, edit: true) }
+          else
+            nested.normalize_members(value)
+          end
         elsif field == klass.primary_key || field == owner_foreign_key || field == owner_type_column || !klass.column_names.include?(field)
           raise InvalidAttributeName, "Cannot set #{field} on #{klass.name} members of #{owner_class.name}##{name}"
         elsif field == order_column

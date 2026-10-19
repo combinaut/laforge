@@ -8,7 +8,9 @@ module LaForge
   #
   # Members are listed by key. What the source said about an included member besides its key is kept in 'pending', as
   # [{ 'key' => {...}, 'attributes' => {...}, 'recorded_at' => time }], until a forge of the owner records it on the
-  # member. A complete report with pending attributes is stored as { 'include' => [...], 'pending' => [...] }.
+  # member. An item from an edit also has 'edit' => true, so its nested lists are recorded as edits, and a member can
+  # have several, recorded in order. A complete report with pending attributes is stored as
+  # { 'include' => [...], 'pending' => [...] }.
   class MemberList
     attr_reader :include, :exclude, :withdrawn, :pending
 
@@ -25,8 +27,9 @@ module LaForge
       (partial ? value : { 'include' => include }).merge('pending' => pending)
     end
 
-    def self.pending_item(key_hash, attributes, recorded_at)
-      { 'key' => key_hash, 'attributes' => attributes, 'recorded_at' => recorded_at.utc.iso8601(6) }
+    def self.pending_item(key_hash, attributes, recorded_at, edit: false)
+      item = { 'key' => key_hash, 'attributes' => attributes, 'recorded_at' => recorded_at.utc.iso8601(6) }
+      edit ? item.merge('edit' => true) : item
     end
 
     # A report marked for destruction says nothing: a complete one excludes everything, a partial one withdraws all

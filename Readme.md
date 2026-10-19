@@ -409,7 +409,7 @@ Sources rarely know the host application's ids, so an importer finds each record
 
 An `id` must be one of the owner's current members. LaForge does not move a record from one owner to another, nor create a record with a given `id`, so naming a record that belongs to another owner, or that does not exist, raises `LaForge::InvalidValue`. Move it outside LaForge, by saving its foreign key, before an import names it under its new owner.
 
-### Partial reports and single-member edits
+### Partial reports
 
 A source that knows only some of the members records a partial report. It includes, or excludes, the members it names and leaves the rest to other sources. When its next report no longer includes a member, that member is removed unless another source includes it.
 
@@ -427,6 +427,28 @@ A source that knows only some of the members records a partial report. It includ
     # A map editor adding one category without restating the rest
     place.include_association_member(:place_categories, { category_id: landmark.id }, map_editor)
   ```
+
+### Edits
+
+An editor changes only what it names. `edit: true` applies a payload as single-member edits, at every level: each member listed under `include:` is added to the source's report, with the attributes given, each under `exclude:` is removed even if other sources include it, and each under `forget:` drops the source's opinion on it. A plain list includes each member. The rest of the source's report stays as it is.
+
+  ```ruby
+    place.record_data_entries({
+      name: 'Harbor Building',
+      tenants: {
+        include: [
+          { id: corner_cafe.id, unit: '2B', opening_hours: { include: [{ day: 6, opens_at: '10:00' }], exclude: [{ day: 7 }] } },
+          { name: 'Harbor Books' } # new
+        ],
+        exclude: [{ id: old_florist.id }]
+      }
+    }, map_editor, edit: true)
+    place.forge!
+  ```
+
+A member's nested lists in an edit are edits too, so `opening_hours` above changes two days and leaves the others to the sources that report them. Edits made before a forge add up: each keeps what it said about a member, and the forge records them in order, so a later edit of the same attribute wins and an edit of another attribute keeps the first. Excluding or forgetting a member drops what earlier edits said about it.
+
+`include_association_member`, `exclude_association_member` and `forget_association_member` make one such edit. A has_one takes a complete report, so it can't be edited.
 
 Exclusions name members by key only, so a member keyed by primary key can be excluded only once it exists.
 

@@ -317,6 +317,31 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([florist, bakery])
     end
 
+    it 'applies edits to only the members they name, at every nested level, keeping the rest of the report', capability: 'C87' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', opening_hours: week('08:00', days: [1, 2]))] }, low)
+      place.forge!
+      corner_cafe = place.tenants.sole
+
+      place.record_data_entries({ tenants: { include: [{ id: corner_cafe.id, opening_hours: { include: [{ day: 3, opens_at: '10:00' }], exclude: [{ day: 2 }] } }] } }, top, edit: true)
+      place.record_data_entries({ tenants: [{ id: corner_cafe.id, unit: '9Z' }, { name: 'Harbor Books' }] }, top, edit: true) # a second edit before forging
+      place.forge!
+
+      expect(corner_cafe.reload).to have_attributes(name: 'Corner Café', unit: '9Z')
+      expect(corner_cafe.opening_hours.pluck(:day, :opens_at)).to eq([[1, '08:00'], [3, '10:00']])
+      expect(place.tenants.pluck(:name)).to contain_exactly('Corner Café', 'Harbor Books')
+
+      place.record_data_entries({ tenants: { exclude: [{ id: corner_cafe.id }] } }, top, edit: true)
+      place.forge!
+      expect(place.reload.tenants.pluck(:name)).to eq(['Harbor Books'])
+    end
+
+    it 'rejects edits that are not a list or { include:, exclude:, forget: }, edits of a has_one, and edit: with partial:', capability: 'C88' do
+      expect { place.record_data_entries({ tenants: { add: [] } }, top, edit: true) }.to raise_error(ArgumentError, /edits are a list of members, or \{ include:, exclude:, forget: \}, not add/)
+      expect { place.record_data_entries({ tenants: [{ name: 'Corner Café', opening_hours: { add: [] } }] }, top, edit: true) }.to raise_error(ArgumentError, /opening_hours edits are/)
+      expect { place.record_data_entries({ marker: { label: 'Pin' } }, top, edit: true) }.to raise_error(ArgumentError, /has_one, which takes a complete report/)
+      expect { place.record_data_entries({ tenants: [] }, top, edit: true, partial: true) }.to raise_error(ArgumentError, /not both/)
+    end
+
     it 'reports which sources include and which exclude a member', capability: 'C56' do
       place.record_data_entries({ place_categories: categories(cafe) }, low)
       place.exclude_association_member(:place_categories, { category_id: cafe.id }, top)

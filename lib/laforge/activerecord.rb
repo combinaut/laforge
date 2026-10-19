@@ -148,12 +148,18 @@ module LaForge
     # Record several pieces of information from the same source.
     # A tracked association's value is the source's whole member list. Pass `partial: true` when the source reports only
     # some members: the value is then the members it includes, or { include: [...], exclude: [...] }, and members other
-    # sources report are left to them. A member is a hash of its key and what the source says about it, or a saved record;
+    # sources report are left to them. Pass `edit: true` to change only the members named, as an editor does: the value
+    # is then the members to include, or { include: [...], exclude: [...], forget: [...] }, the rest of the source's
+    # report is kept, and the members' nested lists are edits too. A member is a hash of its key and what the source says about it, or a saved record;
     # where members are keyed by primary key, a hash without an id is a new member. When the owner is forged, the hash's
     # attributes are recorded on the member as the source's entries.
-    def record_data_entries(attributes_hash, source, precedence: NOT_GIVEN, partial: false)
+    def record_data_entries(attributes_hash, source, precedence: NOT_GIVEN, partial: false, edit: false)
+      raise ArgumentError, 'Pass partial: true or edit: true, not both' if partial && edit
+
       attributes_hash.each do |attribute_name, value|
-        if (config = laforged_associations[attribute_name.to_s])
+        if edit && (config = laforged_associations[attribute_name.to_s])
+          AssociationTracking.edit(self, config, value, source, precedence: precedence)
+        elsif (config = laforged_associations[attribute_name.to_s])
           options = { precedence: precedence }
           options[:partial] = true if partial
           AssociationTracking.record(self, config, value, source, **options)
@@ -300,11 +306,11 @@ module LaForge
     end
 
     # The changes forging would make to this record if what its owner's reports say about it, as [[source id, attributes,
-    # recorded at], ...], were recorded on it, without recording it
+    # recorded at, edit], ...], were recorded on it, without recording it
     def laforge_forge_diff_with(reported)
       entries = data_entries.to_a
       values = entries.to_h { |entry| [entry, [entry.value, entry.recorded_at]] }
-      reported.each { |source_id, attributes, recorded_at| laforge_record_reported(attributes, source_id, recorded_at) }
+      reported.each { |source_id, attributes, recorded_at, edit| laforge_record_reported(attributes, source_id, recorded_at, edit: edit) }
       forge_diff
     ensure
       data_entries.target.replace(entries)
@@ -313,13 +319,15 @@ module LaForge
 
     # Records what a source said about this record in its owner's report at `recorded_at`, already validated there,
     # leaving out each attribute this record has a newer value for from the same source, so an older report does not
-    # undo it. Returns whether anything was recorded.
-    def laforge_record_reported(attributes, source, recorded_at)
+    # undo it. Lists from an edit are recorded as edits. Returns whether anything was recorded.
+    def laforge_record_reported(attributes, source, recorded_at, edit: false)
       newer = filter_data_entries_in_memory(sources: source).select { |entry| entry.recorded_at && entry.recorded_at > recorded_at }.map(&:attribute_name)
       attributes = attributes.except(*newer)
 
       attributes.each do |attribute_name, value|
-        if (config = laforged_associations[attribute_name])
+        if (config = laforged_associations[attribute_name]) && edit && config.collection?
+          AssociationTracking.edit(self, config, value, source, recorded_at: recorded_at)
+        elsif config
           AssociationTracking.record(self, config, value, source, precedence: NOT_GIVEN, recorded_at: recorded_at)
         else
           write_data_entry(attribute_name, value, source, recorded_at: recorded_at)
