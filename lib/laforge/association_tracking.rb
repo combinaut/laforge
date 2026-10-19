@@ -31,14 +31,14 @@ module LaForge
         excluded = []
       end
       keys = included.map(&:first)
-      config.assert_references_exist!(keys)
+      config.assert_references_exist!(owner, keys)
       pending = included.map { |key_hash, attributes| MemberList.pending_item(key_hash, attributes, recorded_at) }
 
       value =
         if partial
           reported = (keys + excluded).map { |member| config.key_of(member) }
           previous = report(owner, config, source)
-          withdrawn = previous ? (previous.include + previous.withdrawn).map { |member| config.key_hash(member) }.uniq.reject { |member| reported.include?(config.key_of(member)) } : []
+          withdrawn = previous ? (previous.include + previous.withdrawn).map { |member| config.key_hash(member) }.uniq.reject { |member| reported.include?(config.key_of(member)) || config.new_member?(member) } : []
           MemberList.partial(include: keys, exclude: excluded, withdrawn: withdrawn, pending: pending)
         else
           MemberList.value(include: keys, pending: pending)
@@ -51,7 +51,7 @@ module LaForge
     # it, :forget drops the source's opinion on it. A source with no report, or a partial one, keeps a partial report.
     def edit_member(owner, config, member, source, action)
       member, attributes = config.normalize_members([member], attributes: action == :include).first
-      config.assert_references_exist!([member]) if action == :include
+      config.assert_references_exist!(owner, [member]) if action == :include
       key = config.key_of(member)
       previous = report(owner, config, source)
       others = ->(list) { (list || []).reject { |listed| config.key_of(listed) == key } }
@@ -73,9 +73,9 @@ module LaForge
     end
 
     # The source no longer reports anything for the association: every member it reported is withdrawn, and what it said
-    # about members not yet recorded on them is dropped
+    # about members not yet recorded on them is dropped, along with new members it reported that were never created
     def withdraw(config, entry)
-      entry.value = MemberList.partial(withdrawn: MemberList.new(entry.value).reported_keys(config))
+      entry.value = MemberList.partial(withdrawn: MemberList.new(entry.value).reported_keys(config).reject { |member| config.new_member?(member) })
     end
 
     def forge(owner, config)
@@ -83,14 +83,17 @@ module LaForge
       return if reports.empty?
 
       existing = config.identified_members_of(owner)
+      created = owner.laforge_created_members(config)
       included, undecided = resolve(config, reports, existing)
       pending = pending_by_key(config, reports)
+      included_keys = included.map { |member| config.key_of(member) }
+      discard_created(owner, config, created, included_keys)
 
       described = []
       records = included.filter_map do |member|
         key = config.key_of(member)
         items = pending.fetch(key, [])
-        record = existing.delete(key) || build(owner, config, config.key_hash(member), described: items.any?)
+        record = existing.delete(key) || created[key] || add(owner, config, member, created, described: items.any?)
         next unless record
 
         recorded = items.map { |source_id, attributes, recorded_at| record.laforge_record_reported(attributes, source_id, recorded_at) }
@@ -103,7 +106,7 @@ module LaForge
       end
 
       described.each(&:forge)
-      clear_pending(config, reports, included.map { |member| config.key_of(member) })
+      clear_pending(config, reports, included_keys)
 
       if config.collection?
         existing.each_value { |record| config.remove(record) }
@@ -134,11 +137,13 @@ module LaForge
       end
 
       added, skipped = included.reject { |member| existing.key?(config.key_of(member)) }.partition do |member|
-        pending.key?(config.key_of(member)) || new_member(owner, config, config.key_hash(member)).valid?
+        next false if config.primary_keyed? && !config.new_member?(member) # no longer one of the owner's members
+
+        pending.key?(config.key_of(member)) || new_member(owner, config, config.build_attributes(member)).valid?
       end
 
       {
-        added: added.map { |member| config.key_hash(member) },
+        added: added.map { |member| config.new_member?(member) ? pending.fetch(config.key_of(member), []).inject({}) { |attributes, (_, reported)| attributes.merge(reported) } : config.key_hash(member) },
         removed: (existing.keys - keys).map { |key| config.key.zip(key).to_h },
         changed: changed
       }.tap { |result| result[:skipped] = skipped.map { |member| config.key_hash(member) } if skipped.any? }
@@ -178,6 +183,20 @@ module LaForge
       end
     end
 
+    # Names the members forges created by their new ids, in place of the placeholders the reports named them by. Called
+    # once the owner, and so the members, have been saved. The reports' recorded_at is kept, since no source said anything.
+    def name_created(owner, config, created)
+      ids = created.select { |_, record| record.persisted? }.transform_values(&:id)
+      return if ids.empty?
+
+      owner.send(:filter_data_entries_in_memory, attributes: config.name).each do |entry|
+        next if entry.destroyed? || entry.marked_for_destruction?
+
+        value = MemberList.new(entry.value).renamed(config, ids)
+        entry.update!(value: value) unless value == entry.value
+      end
+    end
+
     def member_sources(owner, config, member)
       reports = owner.send(:laforge_association_reports, config)
       key = config.key_of(member)
@@ -205,17 +224,41 @@ module LaForge
       items.sort_by { |_, (_, _, recorded_at)| recorded_at }.group_by(&:first).transform_values { |pairs| pairs.map(&:last) }
     end
 
+    # Removes from the association the members an earlier forge created, not yet saved, that membership no longer includes
+    def discard_created(owner, config, created, included_keys)
+      (created.keys - included_keys).each do |key|
+        record = created.delete(key)
+        owner.association(config.name.to_sym).target.delete(record) if config.collection?
+      end
+    end
+
+    # A member that membership includes but that does not exist. A new member is built and kept by its placeholder, so
+    # a second forge before saving finds it, and saving names it by its id. A member named by an id that is no longer one
+    # of the owner's is skipped, since LaForge does not create a record with a given id. Any other is built from its key.
+    def add(owner, config, member, created, described:)
+      if config.primary_keyed? && !config.new_member?(member)
+        owner.logger&.warn("LaForge skipped #{config.klass.name} #{config.key_of(member).first.inspect} in #{owner.class.name} #{owner.id}'s #{config.name}: " \
+                           "membership includes it, but it is no longer one of them. Report it without its #{config.klass.primary_key} to create a new one")
+        return
+      end
+
+      record = build(owner, config, member, described: described)
+      created[config.key_of(member)] = record if record && config.new_member?(member)
+      record
+    end
+
     # A new member built as the association's `build` would, with its scope's attributes. A collection member is added to
     # the association; a has_one member is not, since Rails writes a has_one replacement immediately, and the owner
     # removes the current one when it is saved. Returns nil, after logging, for a member that no source described and
     # that is invalid with its key alone.
-    def build(owner, config, key_hash, described:)
+    def build(owner, config, member, described:)
       association = owner.association(config.name.to_sym)
-      record = config.collection? ? association.build(key_hash) : new_member(owner, config, key_hash)
+      attributes = config.build_attributes(member)
+      record = config.collection? ? association.build(attributes) : new_member(owner, config, attributes)
       return record if described || record.valid?
 
       association.target.delete(record) if config.collection?
-      owner.logger&.warn("LaForge skipped the #{config.klass.name} with #{config.describe_key(config.key_of(key_hash))} in #{owner.class.name} #{owner.id}'s #{config.name}: " \
+      owner.logger&.warn("LaForge skipped the #{config.klass.name} with #{config.describe_key(config.key_of(member))} in #{owner.class.name} #{owner.id}'s #{config.name}: " \
                          "membership includes it, but it does not exist and is invalid with its key alone (#{record.errors.full_messages.to_sentence}). " \
                          'It is created when a source next reports it with its attributes')
       nil
@@ -266,6 +309,7 @@ module LaForge
     # the source's report says about it that has not been recorded on it yet, unless the member has a newer value
     def with_member_attributes(config, member, record, member_entries, source, pending)
       entries = record ? (member_entries[record.id] || []).select { |entry| entry.source == source } : []
+      member = config.build_attributes(member)
       values = entries.to_h { |entry| [entry.attribute_name, entry.value] }
       if pending
         recorded_at = Time.iso8601(pending['recorded_at'])

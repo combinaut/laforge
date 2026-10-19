@@ -54,6 +54,14 @@ module LaForge
       self.class.value(include: include, exclude: exclude, withdrawn: withdrawn, pending: pending, partial: partial?)
     end
 
+    # The stored value for this report with the members named by placeholder keys in `ids` ({ key values => id }) named
+    # by those ids instead
+    def renamed(config, ids)
+      rename = ->(member) { (id = ids[config.key_of(member)]) ? { config.klass.primary_key => id } : member }
+      pending = self.pending.map { |item| item.merge('key' => rename.(item['key'])) }
+      self.class.value(include: include.map(&rename), exclude: exclude.map(&rename), withdrawn: withdrawn.map(&rename), pending: pending, partial: partial?)
+    end
+
     # :include, :exclude, or nil when this report has no opinion on the member with the given key
     def decision(config, key)
       return :include if include.any? { |member| config.key_of(member) == key }

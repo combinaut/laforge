@@ -323,10 +323,11 @@ A `belongs_to` association needs no declaration: record the associated record, o
 
 ### Declaring has_many and has_one associations
 
-Tracking a `has_many` or `has_one` association is about membership: which records belong to it. Every member is identified by a key, which must identify it across every source:
+Tracking a `has_many` or `has_one` association is about membership: which records belong to it. Every member is identified by a key:
 
-- The rows of a join model, such as those behind a `has_many :through`, are identified by the records they reference. LaForge derives that key from the association's reflection.
-- Other records need a `key:` naming the columns that identify them, such as an external id every source shares.
+- The rows of a join model, such as those behind a `has_many :through`, are identified by the records they reference. LaForge derives that key from the association's reflection: every `belongs_to` on the member other than the one pointing back at the owner.
+- Other records, such as tenants, are identified by their primary key. A source names an existing member by its `id`, and a new member by its attributes alone (see [Naming members](#naming-members)).
+- `key:` names other columns instead, for a natural key such as a weekday, or an identifier every source shares. It also overrides a derived key, as `key: :id` does for an owned model that happens to belong to another record.
 - A `has_one` with no key has a single member, which every source reports.
 
   ```ruby
@@ -338,10 +339,10 @@ Tracking a `has_many` or `has_one` association is about membership: which record
       has_one :marker, as: :markable, dependent: :destroy
 
       laforged associations: {
-        place_categories: {},           # identified by category_id; ordered by position
-        parcel_links: {},               # identified by parcel_id + parcel_link_type_id
-        tenants: { key: :external_id },
-        marker: {}                      # a has_one: recorded as one member, or nil for none
+        place_categories: {}, # identified by category_id; ordered by position
+        parcel_links: {},     # identified by parcel_id + parcel_link_type_id
+        tenants: {},          # identified by id
+        marker: {}            # a has_one: recorded as one member, or nil for none
       }
     end
 
@@ -359,11 +360,14 @@ Track the join association, not the `has_many :through` itself. `has_and_belongs
 A source reports an association's members as a list of hashes. Each hash holds the member's key and whatever the source says about the member, including the member's own tracked associations. By default the list is complete: the source says these are all the members, which excludes every member it doesn't list.
 
   ```ruby
-    # A business directory run
-    place.record_data_entries({
-      tenants: [{ external_id: 'T-1', name: 'Corner Café', opening_hours: [{ day: 1, opens_at: '08:00' }] }],
-      place_categories: [{ category_id: cafe.id }]
-    }, business_directory)
+    # A business directory run. The importer finds the tenants it reported before by its own means, and names them by id.
+    tenants = feed['tenants'].map do |row|
+      attributes = { name: row['name'], opening_hours: row['hours'].map { |hours| { day: hours['day'], opens_at: hours['opens'] } } }
+      existing = place.tenants.find_by(external_id: row['id'])
+      existing ? attributes.merge(id: existing.id) : attributes.merge(external_id: row['id'])
+    end
+
+    place.record_data_entries({ tenants: tenants, place_categories: [{ category_id: cafe.id }] }, business_directory)
     place.forge!
   ```
 
@@ -377,14 +381,33 @@ The report stored on the place lists the members by key, and keeps what the sour
 - The owner's forge forges only the members it records attributes on. A member edited in some other way is forged on its own.
 - Members appear in the order of the highest precedence list that includes them. If the association's scope orders by an integer column, LaForge writes the order there, so lists cannot set that column.
 
-A member can also be listed as a saved record, which contributes only its key. This suits a member created or edited on its own:
+### Naming members
+
+A member keyed by primary key can be named four ways:
+
+| Passed | Meaning |
+|---|---|
+| `{ id: 7, name: 'Corner Café' }` | Tenant 7 is a member, and the source says these attributes about it |
+| `{ name: 'Corner Café' }` | A new member with these attributes |
+| a saved `Tenant` | Tenant 7 is a member; the source says nothing about its attributes |
+| an unsaved `Tenant` | Raises: LaForge cannot tell which of its attributes came from the source, so pass a hash |
+
+A saved record suits a member created or edited on its own:
 
   ```ruby
-    tenant = place.tenants.create!(external_id: 'T-2', name: 'Harbor Books')
+    tenant = place.tenants.create!(name: 'Harbor Books')
     place.record_data_entries({ tenants: [tenant] }, map_editor, partial: true)
   ```
 
-Listing an unsaved record raises: save it first, or pass its attributes as a hash.
+Until a forge creates a new member, its source's report names it by a placeholder. Once the owner is saved, the placeholder is replaced by the new row's `id`. Forging again before saving reuses the member already built, rather than building another.
+
+Sources rarely know the host application's ids, so an importer finds each record it reported before by its own means, such as the identifier its feed uses, and names it by `id`. Recording twice before a forge creates the member once, since a source's report replaces its previous one. A new member is created twice only when:
+
+- an importer doesn't find a member it reported before, so it reports it as new again. A complete list then also removes the old row, along with everything else recorded on it;
+- two sources each report the same new member before either has been forged. LaForge cannot know they mean the same record, so the second source should find the member the first created;
+- a source adds the same new member twice in single-member edits before a forge.
+
+An `id` must be one of the owner's current members. LaForge does not move a record from one owner to another, nor create a record with a given `id`, so naming a record that belongs to another owner, or that does not exist, raises `LaForge::InvalidValue`. Move it outside LaForge, by saving its foreign key, before an import names it under its new owner.
 
 ### Partial reports and single-member edits
 
@@ -392,20 +415,22 @@ A source that knows only some of the members records a partial report. It includ
 
   ```ruby
     # A business registry that knows only the businesses it has registered
-    place.record_data_entries({ tenants: [{ external_id: 'T-9', registration_number: 'R-10' }] }, business_registry, partial: true)
+    place.record_data_entries({ tenants: [{ id: harbor_books.id, registration_number: 'R-10' }] }, business_registry, partial: true)
 
     # Including some members and excluding others
-    place.record_data_entries({ tenants: { include: [{ external_id: 'T-9' }], exclude: [{ external_id: 'T-4' }] } }, business_registry, partial: true)
+    place.record_data_entries({ tenants: { include: [harbor_books], exclude: [corner_cafe] } }, business_registry, partial: true)
 
     # A map editor removing one imported tenant, and later undoing it
-    place.exclude_association_member(:tenants, { external_id: 'T-2' }, map_editor)
-    place.forget_association_member(:tenants, { external_id: 'T-2' }, map_editor)
+    place.exclude_association_member(:tenants, corner_cafe, map_editor)
+    place.forget_association_member(:tenants, corner_cafe, map_editor)
 
     # A map editor adding one category without restating the rest
     place.include_association_member(:place_categories, { category_id: landmark.id }, map_editor)
   ```
 
-Exclusions name members by key only.
+Exclusions name members by key only, so a member keyed by primary key can be excluded only once it exists.
+
+An exclusion names a row, so it lasts only as long as the row is one of the owner's members. Once the exclusion removes it, a source that still reports it no longer finds it among the owner's members, reports it as new, and it comes back. Where an editor's removal must outlast later imports, key the association on an identifier every source shares, with `key:`: an exclusion of `{ external_id: 'T-2' }` then holds whatever happens to the row.
 
 ### How membership is decided
 
@@ -421,15 +446,17 @@ A `precedence:` given while recording a list ranks that report's say on membersh
 
 ### Keys
 
-- Every member a report names needs a value for each key column, and a report cannot name the same member twice.
-- A current row missing a key value, such as a tenant added by hand without an `external_id`, cannot be identified across sources, so forging leaves it alone, even when a complete list excludes every other member. Remove such rows yourself if a complete list should replace them.
+- A report cannot name the same member twice.
+- With a key other than the primary key, every member a report names needs a value for each key column. A current row missing a key value cannot be identified across sources, so forging leaves it alone, even when a complete list excludes every other member.
 - Forging raises `LaForge::DuplicateMemberKey` when several current rows share a key, since LaForge cannot tell which one a source means. A unique index on the owner and key columns prevents this.
-- Keys must be stable. A row whose key is edited becomes a different member: a source reporting the old key gets a new row, and a complete list removes the edited one.
-- A member belongs to one owner. When a source starts reporting a member under another owner, the new owner gets a new row, built from what the source reports, and the old owner's row is removed when its sources stop including it, along with everything else recorded on it.
+- Keys other than the primary key must be stable. A row whose key is edited becomes a different member: a source reporting the old key gets a new row, and a complete list removes the edited one.
+- With a key other than the primary key, a member belongs to one owner. When a source starts reporting a member under another owner, the new owner gets a new row, built from what the source reports, and the old owner's row is removed when its sources stop including it, along with everything else recorded on it.
 
 ### When a member can't be created
 
-When membership includes a member that does not exist and no report says anything about it besides its key, the forge builds the member from its key. This happens when a source lists a member by key alone, and when a member was removed and destroyed, taking what was recorded on it, and membership later includes it again, such as when a map editor undoes an exclusion. If that member is invalid, as a tenant without a name is, the forge skips it, logs a warning and lists it under `skipped:` in `forge_diff`, until a source reports it with its attributes.
+When membership includes a member named by `id` that is no longer one of the owner's members, because it was destroyed or moved after the source named it, the forge skips it, logs a warning and lists it under `skipped:` in `forge_diff`. LaForge does not recreate a record with a given `id`; a source that reports it without one creates a new member.
+
+With a key other than the primary key, when membership includes a member that does not exist and no report says anything about it besides its key, the forge builds the member from its key. This happens when a source lists a member by key alone, and when a member was removed and destroyed, taking what was recorded on it, and membership later includes it again, such as when a map editor undoes an exclusion. If that member is invalid, as an opening hour without a time would be, the forge skips it in the same way, until a source reports it with its attributes.
 
 ### When a source stops reporting
 
@@ -455,19 +482,19 @@ When an import no longer reports a record at all, choose between two things, as 
 ### Inspecting associations
 
   ```ruby
-    place.source_values(:tenants)        # => { business_directory => [{ 'external_id' => 'T-1', 'name' => 'Corner Café' }], ... }, including what reports hold for members not yet recorded on
+    place.source_values(:tenants)        # => { business_directory => [{ 'id' => 7, 'name' => 'Corner Café' }], ... }, including what reports hold for members not yet recorded on
     Place.source_values(:tenants, records: places)                  # the same for many records, in a constant number of queries
-    place.member_sources(:tenants, external_id: 'T-1')
+    place.member_sources(:tenants, id: 7)
     # => { membership: map_editor, listed_by: [map_editor, business_directory], excluded_by: [],
     #      attributes: { 'name' => business_directory } }
-    place.forge_diff['tenants']          # => { added: [...], removed: [...], changed: [...] }, and skipped: when any would be
+    place.forge_diff['tenants']          # => { added: [...], removed: [...], changed: [...] }, and skipped: when any would be; a new member is added as its attributes
   ```
 
 A member's own `data_source_names` and `data_source?` count only the sources with entries on the member. A source that lists the member without saying anything about it, such as a map editor including it by key, is not among them; `member_sources` on the owner reports it. So an orphan check that asks whether another source still claims a member should check both:
 
   ```ruby
     tenant.withdraw_source(business_registry)
-    listed_by = place.member_sources(:tenants, external_id: 'T-1')[:listed_by] - [business_registry]
+    listed_by = place.member_sources(:tenants, id: tenant.id)[:listed_by] - [business_registry]
     tenant.archive! if listed_by.empty? && tenant.data_entries.without_source(business_registry).empty?
   ```
 

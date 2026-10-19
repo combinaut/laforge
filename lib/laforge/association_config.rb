@@ -2,8 +2,13 @@ module LaForge
   # Describes a tracked has_many or has_one association, deriving everything it can from the association reflection.
   # A has_one is tracked as a list of at most one member; with no key, every source reports the same single member.
   #
-  # Members are identified by their key: derived from the records a join row references, or given with `key:`.
+  # Members are identified by their key: given with `key:`, else derived from the records a join row references, else the
+  # member's primary key. A member keyed by primary key that a source names without one is a new member: its report names
+  # it by a placeholder until the forge that creates it has been saved, which writes the new row's id in its place.
   class AssociationConfig
+    # The field of a placeholder key, which names a new member until it has an id
+    NEW_MEMBER = 'new'
+
     attr_reader :owner_class, :name, :reflection, :key, :order_column
 
     def initialize(owner_class, name, key: nil)
@@ -14,8 +19,7 @@ module LaForge
       raise ArgumentError, "#{owner_class.name} has no association named #{name}" unless reflection
       raise ArgumentError, "#{owner_class.name}##{name} must be a has_many or has_one without :through; track its join association instead" unless (reflection.collection? || reflection.has_one?) && !reflection.through_reflection?
 
-      @key = Array.wrap(key || derived_key).map(&:to_s)
-      raise ArgumentError, "Cannot derive a key for #{owner_class.name}##{name} because its members have no foreign keys other than the owner's; pass key:" if @key.empty? && collection?
+      @key = Array.wrap(key || derived_key.presence || (collection? ? klass.primary_key : nil)).map(&:to_s)
 
       @order_column = derived_order_column
     end
@@ -48,8 +52,10 @@ module LaForge
       members.transform_values(&:first)
     end
 
-    # "external_id "T-1"" for a key's values, or "no key" for a has_one's single member
+    # "external_id "T-1"" for a key's values, "no key" for a has_one's single member, or "no id" for a new member
     def describe_key(values)
+      return 'no id' if values.first == NEW_MEMBER
+
       key.zip(values).map { |column, value| "#{column} #{value.inspect}" }.join(', ').presence || 'no key'
     end
 
@@ -70,22 +76,38 @@ module LaForge
     end
 
     def key_of(member)
-      key.map { |column| member[column] }
+      new_member?(member) ? [NEW_MEMBER, member[NEW_MEMBER]] : key.map { |column| member[column] }
     end
 
     def key_hash(member)
-      key.index_with { |column| member[column] }
+      new_member?(member) ? member.slice(NEW_MEMBER) : key.index_with { |column| member[column] }
     end
 
     def record_key(record)
       key.map { |column| record[column] }
     end
 
+    # Whether members are keyed by their primary key, so a member named without one is new
+    def primary_keyed?
+      key == [klass.primary_key]
+    end
+
+    # Whether a member is named by a placeholder because it has no id yet
+    def new_member?(member)
+      member.is_a?(Hash) && member.key?(NEW_MEMBER)
+    end
+
+    # The attributes a member that does not exist is built with: its key, or nothing for a new member
+    def build_attributes(member)
+      new_member?(member) ? {} : key_hash(member)
+    end
+
     # Validates members recorded for this association and returns [key hash, attributes] for each, where the attributes
     # are what the source says about the member besides its key, to be recorded on the member itself. A member is a hash
     # of its key and attributes (nested tracked associations included), or a saved record, which contributes only its key.
-    # A has_one is recorded as one member, or nil for none, and stored as a list of at most one. Pass `attributes: false`
-    # for members that can only be named, such as exclusions.
+    # Where members are keyed by primary key, a hash without one is a new member, named by a placeholder. A has_one is
+    # recorded as one member, or nil for none, and stored as a list of at most one. Pass `attributes: false` for members
+    # that can only be named, such as exclusions.
     def normalize_members(members, attributes: true)
       unless collection?
         unless members.nil? || members.is_a?(Hash) || members.is_a?(::ActiveRecord::Base) || (members.is_a?(Array) && members.size <= 1)
@@ -103,8 +125,10 @@ module LaForge
       normalized
     end
 
-    # Raise if a member references a record that does not exist
-    def assert_references_exist!(members)
+    # Raise if a member references a record that does not exist, or is named by an id that is not one of the owner's
+    # members. LaForge does not move a record from one owner to another; that is done outside it.
+    def assert_references_exist!(owner, members)
+      assert_members_of!(owner, members) if primary_keyed?
       reference_reflections.each do |reference|
         foreign_key = reference.foreign_key.to_s
         ids = members.map { |member| member[foreign_key] }.compact.uniq
@@ -144,8 +168,14 @@ module LaForge
         member = key_hash(member)
       end
       member = member.to_h.stringify_keys
+      if primary_keyed? && member[klass.primary_key].nil?
+        raise ArgumentError, "#{owner_class.name}##{name} members are named here by #{klass.primary_key}, which a new member does not have yet" unless attributes
+
+        member = member.merge(NEW_MEMBER => SecureRandom.hex(8))
+      end
 
       member.each do |field, value|
+        next if field == NEW_MEMBER && primary_keyed?
         next if key.include?(field)
 
         if !attributes
@@ -161,11 +191,26 @@ module LaForge
         end
       end
 
-      missing = key - member.keys
-      raise ArgumentError, "#{owner_class.name}##{name} members must include their key (#{missing.join(', ')} missing)" if missing.any?
-      raise ArgumentError, "#{owner_class.name}##{name} members must have a value for each key column (#{key.join(', ')})" if blank_key?(key_of(member))
+      unless new_member?(member)
+        missing = key - member.keys
+        raise ArgumentError, "#{owner_class.name}##{name} members must include their key (#{missing.join(', ')} missing)" if missing.any?
+        raise ArgumentError, "#{owner_class.name}##{name} members must have a value for each key column (#{key.join(', ')})" if blank_key?(key_of(member))
+      end
 
-      [key_hash(member), member.except(*key)]
+      [key_hash(member), member.except(*key, NEW_MEMBER)]
+    end
+
+    def assert_members_of!(owner, members)
+      ids = members.reject { |member| new_member?(member) }.map { |member| member[klass.primary_key] }
+      return if ids.empty?
+
+      own = owner.new_record? ? [] : owner.association(name.to_sym).scope.where(klass.primary_key => ids).pluck(klass.primary_key)
+      foreign = ids - own
+      return if foreign.empty?
+
+      raise InvalidValue, "#{klass.name} #{foreign.join(', ')} #{foreign.size == 1 ? 'is not one' : 'are not'} of #{owner_class.name} #{owner.id.inspect}'s #{name}. " \
+                          "LaForge does not move records between owners or create a member with a given #{klass.primary_key}; " \
+                          "name a new member without one, or reassign the record outside LaForge first"
     end
 
     # Every belongs_to on the member other than the one pointing back at the owner identifies a join member

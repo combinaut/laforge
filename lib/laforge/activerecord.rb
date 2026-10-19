@@ -6,8 +6,9 @@ module LaForge
   module ActiveRecord
     extend ActiveSupport::Concern
 
-    # associations: { name => { key: } } tracks has_many and has_one associations; keys of join members are derived from
-    # the reflection, owned records need a key: (except a has_one's single member)
+    # associations: { name => { key: } } tracks has_many and has_one associations. Members are keyed by `key:` if given,
+    # else by the foreign keys of the records a join row references, else by primary key (a has_one's single member needs
+    # no key)
     def laforged(associations: {})
       has_many :data_entries, as: :record, dependent: :delete_all, autosave: true, class_name: 'LaForge::DataEntry'
       has_many :data_sources, -> { distinct }, through: :data_entries, source: :source, class_name: 'LaForge::DataSource'
@@ -147,8 +148,9 @@ module LaForge
     # Record several pieces of information from the same source.
     # A tracked association's value is the source's whole member list. Pass `partial: true` when the source reports only
     # some members: the value is then the members it includes, or { include: [...], exclude: [...] }, and members other
-    # sources report are left to them. A member is a hash of its key and what the source says about it, or a saved record.
-    # When the owner is forged, the hash's attributes are recorded on the member as the source's entries.
+    # sources report are left to them. A member is a hash of its key and what the source says about it, or a saved record;
+    # where members are keyed by primary key, a hash without an id is a new member. When the owner is forged, the hash's
+    # attributes are recorded on the member as the source's entries.
     def record_data_entries(attributes_hash, source, precedence: NOT_GIVEN, partial: false)
       attributes_hash.each do |attribute_name, value|
         if (config = laforged_associations[attribute_name.to_s])
@@ -261,10 +263,16 @@ module LaForge
       (@laforge_replaced_members ||= []) << [config, record]
     end
 
-    # Forgets the members a forge replaced and the precedence rules read for the last forge, so they are read afresh as a
-    # forge would
+    # The new members forges have built for a tracked association and that are not saved yet, by placeholder key
+    def laforge_created_members(config)
+      (@laforge_created_members ||= {})[config.name] ||= {}
+    end
+
+    # Forgets the members a forge replaced or created and the precedence rules read for the last forge, so they are read
+    # afresh as a forge would
     def reload(*)
       @laforge_replaced_members = nil
+      @laforge_created_members = nil
       @laforge_precedence_resolver = nil
       super
     end
@@ -348,8 +356,10 @@ module LaForge
       columns
     end
 
-    # Removes the has_one members a forge replaced
+    # Removes the has_one members a forge replaced, and names the members a forge created by their new ids in the reports
     def laforge_after_save
+      (@laforge_created_members || {}).each { |name, created| AssociationTracking.name_created(self, laforged_associations.fetch(name), created) }
+      @laforge_created_members = nil
       (@laforge_replaced_members || []).each do |config, record|
         case config.reflection.options[:dependent]
         when :destroy, :destroy_async then record.destroy!

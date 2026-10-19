@@ -8,7 +8,9 @@ require 'spec_helper'
 # Model:
 # - Recording never touches an association; forging resolves its final state and assigns it.
 # - Membership: each source records a report for an association, either its complete member list or a partial one
-#   (members it includes or excludes). A report names members by key. Membership is decided per member by the
+#   (members it includes or excludes). A report names members by key: the records a join row references, `key:` columns,
+#   or else the primary key, where a member named without an id is new and named by a placeholder until it is created
+#   and the owner saved. An id must be one of the owner's members. Membership is decided per member by the
 #   highest-precedence report with an opinion on it; a complete list excludes every member it doesn't list. A partial
 #   source's report remembers the members it stopped including, which are removed unless another source includes them.
 #   Rows no source has ever reported are left alone.
@@ -21,7 +23,7 @@ require 'spec_helper'
 #   attribute the member has a newer value for from the same source is not recorded.
 # - A member that membership includes but that doesn't exist is created from its key when no report has attributes for
 #   it, unless it is invalid with its key alone; then the forge skips it and logs a warning until a source reports it
-#   with its attributes.
+#   with its attributes. A member named by an id that is no longer one of the owner's is skipped the same way.
 #
 # Removal: forge has exactly the effect of assigning the resolved collection to the association, nothing more.
 # Destroying records is otherwise out of scope. Every place a row is deleted, noted for later consideration:
@@ -33,10 +35,11 @@ require 'spec_helper'
 #   attribute entries other sources recorded on those rows.
 # - A member whose referenced record has been deleted is dropped from the resolved collection (C30), so its join row
 #   is removed too.
-# - A record destroyed by another mechanism is recreated by the next forge if membership still includes it, from its key
-#   or from what sources then report about it. Attribute entries never resurrect a record by themselves.
+# - A record keyed by `key:` columns and destroyed by another mechanism is recreated by the next forge if membership
+#   still includes it, from its key or from what sources then report about it. One keyed by primary key is not; a source
+#   reporting it without its id creates a new one. Attribute entries never resurrect a record by themselves.
 #
-# Every example carries a `capability:` id. Retired ids (C09 C10 C11 C23 C35 C48 C66 C67) are not reused.
+# Every example carries a `capability:` id. Retired ids (C09 C10 C11 C23 C35 C48 C66 C67 C76) are not reused.
 describe 'Association tracking capabilities' do
   include ActiveSupport::Testing::TimeHelpers
 
@@ -68,7 +71,11 @@ describe 'Association tracking capabilities' do
   def parcel_link(parcel, type, **fields) = { parcel_id: parcel.id, parcel_link_type_id: type.id, **fields }
   def parcel_link_row(record, parcel, type) = record.reload.parcel_links.find_by(parcel_id: parcel.id, parcel_link_type_id: type.id)
 
-  def tenant(external_id, **attributes) = { external_id: external_id, **attributes }
+  # How an importer names a tenant: by id once it exists, found by an identifier of its own, otherwise as a new tenant
+  def tenant(external_id, **attributes)
+    existing = Tenant.find_by(external_id: external_id)
+    { **(existing ? { id: existing.id } : {}), external_id: external_id, **attributes }
+  end
   def week(opens_at, days: 1..5) = days.map { |day| { day: day, opens_at: opens_at } }
 
   def count_queries(&block)
@@ -174,15 +181,20 @@ describe 'Association tracking capabilities' do
       expect(parcel_link_row(place, lot_14, occupies)).to have_attributes(active: false) # kept in the low report until now
     end
 
-    it "creates an owned record with the attributes a lower-precedence source's list gave it once that list takes over, and skips one it named by key alone if it is invalid with its key alone", capability: 'C47' do
-      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A', opening_hours: week('08:00')), { external_id: 'T-3' }] }, low)
-      place.record_data_entries({ tenants: [tenant('T-2', name: 'Harbor Books')] }, high)
+    it "creates an owned record with the attributes a lower-precedence source's list gave it once that list takes over, and skips one named by an id that no longer exists", capability: 'C47' do
+      harbor_books = place.tenants.create!(external_id: 'T-3', name: 'Harbor Books')
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A', opening_hours: week('08:00')), tenant('T-3')] }, low)
+      place.record_data_entries({ tenants: [tenant('T-2', name: 'Harbor Maps')] }, high)
       place.forge!
-      expect(Tenant.pluck(:external_id)).to eq(['T-2'])
+      expect(Tenant.pluck(:external_id)).to eq(['T-2']) # noted: T-3 destroyed per `dependent: :destroy`, as high's list leaves it out
+      harbor_maps = Tenant.find_by!(external_id: 'T-2')
 
       place.data_entries.with_source(high).with_attribute(:tenants).destroy_all
       place.reload
-      expect(place.forge_diff['tenants']).to eq(added: [{ 'external_id' => 'T-1' }], removed: [{ 'external_id' => 'T-2' }], changed: [], skipped: [{ 'external_id' => 'T-3' }])
+      expect(place.forge_diff['tenants']).to eq(
+        added: [{ 'external_id' => 'T-1', 'name' => 'Corner Café', 'unit' => '1A', 'opening_hours' => week('08:00').map(&:stringify_keys) }],
+        removed: [{ 'id' => harbor_maps.id }], changed: [], skipped: [{ 'id' => harbor_books.id }]
+      )
       log = StringIO.new
       allow(place).to receive(:logger).and_return(Logger.new(log))
       place.forge!
@@ -190,7 +202,21 @@ describe 'Association tracking capabilities' do
       corner_cafe = place.reload.tenants.sole # noted: T-2 destroyed per `dependent: :destroy`
       expect([corner_cafe.external_id, corner_cafe.name, corner_cafe.unit]).to eq(['T-1', 'Corner Café', '1A'])
       expect(corner_cafe.opening_hours.pluck(:day, :opens_at)).to eq(week('08:00').map(&:values))
-      expect(log.string).to include(%(LaForge skipped the Tenant with external_id "T-3" in Place #{place.id}'s tenants)).and include("Name can't be blank")
+      expect(log.string).to include(%(LaForge skipped Tenant #{harbor_books.id} in Place #{place.id}'s tenants: membership includes it, but it is no longer one of them))
+    end
+
+    it 'skips a member named by key alone that is invalid with its key alone, until a source reports it with its attributes', capability: 'C80' do
+      corner_cafe = place.tenants.create!(name: 'Corner Café')
+      corner_cafe.record_data_entries({ opening_hours: [{ day: 1 }] }, low)
+      log = StringIO.new
+      allow(corner_cafe).to receive(:logger).and_return(Logger.new(log))
+      OpeningHour.validates :opens_at, presence: true
+      corner_cafe.forge!
+
+      expect(corner_cafe.reload.opening_hours).to be_empty
+      expect(log.string).to include(%(LaForge skipped the OpeningHour with day 1 in Tenant #{corner_cafe.id}'s opening_hours)).and include("Opens at can't be blank")
+    ensure
+      OpeningHour.clear_validators!
     end
 
     it 'treats an empty list as a value that wins like any other', capability: 'C12' do
@@ -204,6 +230,7 @@ describe 'Association tracking capabilities' do
 
     it "resolves a member's own tracked associations the same way, recorded on the member", capability: 'C13' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', opening_hours: week('08:00'))] }, low)
+      place.forge!
       place.record_data_entries({ tenants: [tenant('T-1', opening_hours: week('09:00', days: [1]))] }, high)
       place.forge!
 
@@ -360,6 +387,7 @@ describe 'Association tracking capabilities' do
 
     it "keeps a source's attributes on a member after its list drops it while another source keeps it, until the source withdraws them", capability: 'C62' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low)
+      place.forge!
       place.record_data_entries({ tenants: [tenant('T-1', unit: '2B')] }, high, partial: true)
       place.forge!
       expect(place.reload.tenants.first.unit).to eq('2B')
@@ -401,6 +429,8 @@ describe 'Association tracking capabilities' do
     end
 
     it "ranks membership, not the members' attributes, by a precedence given while recording a list", capability: 'C61' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'From Low')] }, low)
+      place.forge!
       place.record_data_entries({ tenants: [tenant('T-1', name: 'From Low'), tenant('T-2', name: 'Only Low')] }, low, precedence: 50)
       place.record_data_entries({ tenants: [tenant('T-1', name: 'From High')] }, high)
       place.forge!
@@ -492,38 +522,41 @@ describe 'Association tracking capabilities' do
       corner_cafe.record_data_entries({ name: 'Edited' }, top)
       corner_cafe.forge!
 
-      expect(place.reload.source_values(:tenants)).to eq(low => [{ 'external_id' => 'T-1', 'name' => 'Corner Café' }], top => [{ 'external_id' => 'T-1', 'name' => 'Edited' }])
+      expect(place.reload.source_values(:tenants)).to eq(
+        low => [{ 'id' => corner_cafe.id, 'external_id' => 'T-1', 'name' => 'Corner Café' }],
+        top => [{ 'id' => corner_cafe.id, 'name' => 'Edited' }]
+      )
     end
 
     it "counts a source among an owned record's sources only when it records on the record, while the owner reports every source that lists it", capability: 'C68' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
       place.forge!
-      place.include_association_member(:tenants, { external_id: 'T-1' }, top) # listed by key only
+      corner_cafe = place.tenants.first
+      place.include_association_member(:tenants, { id: corner_cafe.id }, top) # listed by key only
       place.save!
 
-      corner_cafe = place.reload.tenants.first
-      expect(corner_cafe.data_source_names).to eq(['low'])
+      expect(corner_cafe.data_source_names).to contain_exactly('low')
       expect(corner_cafe.data_source?(top)).to be(false)
-      expect(place.member_sources(:tenants, external_id: 'T-1')).to eq(membership: top, listed_by: [top, low], excluded_by: [], attributes: { 'name' => low })
+      expect(place.reload.member_sources(:tenants, id: corner_cafe.id)).to eq(membership: top, listed_by: [top, low], excluded_by: [], attributes: { 'external_id' => low, 'name' => low })
 
       # An orphan check for low: nothing else records on the tenant, but top still lists it
       corner_cafe.withdraw_source(low)
       expect(corner_cafe.data_entries.without_source(low)).to be_empty
-      expect(place.member_sources(:tenants, external_id: 'T-1')[:listed_by] - [low]).to eq([top])
+      expect(place.member_sources(:tenants, id: corner_cafe.id)[:listed_by] - [low]).to eq([top])
     end
 
-    it 'leaves rows without a key value alone, even when a complete list excludes every other member, and rejects blank keys', capability: 'C69' do
-      place.tenants.create!(name: 'Added By Hand')
-      place.tenants.create!(name: 'Also Added By Hand')
+    it 'leaves rows added another way alone for partial reports, and removes them when a complete list leaves them out', capability: 'C69' do
+      added_by_hand = place.tenants.create!(name: 'Added By Hand')
 
-      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low, partial: true)
       expect(place.forge_diff['tenants']).to include(removed: [])
       place.forge!
+      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Added By Hand', 'Corner Café')
 
-      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Added By Hand', 'Also Added By Hand', 'Corner Café')
-      expect(place.source_values(:tenants)[low]).to eq([{ 'external_id' => 'T-1', 'name' => 'Corner Café' }])
-      expect { place.record_data_entries({ tenants: [{ external_id: nil }] }, low) }.to raise_error(ArgumentError, /value for each key column/)
-      expect { place.record_data_entries({ tenants: [place.tenants.first] }, low) }.to raise_error(ArgumentError, /value for each key column/)
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, high)
+      expect(place.forge_diff['tenants']).to include(removed: [{ 'id' => added_by_hand.id }])
+      place.forge!
+      expect(place.reload.tenants.pluck(:name)).to eq(['Corner Café']) # noted: destroyed per `dependent: :destroy`
     end
 
     it "records a member's attributes on the member as the source's entries, keeping only its key in the list", capability: 'C63' do
@@ -531,13 +564,13 @@ describe 'Association tracking capabilities' do
       place.forge!
 
       corner_cafe = place.reload.tenants.first
-      expect(place.data_entries.find_by!(attribute_name: 'tenants').value).to eq([{ 'external_id' => 'T-1' }])
-      expect(corner_cafe.data_entries.where(source: low).pluck(:attribute_name, :value)).to contain_exactly(['name', 'Corner Café'], ['opening_hours', [{ 'day' => 1 }]])
+      expect(place.data_entries.find_by!(attribute_name: 'tenants').value).to eq([{ 'id' => corner_cafe.id }])
+      expect(corner_cafe.data_entries.where(source: low).pluck(:attribute_name, :value)).to contain_exactly(['external_id', 'T-1'], ['name', 'Corner Café'], ['opening_hours', [{ 'day' => 1 }]])
       expect(corner_cafe.opening_hours.first.data_entries.pluck(:attribute_name, :value)).to eq([%w[opens_at 08:00]])
     end
 
     it 'creates nothing for a member, and records none of its attributes, while membership excludes it', capability: 'C64' do
-      place.exclude_association_member(:tenants, { external_id: 'T-1' }, top)
+      place.record_data_entries({ tenants: [] }, top)
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
       place.forge!
 
@@ -552,7 +585,7 @@ describe 'Association tracking capabilities' do
       harbor_books.record_data_entries({ name: 'Harbor Books & Maps' }, top)
       harbor_books.save! # recorded but not yet forged
 
-      place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Bakery'), { external_id: 'T-2' }] }, low)
+      place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Bakery'), { id: harbor_books.id }] }, low)
       place.forge!
 
       expect(place.reload.tenants.order(:external_id).pluck(:name)).to eq(['Corner Bakery', 'Harbor Books'])
@@ -565,7 +598,7 @@ describe 'Association tracking capabilities' do
 
       place.record_data_entries({ tenants: [corner_cafe] }, high)
       place.forge!
-      expect(place.reload.member_sources(:tenants, external_id: 'T-1')).to include(membership: high, listed_by: [high, low], attributes: { 'name' => low })
+      expect(place.reload.member_sources(:tenants, id: corner_cafe.id)).to include(membership: high, listed_by: [high, low], attributes: { 'external_id' => low, 'name' => low })
 
       expect { place.record_data_entries({ tenants: [Tenant.new(external_id: 'T-2', name: 'Harbor Books')] }, low) }.to raise_error(LaForge::InvalidValue, /Cannot list an unsaved Tenant in Place#tenants; save it first, or pass its attributes as a hash/)
       expect { place.record_data_entries({ tenants: [Marker.create!(label: 'Pin')] }, low) }.to raise_error(LaForge::InvalidValue, /must be Tenant records/)
@@ -574,28 +607,52 @@ describe 'Association tracking capabilities' do
     it 'keeps member attributes in the report until a forge records them, so the owner can be saved and forged later', capability: 'C72' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
       place.save!
-      expect(place.data_entries.with_source(low).with_attribute(:tenants).sole.value).to match(
-        'include' => [{ 'external_id' => 'T-1' }],
-        'pending' => [{ 'key' => { 'external_id' => 'T-1' }, 'attributes' => { 'name' => 'Corner Café' }, 'recorded_at' => String }]
+      report = place.data_entries.with_source(low).with_attribute(:tenants).sole.value
+      expect(report).to match(
+        'include' => [{ 'new' => String }], # a placeholder until the tenant exists
+        'pending' => [{ 'key' => { 'new' => report['include'].first['new'] }, 'attributes' => { 'external_id' => 'T-1', 'name' => 'Corner Café' }, 'recorded_at' => String }]
       )
 
       place.reload.forge!
-      expect(place.reload.tenants.pluck(:external_id, :name)).to eq([['T-1', 'Corner Café']])
-      expect(place.data_entries.with_source(low).with_attribute(:tenants).sole.value).to eq([{ 'external_id' => 'T-1' }])
+      corner_cafe = place.reload.tenants.sole
+      expect([corner_cafe.external_id, corner_cafe.name]).to eq(['T-1', 'Corner Café'])
+      expect(place.data_entries.with_source(low).with_attribute(:tenants).sole.value).to eq([{ 'id' => corner_cafe.id }])
+    end
+
+    it 'creates a new member once when it is forged twice before the owner is saved, and names it by id once saved', capability: 'C81' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
+      place.forge
+      place.forge
+      expect(place.tenants.size).to eq(1)
+
+      place.save!
+      expect(place.reload.tenants.pluck(:name)).to eq(['Corner Café'])
+      expect(place.data_entries.with_source(low).with_attribute(:tenants).sole.value).to eq([{ 'id' => place.tenants.sole.id }])
+    end
+
+    it 'raises for a member named by an id that is not one of the owner members, rather than move it from another owner', capability: 'C77' do
+      other = Place.create!(name: 'Other')
+      other_cafe = other.tenants.create!(name: 'Corner Café')
+
+      expect { place.record_data_entries({ tenants: [{ id: other_cafe.id, name: 'Corner Café' }] }, low) }.to raise_error(LaForge::InvalidValue, /Tenant #{other_cafe.id} is not one of Place #{place.id}'s tenants. LaForge does not move records between owners/)
+      expect { place.include_association_member(:tenants, other_cafe, low) }.to raise_error(LaForge::InvalidValue, /is not one of Place #{place.id}'s tenants/)
+      expect { Place.new.record_data_entries({ tenants: [{ id: other_cafe.id }] }, low) }.to raise_error(LaForge::InvalidValue, /is not one of Place nil's tenants/)
+      expect { place.record_data_entries({ tenants: [{ id: 0 }] }, low) }.to raise_error(LaForge::InvalidValue, /Tenant 0 is not one of/)
     end
 
     it 'keeps what a report says about a member while membership excludes it, until the source reports it again or is withdrawn', capability: 'C78' do
+      harbor_books = place.tenants.create!(external_id: 'T-2', name: 'Harbor Books')
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Harbor Books')] }, low)
-      place.record_data_entries({ tenants: [tenant('T-2', name: 'Harbor Books')] }, high)
+      place.record_data_entries({ tenants: [tenant('T-2')] }, high)
       place.forge!
       pending = -> { LaForge::MemberList.new(place.reload.data_entries.with_source(low).with_attribute(:tenants).sole.value).pending }
-      expect(pending.().map { |item| item['key'] }).to eq([{ 'external_id' => 'T-1' }]) # T-2's attributes are on T-2 now
+      expect(pending.().map { |item| item['attributes'] }).to eq([{ 'external_id' => 'T-1', 'name' => 'Corner Café' }]) # T-2's attributes are on T-2 now
 
-      place.include_association_member(:tenants, tenant('T-1', name: 'Corner Café Ltd'), low)
+      place.include_association_member(:tenants, { id: harbor_books.id, name: 'Harbor Books Ltd' }, high)
       place.save!
-      expect(pending.().map { |item| item['attributes'] }).to eq([{ 'name' => 'Corner Café Ltd' }])
+      expect(LaForge::MemberList.new(place.reload.data_entries.with_source(high).with_attribute(:tenants).sole.value).pending.map { |item| item['attributes'] }).to eq([{ 'name' => 'Harbor Books Ltd' }])
 
-      place.record_data_entries({ tenants: [{ external_id: 'T-1' }, { external_id: 'T-2' }] }, low) # its next report says nothing about T-1 besides its key
+      place.record_data_entries({ tenants: [{ id: harbor_books.id }] }, low) # its next report no longer lists T-1
       place.save!
       expect(pending.()).to be_empty
 
@@ -606,65 +663,38 @@ describe 'Association tracking capabilities' do
     end
 
     it 'does not let what an older report says about a member undo a newer value from the same source', capability: 'C79' do
-      travel_to(Time.utc(2026, 1, 1)) do
-        place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low)
-        place.record_data_entries({ tenants: [] }, high)
-        place.forge!
+      corner_cafe = travel_to(Time.utc(2025, 12, 1)) { place.tenants.create!(name: 'Corner Café') }
+
+      travel_to(Time.utc(2026, 1, 1)) do # recorded, and the place saved without forging
+        place.record_data_entries({ tenants: [{ id: corner_cafe.id, name: 'Corner Café', unit: '1A' }] }, low)
+        place.save!
       end
 
-      travel_to(Time.utc(2026, 2, 1)) do # the tenant is created another way, and the same source names it directly
-        corner_cafe = place.tenants.create!(external_id: 'T-1', name: 'Corner Café')
+      travel_to(Time.utc(2026, 2, 1)) do # the same source then names the tenant directly
         corner_cafe.forge! { corner_cafe.record_data_entries({ name: 'Corner Café & Co' }, low) }
       end
 
-      place.data_entries.with_source(high).with_attribute(:tenants).destroy_all
       place.reload.forge!
       expect(place.reload.tenants.pluck(:name, :unit)).to eq([['Corner Café & Co', '1A']])
     end
 
-    it 'raises for a member listed twice, and for rows sharing a key, rather than choosing one', capability: 'C73' do
-      expect { place.record_data_entries({ tenants: [tenant('T-1', name: 'A'), tenant('T-1', name: 'B')] }, low) }.to raise_error(ArgumentError, /lists the same member more than once \(external_id "T-1"\)/)
+    it 'raises for a member listed twice, and for rows sharing a declared key, rather than choosing one', capability: 'C73' do
+      corner_cafe = place.tenants.create!(name: 'Corner Café')
+      expect { place.record_data_entries({ tenants: [{ id: corner_cafe.id, name: 'A' }, { id: corner_cafe.id, name: 'B' }] }, low) }.to raise_error(ArgumentError, /lists the same member more than once \(id #{corner_cafe.id}\)/)
 
-      place.tenants.create!(external_id: 'T-1', name: 'Corner Café')
-      place.tenants.create!(external_id: 'T-1', name: 'Corner Café Copy')
-      place.record_data_entries({ tenants: [tenant('T-2', name: 'Harbor Books')] }, low)
+      corner_cafe.opening_hours.create!(day: 1, opens_at: '08:00')
+      corner_cafe.opening_hours.create!(day: 1, opens_at: '09:00')
+      corner_cafe.record_data_entries({ opening_hours: week('10:00', days: [2]) }, low)
 
-      expect { place.forge! }.to raise_error(LaForge::DuplicateMemberKey, /tenants has several Tenant rows with the same key: external_id "T-1"/)
-      expect(place.reload.tenants.count).to eq(2)
-    end
-
-    it 'treats a row whose key was edited as a different member', capability: 'C76' do
-      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
-      place.forge!
-      place.tenants.first.update!(external_id: 'T-1-edited')
-
-      place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
-      place.forge!
-
-      expect(place.reload.tenants.pluck(:external_id)).to eq(['T-1']) # noted: the edited row is destroyed as unlisted
-    end
-
-    it "gives the new owner a new row when a source moves a member, removing the old row with what was recorded on it", capability: 'C77' do
-      other = Place.create!(name: 'Other')
-      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
-      place.forge!
-      old_row = place.tenants.first
-      old_row.record_data_entries({ unit: '1A' }, high)
-      old_row.forge!
-
-      other.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
-      other.forge!
-      place.reload.record_data_entries({ tenants: [] }, low)
-      place.forge!
-
-      expect(other.reload.tenants.map { |row| [row.id == old_row.id, row.unit] }).to eq([[false, nil]])
-      expect(Tenant.exists?(old_row.id)).to be(false) # noted: destroyed per `dependent: :destroy`, with the unit high recorded
+      expect { corner_cafe.forge! }.to raise_error(LaForge::DuplicateMemberKey, /opening_hours has several OpeningHour rows with the same key: day 1/)
+      expect(corner_cafe.reload.opening_hours.count).to eq(2)
     end
 
     it 'rejects the order column and validates nested lists when recording', capability: 'C74' do
       expect { place.record_data_entries({ place_categories: [{ category_id: cafe.id, position: 3 }] }, low) }.to raise_error(ArgumentError, /LaForge writes it from the order of the list/)
       expect { place.record_data_entries({ tenants: [tenant('T-1', opening_hours: [{ opens_at: '08:00' }])] }, low) }.to raise_error(ArgumentError, /must include their key \(day missing\)/)
-      expect { place.exclude_association_member(:tenants, tenant('T-1', name: 'Corner Café'), top) }.to raise_error(ArgumentError, /named here by key only/)
+      expect { place.exclude_association_member(:tenants, place.tenants.create!(name: 'Corner Café').attributes.slice('id', 'name'), top) }.to raise_error(ArgumentError, /named here by key only \(id\), not name/)
+      expect { place.exclude_association_member(:tenants, { name: 'Corner Café' }, top) }.to raise_error(ArgumentError, /named here by id, which a new member does not have yet/)
     end
   end
 
@@ -724,7 +754,7 @@ describe 'Association tracking capabilities' do
       stub_const('ScopedPlace', Class.new(ActiveRecord::Base))
       ScopedPlace.table_name = 'places'
       ScopedPlace.has_many :closed_tenants, -> { where(status: 'closed') }, as: :occupiable, class_name: 'Tenant', dependent: :destroy
-      ScopedPlace.laforged(associations: { closed_tenants: { key: :external_id } })
+      ScopedPlace.laforged(associations: { closed_tenants: {} })
       scoped_place = ScopedPlace.create!(name: 'Scoped')
 
       2.times do
@@ -854,12 +884,10 @@ describe 'Association tracking capabilities' do
       expect(Place.laforged_association(:reported_parcel_links).key).to eq(%w[parcel_id parcel_link_type_id])
     end
 
-    it 'requires a key for owned records, which have none to derive', capability: 'C40' do
-      stub_const('KeylessPlace', Class.new(ActiveRecord::Base))
-      KeylessPlace.table_name = 'places'
-      KeylessPlace.has_many :tenants, as: :occupiable
-
-      expect { KeylessPlace.laforged(associations: { tenants: {} }) }.to raise_error(ArgumentError, /key/)
+    it 'keys owned records by primary key unless key: names other columns', capability: 'C40' do
+      expect(Place.laforged_association(:tenants).key).to eq(%w[id])
+      expect(Tenant.laforged_association(:opening_hours).key).to eq(%w[day])
+      expect(Place.laforged_association(:marker).key).to eq([]) # a has_one's single member
     end
   end
 end

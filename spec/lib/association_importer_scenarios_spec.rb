@@ -53,7 +53,11 @@ describe 'Association assignment by importers' do
   def categories_of(record) = record.reload.place_categories.map(&:category)
   def parcel_link(parcel, type, **fields) = { parcel_id: parcel.id, parcel_link_type_id: type.id, **fields }
   def parcel_links_of(record) = record.reload.parcel_links.order(:id).map { |row| [row.parcel, row.parcel_link_type, row.active, row.external_id] }
-  def tenant(external_id, **fields) = { external_id: external_id, name: "Tenant #{external_id}", **fields }
+  # The importer finds a tenant it reported before by its own identifier and names it by id; otherwise it is new
+  def tenant(external_id, **fields)
+    existing = Tenant.find_by(external_id: external_id)
+    { **(existing ? { id: existing.id } : {}), external_id: external_id, name: "Tenant #{external_id}", **fields }
+  end
   def tenants_of(record) = record.reload.tenants.order(:external_id).pluck(:external_id, :name, :unit)
 
   describe 'a single importer reporting a category list each run' do
@@ -250,26 +254,72 @@ describe 'Association assignment by importers' do
     end
   end
 
+  describe 'a nightly import that names the tenants it created before by id' do
+    it 'keeps the same tenants, and what other sources recorded on them, from night to night' do
+      import(place, business_directory, tenants: [tenant('T-1', unit: '1A'), tenant('T-2', unit: '2A')])
+      corner_cafe, harbor_books = %w[T-1 T-2].map { |external_id| Tenant.find_by!(external_id: external_id) }
+      corner_cafe.forge! { corner_cafe.record_data_entries({ unit: '1B' }, map_editor) }
+
+      import(place.reload, business_directory, tenants: [tenant('T-1', unit: '1A'), tenant('T-2', unit: '2C')])
+
+      expect(place.reload.tenants.pluck(:id)).to contain_exactly(corner_cafe.id, harbor_books.id)
+      expect(corner_cafe.reload.unit).to eq('1B') # the map editor's correction survives
+      expect(harbor_books.reload.unit).to eq('2C') # the new night's attributes are recorded
+    end
+
+    it 'creates a new tenant once when two nights are recorded before a forge' do
+      2.times { place.reload.record_data_entries({ tenants: [tenant('T-1')] }, business_directory).then { place.save! } }
+      place.reload.forge!
+
+      expect(tenants_of(place)).to eq([['T-1', 'Tenant T-1', nil]])
+    end
+  end
+
   describe 'a map editor removing one imported tenant' do
     before do
       import(place, business_directory, tenants: [tenant('T-1'), tenant('T-2')])
-      place.reload.exclude_association_member(:tenants, { external_id: 'T-2' }, map_editor)
+      place.reload.exclude_association_member(:tenants, { id: Tenant.find_by!(external_id: 'T-2').id }, map_editor)
       place.forge!
     end
 
-    it 'keeps the tenant removed through later imports that still list it, while new tenants still arrive' do
+    it "removes the tenant, which the importer's next run reports as new, since its exclusion named a row that no longer exists" do
+      expect(tenants_of(place).map(&:first)).to eq(%w[T-1]) # noted: destroyed per `dependent: :destroy`
+
       import(place.reload, business_directory, tenants: [tenant('T-1'), tenant('T-2'), tenant('T-3')])
 
-      expect(tenants_of(place).map(&:first)).to eq(%w[T-1 T-3])
+      expect(tenants_of(place).map(&:first)).to eq(%w[T-1 T-2 T-3])
+    end
+  end
+
+  describe 'a map editor removing one imported tenant, where tenants declare the identifier every source shares as their key' do
+    before do
+      stub_const('ListedPlace', Class.new(ActiveRecord::Base))
+      ListedPlace.table_name = 'places'
+      ListedPlace.has_many :tenants, as: :occupiable, dependent: :destroy
+      ListedPlace.laforged(associations: { tenants: { key: :external_id } })
+
+      import(listed_place, business_directory, tenants: [listed('T-1'), listed('T-2')])
+      listed_place.reload.exclude_association_member(:tenants, { external_id: 'T-2' }, map_editor)
+      listed_place.forge!
+    end
+
+    let(:listed_place) { ListedPlace.create!(name: 'Harbor Building') }
+
+    def listed(external_id) = { external_id: external_id, name: "Tenant #{external_id}" }
+
+    it 'keeps the tenant removed through later imports that still list it, while new tenants still arrive' do
+      import(listed_place.reload, business_directory, tenants: [listed('T-1'), listed('T-2'), listed('T-3')])
+
+      expect(tenants_of(listed_place).map(&:first)).to eq(%w[T-1 T-3])
     end
 
     it "restores the tenant on the importer's next run after the editor forgets the removal" do
-      place.reload.forget_association_member(:tenants, { external_id: 'T-2' }, map_editor)
-      place.forge!
-      expect(tenants_of(place).map(&:first)).to eq(%w[T-1]) # the list names T-2, but its name was destroyed with it when the editor removed it
+      listed_place.reload.forget_association_member(:tenants, { external_id: 'T-2' }, map_editor)
+      listed_place.forge!
+      expect(tenants_of(listed_place).map(&:first)).to eq(%w[T-1]) # the list names T-2, but its name was destroyed with it when the editor removed it
 
-      import(place.reload, business_directory, tenants: [tenant('T-1'), tenant('T-2')])
-      expect(tenants_of(place).map(&:first)).to eq(%w[T-1 T-2])
+      import(listed_place.reload, business_directory, tenants: [listed('T-1'), listed('T-2')])
+      expect(tenants_of(listed_place).map(&:first)).to eq(%w[T-1 T-2])
     end
   end
 

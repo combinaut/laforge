@@ -136,7 +136,7 @@ module AssociationCapabilities
       laforged associations: {
         place_categories: {},          # key derived from the reflection: category_id
         reported_parcel_links: {},     # key derived: parcel_id + parcel_link_type_id
-        tenants: { key: :external_id }, # owned records have no derivable key
+        tenants: {},                    # owned records are keyed by primary key
         marker: {}                      # a has_one with no key: there is only ever one
       }
     end
