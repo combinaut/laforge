@@ -39,9 +39,13 @@ module LaForge
       { 'key' => key_hash, 'attributes' => attributes, 'excluded_at' => excluded_at.utc.iso8601(6) }
     end
 
-    def self.pending_item(key_hash, attributes, recorded_at, edit: false)
+    # An item with 'precedence' gives that precedence to every attribute it records, as recording them directly with
+    # `precedence:` would; nil removes it
+    def self.pending_item(key_hash, attributes, recorded_at, edit: false, precedence: NOT_GIVEN)
       item = { 'key' => key_hash, 'attributes' => attributes, 'recorded_at' => recorded_at.utc.iso8601(6) }
-      edit ? item.merge('edit' => true) : item
+      item['edit'] = true if edit
+      item['precedence'] = precedence unless precedence.equal?(NOT_GIVEN)
+      item
     end
 
     # A report marked for destruction says nothing: a complete one excludes everything, a partial one withdraws all

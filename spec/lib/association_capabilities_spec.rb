@@ -491,14 +491,23 @@ describe 'Association tracking capabilities' do
       expect(categories_of(other)).to eq([florist])
     end
 
-    it "ranks membership, not the members' attributes, by a precedence given while recording a list", capability: 'C61' do
+    it 'gives a precedence passed with a list to everything the payload says, and only membership to members passed as records', capability: 'C61' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'From Low')] }, low)
       place.forge!
-      place.record_data_entries({ tenants: [tenant('T-1', name: 'From Low'), tenant('T-2', name: 'Only Low')] }, low, precedence: 50)
-      place.record_data_entries({ tenants: [tenant('T-1', name: 'From High')] }, high)
+      corner_cafe = place.tenants.sole
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'From Low', opening_hours: week('08:00', days: [1])), tenant('T-2', name: 'Only Low')] }, low, precedence: 50)
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'From High', opening_hours: week('09:00', days: [1]))] }, high)
       place.forge!
 
-      expect(place.reload.tenants.order(:external_id).pluck(:external_id, :name)).to eq([['T-1', 'From High'], ['T-2', 'Only Low']])
+      expect(place.reload.tenants.order(:external_id).pluck(:external_id, :name)).to eq([['T-1', 'From Low'], ['T-2', 'Only Low']])
+      expect(corner_cafe.reload.opening_hours.pluck(:opens_at)).to eq(['08:00']) # nested lists get it too
+      expect(corner_cafe.source_precedences['name']).to eq(low => 50)
+
+      harbor_books = place.tenants.find_by!(external_id: 'T-2')
+      place.record_data_entries({ tenants: [corner_cafe, harbor_books] }, top, precedence: 5)
+      place.save!
+      expect(place.reload.source_precedences['tenants']).to include(top => 5)
+      expect(harbor_books.reload.source_precedences.values.flat_map(&:keys)).not_to include(top) # a record says nothing about its attributes
     end
 
     it 'keeps a custom precedence when the same source records again without one', capability: 'C42' do

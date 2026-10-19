@@ -512,7 +512,16 @@ Membership is decided member by member. The highest precedence report with an op
 - **A row nobody reports stays,** such as one added by hand outside LaForge, until a source names it.
 - **Destroying a report forgets what it named.** Its members are then rows no report has named, and are left alone. To retract what a source said, so that its members are removed unless another source includes them, withdraw it instead (see [When a source stops reporting](#when-a-source-stops-reporting)).
 
-A `precedence:` given while recording a list ranks that report's say on membership only. The attributes in the list are recorded at the source's usual precedence. To make a source authoritative for a member attribute, give it a model-wide or per-record precedence on the member's model:
+A `precedence:` given while recording covers everything the payload says, as it does for attributes recorded directly: the report's say on membership, and every attribute of every member hash, down through nested lists. When the forge records a member's attributes, it gives each one a per-record rule for that source.
+
+  ```ruby
+    place.record_data_entries({ tenants: [{ id: 7, registration_number: 'R-10', unit: '2B' }] }, business_registry, precedence: 100)
+    # the registry decides Tenant 7's membership, registration_number and unit on this place, at 100
+  ```
+
+- **A member passed as a saved record** says nothing about its attributes, so the precedence covers only its membership.
+- **Everything in the hash gets it.** To make a source authoritative for one attribute only, record that attribute in its own call, or use a rule.
+- **It writes one rule per member and attribute.** For "this source always wins this attribute", one model-wide rule is the better fit:
 
   ```ruby
     Tenant.update_attribute_source_precedence(:registration_number, business_registry, 100)

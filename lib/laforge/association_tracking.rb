@@ -33,7 +33,7 @@ module LaForge
       end
       keys = included.map(&:first)
       config.assert_references_exist!(owner, keys)
-      pending = included.map { |key_hash, attributes| MemberList.pending_item(key_hash, attributes, recorded_at) }
+      pending = included.map { |key_hash, attributes| MemberList.pending_item(key_hash, attributes, recorded_at, precedence: precedence) }
 
       reported = (keys + excluded).map { |member| config.key_of(member) }
       previous = report(owner, config, source)
@@ -55,7 +55,7 @@ module LaForge
     def edit(owner, config, value, source, precedence: NOT_GIVEN, recorded_at: Time.current)
       return record(owner, config, value, source, precedence: precedence, recorded_at: recorded_at) unless config.collection?
 
-      config.edits(value).each { |action, member| edit_member(owner, config, member, source, action, recorded_at: recorded_at) }
+      config.edits(value).each { |action, member| edit_member(owner, config, member, source, action, recorded_at: recorded_at, precedence: precedence) }
       owner.send(:write_precedence_rule, config.name, source, precedence) unless precedence.equal?(NOT_GIVEN)
     end
 
@@ -64,7 +64,7 @@ module LaForge
     # What an inclusion says about the member is kept beside what earlier edits said, and recorded after it, so each edit
     # changes only the attributes it names; its nested lists are edits too. An exclusion or forgetting drops it all.
     # Forgetting a tombstone drops it, so sources can add the member again.
-    def edit_member(owner, config, member, source, action, recorded_at: Time.current)
+    def edit_member(owner, config, member, source, action, recorded_at: Time.current, precedence: NOT_GIVEN)
       member, attributes = config.normalize_members([member], attributes: action == :include, edit: true).first
       config.assert_references_exist!(owner, [member]) if action == :include
       config.assert_excludable!(owner, [member]) if action == :exclude
@@ -73,7 +73,7 @@ module LaForge
       others = ->(list) { (list || []).reject { |listed| config.key_of(listed) == key } }
       pending = previous&.pending || []
       pending = pending.reject { |item| config.key_of(item['key']) == key } unless action == :include
-      pending += [MemberList.pending_item(member, attributes, recorded_at, edit: true)] if action == :include
+      pending += [MemberList.pending_item(member, attributes, recorded_at, edit: true, precedence: precedence)] if action == :include
       tombstones = (previous&.tombstones || []).reject { |item| action == :forget && config.key_of(item['key']) == key }
 
       value =
@@ -131,7 +131,7 @@ module LaForge
         record = existing.delete(key) || created[key] || add(owner, config, member, created, described: items.any?)
         next unless record
 
-        recorded = items.map { |source_id, attributes, recorded_at, edit| record.laforge_record_reported(attributes, source_id, recorded_at, edit: edit) }
+        recorded = items.map { |source_id, attributes, recorded_at, edit, precedence| record.laforge_record_reported(attributes, source_id, recorded_at, edit: edit, precedence: precedence) }
         described << record if recorded.any?
         record
       end
@@ -372,12 +372,15 @@ module LaForge
                            "Set its owner first, and declare the association with `laforged associations:` on the owner"
     end
 
-    # { key values => [[source id, attributes, recorded at, edit], ...] } for what the reports say about members besides
-    # their keys and has not yet been recorded on them, oldest first, so the entries are created in the order they were
-    # reported
+    # { key values => [[source id, attributes, recorded at, edit, precedence], ...] } for what the reports say about members
+    # besides their keys and has not yet been recorded on them, oldest first, so the entries are created in the order they
+    # were reported
     def pending_by_key(config, reports)
       items = reports.flat_map do |entry, report|
-        report.pending.map { |item| [config.key_of(item['key']), [entry.source_id, item['attributes'], Time.iso8601(item['recorded_at']), item['edit'] == true]] }
+        report.pending.map do |item|
+          precedence = item.key?('precedence') ? item['precedence'] : NOT_GIVEN
+          [config.key_of(item['key']), [entry.source_id, item['attributes'], Time.iso8601(item['recorded_at']), item['edit'] == true, precedence]]
+        end
       end
       items.sort_by { |_, (_, _, recorded_at)| recorded_at }.group_by(&:first).transform_values { |pairs| pairs.map(&:last) }
     end
