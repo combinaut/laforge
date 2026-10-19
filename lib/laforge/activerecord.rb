@@ -202,7 +202,8 @@ module LaForge
       AssociationTracking.edit_member(self, self.class.laforged_association(name), member, source, :exclude)
     end
 
-    # Drop the source's opinion on one member, so membership falls to the other sources
+    # Drop the source's opinion on one member, so membership falls to the other sources. Forgetting one of the source's
+    # tombstones (see laforge_tombstones) lets sources add the member it was again.
     def forget_association_member(name, member, source)
       AssociationTracking.edit_member(self, self.class.laforged_association(name), member, source, :forget)
     end
@@ -261,6 +262,18 @@ module LaForge
     # Returns { source => [member hashes] } for a tracked association
     def source_values(name)
       self.class.source_values(name, records: [self])[id] || {}
+    end
+
+    # The tombstones of a tracked association: members a source excluded whose rows are gone (see Tombstone)
+    def laforge_tombstones(name)
+      AssociationTracking.tombstones(self, self.class.laforged_association(name))
+    end
+
+    # Whether one source's value for an attribute of this record outranks another's, by effective precedence, then the
+    # sources' global precedence
+    def laforge_outranks?(attribute_name, source_id, other_source_id)
+      rank = ->(id) { [laforge_precedence_resolver.precedence(self, attribute_name, id), laforge_precedence_resolver.global_precedence(id)] }
+      (rank.(source_id) <=> rank.(other_source_id)) == 1
     end
 
     # Returns { membership: source, listed_by: [sources], excluded_by: [sources], attributes: { attribute => source } }

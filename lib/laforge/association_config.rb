@@ -5,13 +5,19 @@ module LaForge
   # Members are identified by their key: given with `key:`, else derived from the records a join row references, else the
   # member's primary key. A member keyed by primary key that a source names without one is a new member: its report names
   # it by a placeholder until the forge that creates it has been saved, which writes the new row's id in its place.
+  #
+  # A member keyed by primary key that a source explicitly excludes is destroyed like any removed member, and the
+  # exclusion keeps a tombstone in its place: what the member was, so that `tombstone_matcher:` can recognise it when a
+  # source reports it again (see Tombstone).
   class AssociationConfig
     # The field of a placeholder key, which names a new member until it has an id
     NEW_MEMBER = 'new'
+    # The field of a tombstone's key, which names an excluded member whose row is gone
+    TOMBSTONE = 'tombstone'
 
-    attr_reader :owner_class, :name, :reflection, :key, :order_column
+    attr_reader :owner_class, :name, :reflection, :key, :order_column, :tombstone_matcher
 
-    def initialize(owner_class, name, key: nil)
+    def initialize(owner_class, name, key: nil, tombstone_matcher: nil)
       @owner_class = owner_class
       @name = name.to_s
       @reflection = owner_class.reflect_on_association(name)
@@ -20,6 +26,8 @@ module LaForge
       raise ArgumentError, "#{owner_class.name}##{name} must be a has_many or has_one without :through; track its join association instead" unless (reflection.collection? || reflection.has_one?) && !reflection.through_reflection?
 
       @key = Array.wrap(key || derived_key.presence || (collection? ? klass.primary_key : nil)).map(&:to_s)
+      @tombstone_matcher = tombstone_matcher
+      assert_tombstone_matcher_usable! if tombstone_matcher
 
       @order_column = derived_order_column
     end
@@ -76,11 +84,17 @@ module LaForge
     end
 
     def key_of(member)
-      new_member?(member) ? [NEW_MEMBER, member[NEW_MEMBER]] : key.map { |column| member[column] }
+      return [NEW_MEMBER, member[NEW_MEMBER]] if new_member?(member)
+      return [TOMBSTONE, member[TOMBSTONE]] if tombstone?(member)
+
+      key.map { |column| member[column] }
     end
 
     def key_hash(member)
-      new_member?(member) ? member.slice(NEW_MEMBER) : key.index_with { |column| member[column] }
+      return member.slice(NEW_MEMBER) if new_member?(member)
+      return member.slice(TOMBSTONE) if tombstone?(member)
+
+      key.index_with { |column| member[column] }
     end
 
     def record_key(record)
@@ -97,9 +111,35 @@ module LaForge
       member.is_a?(Hash) && member.key?(NEW_MEMBER)
     end
 
-    # The attributes a member that does not exist is built with: its key, or nothing for a new member
+    # Whether a member is named by the key of a tombstone, because the excluded member it was is gone
+    def tombstone?(member)
+      member.is_a?(Hash) && member.key?(TOMBSTONE)
+    end
+
+    # Whether a member has no row to find by its key, and is built from what sources report about it
+    def unsaved?(member)
+      new_member?(member) || tombstone?(member)
+    end
+
+    # The attributes a member that does not exist is built with: its key, or nothing for a new member or a tombstone
     def build_attributes(member)
-      new_member?(member) ? {} : key_hash(member)
+      unsaved?(member) ? {} : key_hash(member)
+    end
+
+    # Raise for an explicit exclusion that could not outlast its row: a member keyed by primary key is destroyed when it
+    # is excluded, so without `tombstone_matcher:` a source reporting it again could not be recognised, and it would
+    # come back as a new member
+    def assert_excludable!(owner, members)
+      return unless primary_keyed? && !tombstone_matcher
+
+      ids = members.reject { |member| tombstone?(member) }.map { |member| member[klass.primary_key] }
+      return if ids.empty?
+
+      raise ArgumentError, "Cannot exclude #{klass.name} #{ids.join(', ')} from #{owner_class.name} #{owner.id.inspect}'s #{name}: excluding it destroys it, " \
+                           "and without a tombstone_matcher LaForge could not recognise it when a source reports it again, so it would come back. " \
+                           "Declare tombstone_matcher: on #{owner_class.name}'s #{name}, a callable given the reported #{klass.name} and the excluded ones " \
+                           "that returns the one it is, or nil, such as " \
+                           "`laforged associations: { #{name}: { tombstone_matcher: ->(#{klass.model_name.element}, tombstones) { tombstones.find { |tombstone| ... } } } }`"
     end
 
     # Validates members recorded for this association and returns [key hash, attributes] for each, where the attributes
@@ -183,7 +223,13 @@ module LaForge
 
         member = key_hash(member)
       end
+      member = member.to_h if member.is_a?(Tombstone)
       member = member.to_h.stringify_keys
+      if tombstone?(member)
+        raise ArgumentError, "A tombstone in #{owner_class.name}##{name} can only be forgotten, which lets sources add the member again; it has no row to include or exclude" if attributes
+
+        return [member.slice(TOMBSTONE), {}]
+      end
       key.each { |column| member[column] = klass.type_for_attribute(column).cast(member[column]) if member.key?(column) } # ids from params are strings
       if primary_keyed? && member[klass.primary_key].nil?
         raise ArgumentError, "#{owner_class.name}##{name} members are named here by #{klass.primary_key}, which a new member does not have yet" unless attributes
@@ -232,6 +278,17 @@ module LaForge
       raise InvalidValue, "#{klass.name} #{foreign.join(', ')} #{foreign.size == 1 ? 'is not one' : 'are not'} of #{owner_class.name} #{owner.id.inspect}'s #{name}. " \
                           "LaForge does not move records between owners or create a member with a given #{klass.primary_key}; " \
                           "name a new member without one, or reassign the record outside LaForge first"
+    end
+
+    def assert_tombstone_matcher_usable!
+      raise ArgumentError, "#{owner_class.name}##{name} tombstone_matcher: must respond to call, as a lambda does" unless tombstone_matcher.respond_to?(:call)
+      return if collection? && primary_keyed?
+
+      reason =
+        if !collection? then 'it is a has_one, which takes complete reports, so nothing is explicitly excluded from it'
+        else "its members are keyed by #{key.join(', ')}, so an exclusion names something that outlasts the row"
+        end
+      raise ArgumentError, "#{owner_class.name}##{name} does not use a tombstone_matcher: #{reason}. Remove tombstone_matcher:"
     end
 
     # Every belongs_to on the member other than the one pointing back at the owner identifies a join member

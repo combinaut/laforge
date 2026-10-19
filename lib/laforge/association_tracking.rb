@@ -26,6 +26,7 @@ module LaForge
         include, exclude = members.is_a?(Hash) ? [members.fetch(:include) { members['include'] } || [], members.fetch(:exclude) { members['exclude'] } || []] : [members, []]
         included = config.normalize_members(include)
         excluded = config.normalize_members(exclude, attributes: false).map(&:first)
+        config.assert_excludable!(owner, excluded)
       else
         included = config.normalize_members(members)
         excluded = []
@@ -38,8 +39,10 @@ module LaForge
         if partial
           reported = (keys + excluded).map { |member| config.key_of(member) }
           previous = report(owner, config, source)
-          withdrawn = previous ? (previous.include + previous.withdrawn).map { |member| config.key_hash(member) }.uniq.reject { |member| reported.include?(config.key_of(member)) || config.new_member?(member) } : []
-          MemberList.partial(include: keys, exclude: excluded, withdrawn: withdrawn, pending: pending)
+          withdrawn = previous ? (previous.include + previous.withdrawn).map { |member| config.key_hash(member) }.uniq.reject { |member| reported.include?(config.key_of(member)) || config.unsaved?(member) } : []
+          # An exclusion whose member is gone outlasts the report, as the source could not name it again
+          kept = previous ? previous.exclude.select { |member| config.tombstone?(member) && !reported.include?(config.key_of(member)) } : []
+          MemberList.partial(include: keys, exclude: excluded + kept, withdrawn: withdrawn, pending: pending, tombstones: previous&.tombstones || [])
         else
           MemberList.value(include: keys, pending: pending)
         end
@@ -60,15 +63,18 @@ module LaForge
     # it, :forget drops the source's opinion on it. A source with no report, or a partial one, keeps a partial report.
     # What an inclusion says about the member is kept beside what earlier edits said, and recorded after it, so each edit
     # changes only the attributes it names; its nested lists are edits too. An exclusion or forgetting drops it all.
+    # Forgetting a tombstone drops it, so sources can add the member again.
     def edit_member(owner, config, member, source, action, recorded_at: Time.current)
       member, attributes = config.normalize_members([member], attributes: action == :include, edit: true).first
       config.assert_references_exist!(owner, [member]) if action == :include
+      config.assert_excludable!(owner, [member]) if action == :exclude
       key = config.key_of(member)
       previous = report(owner, config, source)
       others = ->(list) { (list || []).reject { |listed| config.key_of(listed) == key } }
       pending = previous&.pending || []
       pending = pending.reject { |item| config.key_of(item['key']) == key } unless action == :include
       pending += [MemberList.pending_item(member, attributes, recorded_at, edit: true)] if action == :include
+      tombstones = (previous&.tombstones || []).reject { |item| action == :forget && config.key_of(item['key']) == key }
 
       value =
         if previous && !previous.partial?
@@ -78,7 +84,7 @@ module LaForge
           withdrawn << config.key_hash(member) if action == :forget && previous&.decision(config, key) == :include
           MemberList.partial(include: others.(previous&.include) + (action == :include ? [member] : []),
                              exclude: others.(previous&.exclude) + (action == :exclude ? [config.key_hash(member)] : []),
-                             withdrawn: withdrawn, pending: pending)
+                             withdrawn: withdrawn, pending: pending, tombstones: tombstones)
         end
 
       owner.send(:write_data_entry, config.name, value, source, recorded_at: recorded_at)
@@ -98,9 +104,10 @@ module LaForge
     end
 
     # The source no longer reports anything for the association: every member it reported is withdrawn, and what it said
-    # about members not yet recorded on them is dropped, along with new members it reported that were never created
+    # about members not yet recorded on them is dropped, along with new members it reported that were never created and
+    # its tombstones
     def withdraw(config, entry)
-      entry.value = MemberList.partial(withdrawn: MemberList.new(entry.value).reported_keys(config).reject { |member| config.new_member?(member) })
+      entry.value = MemberList.partial(withdrawn: MemberList.new(entry.value).reported_keys(config).reject { |member| config.unsaved?(member) })
     end
 
     def forge(owner, config)
@@ -108,6 +115,7 @@ module LaForge
       return if reports.empty?
 
       existing = config.identified_members_of(owner)
+      reports = recognise_tombstones(owner, config, reports, save: true)
       created = owner.laforge_created_members(config)
       included, undecided = resolve(config, reports, existing)
       pending = pending_by_key(config, reports)
@@ -134,6 +142,7 @@ module LaForge
       described.uniq.each(&:forge)
       clear_pending(config, reports, included_keys)
       prune_withdrawn(config, reports)
+      entomb(config, reports, existing.values) if config.tombstone_matcher
 
       if config.collection?
         existing.each_value { |record| config.remove(record) }
@@ -150,6 +159,7 @@ module LaForge
       return if reports.empty?
 
       existing = config.identified_members_of(owner)
+      reports = recognise_tombstones(owner, config, reports, save: false)
       included, undecided = resolve(config, reports, existing)
       pending = pending_by_key(config, reports)
       keys = included.map { |member| config.key_of(member) } + undecided
@@ -164,13 +174,13 @@ module LaForge
       end
 
       added, skipped = included.reject { |member| existing.key?(config.key_of(member)) }.partition do |member|
-        next false if config.primary_keyed? && !config.new_member?(member) # no longer one of the owner's members
+        next false if config.primary_keyed? && !config.unsaved?(member) # no longer one of the owner's members
 
         pending.key?(config.key_of(member)) || new_member(owner, config, config.build_attributes(member)).valid?
       end
 
       {
-        added: added.map { |member| config.new_member?(member) ? pending.fetch(config.key_of(member), []).inject({}) { |attributes, (_, reported)| attributes.merge(reported) } : config.key_hash(member) },
+        added: added.map { |member| config.unsaved?(member) ? pending.fetch(config.key_of(member), []).inject({}) { |attributes, (_, reported)| attributes.merge(reported) } : config.key_hash(member) },
         removed: (existing.keys - keys).map { |key| config.key.zip(key).to_h },
         changed: changed
       }.tap { |result| result[:skipped] = skipped.map { |member| config.key_hash(member) } if skipped.any? }
@@ -213,15 +223,44 @@ module LaForge
     # Names the members forges created by their new ids, in place of the placeholders the reports named them by. Called
     # once the owner, and so the members, have been saved. The reports' recorded_at is kept, since no source said anything.
     def name_created(owner, config, created)
-      ids = created.select { |_, record| record.persisted? }.transform_values(&:id)
-      return if ids.empty?
+      names = created.select { |_, record| record.persisted? }.transform_values { |record| config.key_hash(record) }
+      return if names.empty?
 
       owner.send(:filter_data_entries_in_memory, attributes: config.name).each do |entry|
         next if entry.destroyed? || entry.marked_for_destruction?
 
-        value = MemberList.new(entry.value).renamed(config, ids)
+        value = MemberList.new(entry.value).renamed(config, names)
         entry.update!(value: value) unless value == entry.value
       end
+    end
+
+    # The owner's tombstones for an association, as Tombstone objects, the highest-precedence source's first
+    def tombstones(owner, config, reports = owner.send(:laforge_association_reports, config))
+      reports.reject { |entry, _| entry.marked_for_destruction? }
+             .flat_map { |entry, report| report.tombstones.map { |item| Tombstone.new(owner, config, entry.source_id, item) } }
+             .uniq(&:token)
+    end
+
+    # The tombstone that keeps a new member out, if any: one its tombstone matcher matches among the tombstones of every
+    # tracked association the member would join, from a source that outranks `source` there. For code that creates
+    # members itself rather than through a source's report.
+    def tombstone_blocking(record, source)
+      raise ArgumentError, "#{record.class.name} #{record.id} already exists; tombstone_blocking checks a new member before it is created" if record.persisted?
+
+      source_id = DataSource.normalize_source_id(source)
+      tracked_owners(record).each do |owner, config|
+        next unless config.tombstone_matcher
+
+        outranking = tombstones(owner, config).select { |tombstone| owner.laforge_outranks?(config.name, tombstone.source_id, source_id) }
+        found = match_tombstone(owner, config, record, outranking)
+        return found if found
+      end
+      nil
+    end
+
+    # An unsaved member pointing at the owner, built from the columns among `attributes`, for matchers to compare
+    def unsaved_member(owner, config, attributes)
+      new_member(owner, config, reported_columns(config, attributes))
     end
 
     def member_sources(owner, config, member)
@@ -241,6 +280,95 @@ module LaForge
     end
 
     private
+
+    # Names each new member a report names that the association's tombstone matcher recognises as an excluded member by
+    # that member's tombstone, so membership decides it as that member: it stays out unless a source that outranks the
+    # exclusion includes it. With `save: true` the reports' entries are changed to match, to be saved with the owner.
+    def recognise_tombstones(owner, config, reports, save:)
+      return reports unless config.tombstone_matcher
+
+      known = tombstones(owner, config, reports)
+      return reports if known.empty?
+
+      reports.map do |entry, report|
+        next [entry, report] if entry.marked_for_destruction?
+
+        names = report.pending.each_with_object({}) do |item, result|
+          next unless config.new_member?(item['key'])
+
+          found = match_tombstone(owner, config, unsaved_member(owner, config, item['attributes']), known)
+          result[config.key_of(item['key'])] = found.key if found
+        end
+        next [entry, report] if names.empty?
+
+        value = report.renamed(config, names)
+        entry.value = value if save
+        [entry, MemberList.new(value)]
+      end
+    end
+
+    # The tombstone the association's tombstone matcher finds for a member among the given tombstones, or nil
+    def match_tombstone(owner, config, member, tombstones)
+      return if tombstones.empty?
+
+      records = tombstones.map(&:record)
+      found = config.tombstone_matcher.call(member, records)
+      return if found.nil?
+
+      index = records.index { |record| record.equal?(found) }
+      raise ArgumentError, "#{owner.class.name}##{config.name} tombstone_matcher: returned #{found.inspect}, which is not one of the tombstones it was given; return one of them, or nil" unless index
+
+      tombstones[index]
+    end
+
+    # When a forge removes a member keyed by primary key that a report explicitly excludes, every report names it by a
+    # tombstone key instead of its id, and each excluding report keeps the tombstone: what the member was. Called before
+    # the members are removed.
+    def entomb(config, reports, removed)
+      removed.each do |record|
+        key = config.record_key(record)
+        excluding = reports.reject { |entry, _| entry.marked_for_destruction? }.select { |entry, _| MemberList.new(entry.value).then { |report| report.partial? && report.exclude.any? { |member| config.key_of(member) == key } } }
+        next if excluding.empty?
+
+        tombstone = { AssociationConfig::TOMBSTONE => SecureRandom.hex(8) }
+        item = MemberList.tombstone_item(tombstone, tombstone_attributes(config, record), Time.current)
+        reports.each do |entry, _|
+          next if entry.marked_for_destruction?
+
+          report = MemberList.new(MemberList.new(entry.value).renamed(config, { key => tombstone }))
+          tombstones = excluding.any? { |excluder, _| excluder.equal?(entry) } ? report.tombstones + [item] : report.tombstones
+          value = MemberList.value(include: report.include, exclude: report.exclude, withdrawn: report.withdrawn, pending: report.pending, tombstones: tombstones, partial: report.partial?)
+          entry.value = value unless value == entry.value
+        end
+      end
+    end
+
+    # What a removed member was, as JSON can hold it, without its key and its link to the owner
+    def tombstone_attributes(config, record)
+      reported_columns(config, record.attributes).except('created_at', 'updated_at').transform_values(&:as_json)
+    end
+
+    # The columns of the member model among what was reported about a member, without its key and its link to the owner
+    def reported_columns(config, attributes)
+      attributes.slice(*config.klass.column_names).except(config.klass.primary_key, config.owner_foreign_key, config.owner_type_column)
+    end
+
+    # [[owner, config], ...] for each tracked association the record belongs to through one of its belongs_to
+    # associations. Raises when there is none, naming what it checked.
+    def tracked_owners(record)
+      checked = []
+      found = record.class.reflect_on_all_associations(:belongs_to).flat_map do |reflection|
+        owner = record.public_send(reflection.name)
+        checked << (owner ? "#{owner.class.name} #{owner.id} through #{reflection.name}" : "#{reflection.name}, which is not set")
+        next [] unless owner.class.respond_to?(:laforged_associations)
+
+        owner.class.laforged_associations.values.select { |config| record.is_a?(config.klass) && config.owner_foreign_key == reflection.foreign_key.to_s }.map { |config| [owner, config] }
+      end
+      return found if found.any?
+
+      raise ArgumentError, "#{record.class.name} is not a member of an association LaForge tracks (checked #{checked.join('; ').presence || 'no belongs_to associations'}). " \
+                           "Set its owner first, and declare the association with `laforged associations:` on the owner"
+    end
 
     # { key values => [[source id, attributes, recorded at, edit], ...] } for what the reports say about members besides
     # their keys and has not yet been recorded on them, oldest first, so the entries are created in the order they were
@@ -264,14 +392,14 @@ module LaForge
     # a second forge before saving finds it, and saving names it by its id. A member named by an id that is no longer one
     # of the owner's is skipped, since LaForge does not create a record with a given id. Any other is built from its key.
     def add(owner, config, member, created, described:)
-      if config.primary_keyed? && !config.new_member?(member)
+      if config.primary_keyed? && !config.unsaved?(member)
         owner.logger&.warn("LaForge skipped #{config.klass.name} #{config.key_of(member).first.inspect} in #{owner.class.name} #{owner.id}'s #{config.name}: " \
                            "membership includes it, but it is no longer one of them. Report it without its #{config.klass.primary_key} to create a new one")
         return
       end
 
       record = build(owner, config, member, described: described)
-      created[config.key_of(member)] = record if record && config.new_member?(member)
+      created[config.key_of(member)] = record if record && config.unsaved?(member)
       record
     end
 

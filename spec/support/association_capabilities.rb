@@ -136,7 +136,9 @@ module AssociationCapabilities
       laforged associations: {
         place_categories: {},          # key derived from the reflection: category_id
         reported_parcel_links: {},     # key derived: parcel_id + parcel_link_type_id
-        tenants: {},                    # owned records are keyed by primary key
+        # Owned records are keyed by primary key. An excluded tenant is destroyed, and recognised by its name when a source
+        # reports it again.
+        tenants: { tombstone_matcher: ->(tenant, tombstones) { tombstones.find { |tombstone| tombstone.name == tenant.name } } },
         marker: {}                      # a has_one with no key: there is only ever one
       }
     end

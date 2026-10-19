@@ -329,6 +329,7 @@ Tracking a `has_many` or `has_one` association is about membership: which record
 - Other records, such as tenants, are identified by their primary key. A source names an existing member by its `id`, and a new member by its attributes alone (see [Naming members](#naming-members)).
 - `key:` names other columns instead, for a natural key such as a weekday, or an identifier every source shares. It also overrides a derived key, as `key: :id` does for an owned model that happens to belong to another record.
 - A `has_one` with no key has a single member, which every source reports.
+- `tombstone_matcher:` recognises a member a source excluded when a source reports it again (see [Removed members that sources report again](#removed-members-that-sources-report-again)).
 
   ```ruby
     class Place < ApplicationRecord
@@ -472,19 +473,34 @@ Anything else in the form, such as an association's own metadata stored outside 
 
 Exclusions name members by key only, so a member keyed by primary key can be excluded only once it exists.
 
-An exclusion names a row, so it lasts only as long as the row is one of the owner's members. For example, a map editor removes Tenant 12, which the business directory imports each night:
+### Removed members that sources report again
+
+Excluding a member keyed by primary key destroys it, per `dependent:`, like any removed member. Its exclusion has to outlast the row: otherwise, when the business directory next reports the tenant, its importer finds nothing, reports it as new, and it comes back. So the exclusion keeps a **tombstone** in the row's place, holding what the member was, and the association declares how to recognise a tombstone in what a source reports:
+
+  ```ruby
+    class Place < ApplicationRecord
+      has_many :tenants, as: :occupiable, dependent: :destroy
+
+      laforged associations: {
+        tenants: { tombstone_matcher: ->(tenant, tombstones) { tombstones.find { |tombstone| tombstone.name == tenant.name } } }
+      }
+    end
+  ```
+
+The matcher receives an unsaved member built from what a source reported, and an unsaved member for each tombstone, built from what it was. It returns the tombstone the member is, or nil. It can use a fuzzy matcher, such as one that scores addresses.
 
   ```ruby
     place.record_data_entries({ tenants_attributes: [{ id: 12, _destroy: '1' }] }, map_editor, mode: :edit)
-    place.forge! # Tenant 12 is destroyed, per `has_many :tenants, dependent: :destroy`
+    place.forge!                        # Tenant 12 is destroyed, and the map editor's report keeps its tombstone
+    place.laforge_tombstones(:tenants)  # => [#<LaForge::Tombstone source: map_editor, attributes: { 'name' => 'Corner Café', ... }, excluded_at: ...>]
   ```
 
-That night the business directory still lists the tenant. Its importer looks for it among the place's tenants, finds nothing, since Tenant 12 is gone, and reports it as new. The forge creates Tenant 13, and the map editor's exclusion of Tenant 12 does not apply to it, so the tenant is back.
+- **Each forge** checks the new members that reports name against the tombstones, before membership is decided. A member a tombstone matches is decided as the excluded member: a source that ranks below the excluding source cannot add it again, and a source that ranks above it can, which creates it and drops the tombstone.
+- **Code that creates members itself,** such as an importer that builds and saves a tenant rather than reporting it on the place, asks before saving a new one. `LaForge.tombstone_blocking(tenant, source)` returns the tombstone that keeps it out, with the same precedence rule, or nil.
+- **A tombstone lasts** through the excluding source's later reports, until the source forgets it, which lets sources add the member again: `place.forget_association_member(:tenants, tombstone, map_editor)`. Withdrawing the source drops its tombstones too.
+- **Associations that need no tombstones:** join rows and associations with `key:` name something that outlasts the row, so their exclusions hold already, and a has_one takes only complete reports. Declaring `tombstone_matcher:` on one raises.
 
-Where an editor's removal must outlast later imports, use one of these:
-
-- Hide the member instead of removing it: record an attribute such as `status: 'closed'` on it as the editor, and leave closed members out where they are shown. The row stays in the tracked association, so the importer keeps finding it, and the editor's value keeps winning. Leaving closed members out of the tracked association's own scope would undo this: the importer would no longer find the member, and would report it as new.
-- Key the association on an identifier every source shares, with `key:`. An exclusion of `{ external_id: 'T-2' }` then holds whatever happens to the row.
+Excluding a member keyed by primary key without a `tombstone_matcher` raises `ArgumentError` when the exclusion is recorded, naming what to declare, rather than letting the member come back at the next import.
 
 ### How membership is decided
 
@@ -535,20 +551,22 @@ When an import no longer reports a record at all, choose between two things, as 
 Each source's report for an association is one data entry on the owner, named after the association:
 
 - A complete report is stored as an array of member keys, such as `[{ 'id' => 7 }, { 'id' => 9 }]`.
-- A partial report is stored as `{ 'partial' => true, 'include' => [...], 'exclude' => [...], 'withdrawn' => [...] }`. `withdrawn` holds the keys of members the source used to include, until the next forge has acted on them; see below.
+- A partial report is stored as `{ 'partial' => true, 'include' => [...], 'exclude' => [...], 'withdrawn' => [...] }`, with `'tombstones' => [...]` when it has excluded members whose rows are gone; they are excluded by `{ 'tombstone' => '<token>' }`. `withdrawn` holds the keys of members the source used to include, until the next forge has acted on them; see below.
 - What a source said about a member besides its key waits under `'pending'`, with when it was said, until a forge records it on the member. A complete report with anything pending is stored as `{ 'include' => [...], 'pending' => [...] }`.
 - A new member is keyed `{ 'new' => '<placeholder>' }` until the forge that creates it is saved.
 
 Everything else is ordinary data entries on the members themselves. A forge of the owner then:
 
-1. Decides membership member by member, from the highest-precedence report with an opinion on each.
-2. Finds or builds each included member, and records on it what the reports hold pending for it, oldest first.
-3. Withdraws each source whose report excludes or withdrew a member it keeps from that member.
-4. Forges the members it recorded on or withdrew from, which applies their own tracked associations the same way.
-5. Removes what it recorded from the reports' pending, and drops the withdrawn keys it has acted on. A partial report left with nothing in it is destroyed.
-6. Removes the members membership no longer includes, per the association's `dependent:` option.
+1. Names each new member that the association's tombstone matcher recognises by that tombstone's key.
+2. Decides membership member by member, from the highest-precedence report with an opinion on each.
+3. Finds or builds each included member, and records on it what the reports hold pending for it, oldest first.
+4. Withdraws each source whose report excludes or withdrew a member it keeps from that member.
+5. Forges the members it recorded on or withdrew from, which applies their own tracked associations the same way.
+6. Removes what it recorded from the reports' pending, and drops the withdrawn keys it has acted on. A partial report left with nothing in it is destroyed.
+7. Keeps a tombstone for each member keyed by primary key that it removes because a report excludes it, and names it by the tombstone's key in every report.
+8. Removes the members membership no longer includes, per the association's `dependent:` option.
 
-Nothing is written until the owner is saved. Once it is, the reports name new members by their ids, and the entries step 3 withdrew are destroyed.
+Nothing is written until the owner is saved. Once it is, the reports name new members by their ids, and the entries step 4 withdrew are destroyed.
 
 The withdrawn keys exist because LaForge leaves alone rows that no source has reported. A member that a partial report stops including, or that `withdraw_source` withdraws, would otherwise look like such a row, and stay. The withdrawn keys mark it for one forge, which removes it unless another source includes it, and withdraws the source from it if it is kept. Then they go.
 

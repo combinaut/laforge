@@ -282,11 +282,59 @@ describe 'Association assignment by importers' do
       place.forge!
     end
 
-    it "removes the tenant, which the importer's next run reports as new, since its exclusion named a row that no longer exists" do
+    it 'destroys the tenant and keeps it out of later imports that report it again as new, while new tenants still arrive' do
       expect(tenants_of(place).map(&:first)).to eq(%w[T-1]) # noted: destroyed per `dependent: :destroy`
+      expect(place.reload.laforge_tombstones(:tenants).map { |tombstone| [tombstone.source, tombstone.attributes['name']] }).to eq([[map_editor, 'Tenant T-2']])
 
-      import(place.reload, business_directory, tenants: [tenant('T-1'), tenant('T-2'), tenant('T-3')])
+      2.times { import(place.reload, business_directory, tenants: [tenant('T-1'), tenant('T-2'), tenant('T-3')]) }
 
+      expect(tenants_of(place).map(&:first)).to eq(%w[T-1 T-3])
+    end
+
+    it "brings the tenant back on the importer's next run once the editor forgets the removal" do
+      place.reload.forget_association_member(:tenants, place.laforge_tombstones(:tenants).sole, map_editor)
+      place.save!
+
+      import(place.reload, business_directory, tenants: [tenant('T-1'), tenant('T-2')])
+
+      expect(tenants_of(place).map(&:first)).to eq(%w[T-1 T-2])
+      expect(place.laforge_tombstones(:tenants)).to be_empty
+    end
+
+    it 'lets a source that outranks the editor for tenants add the tenant again' do
+      place.reload.update_attribute_source_precedence(:tenants, business_directory, 100)
+
+      import(place.reload, business_directory, tenants: [tenant('T-1'), tenant('T-2')])
+
+      expect(tenants_of(place).map(&:first)).to eq(%w[T-1 T-2])
+      expect(place.laforge_tombstones(:tenants)).to be_empty # the tenant has a row again
+    end
+  end
+
+  describe 'an importer that creates tenants itself, one row at a time' do
+    # Builds and saves each tenant directly, as many importers do, checking tombstones before saving a new one
+    def import_row(record, source, external_id)
+      tenant = record.tenants.find_by(external_id: external_id) || record.tenants.build(external_id: external_id)
+      tenant.record_data_entries({ name: "Tenant #{external_id}" }, source)
+      tenant.forge
+      return :skipped if tenant.new_record? && LaForge.tombstone_blocking(tenant, source)
+
+      tenant.save!
+      :saved
+    end
+
+    before do
+      %w[T-1 T-2].each { |external_id| import_row(place, business_directory, external_id) }
+      place.reload.exclude_association_member(:tenants, { id: Tenant.find_by!(external_id: 'T-2').id }, map_editor)
+      place.forge!
+    end
+
+    it 'skips a new tenant that a removal by a higher-precedence source matches, and creates it for a source that outranks it' do
+      expect(import_row(place.reload, business_directory, 'T-2')).to eq(:skipped)
+      expect(import_row(place.reload, business_directory, 'T-3')).to eq(:saved)
+
+      place.update_attribute_source_precedence(:tenants, business_directory, 100)
+      expect(import_row(place.reload, business_directory, 'T-2')).to eq(:saved)
       expect(tenants_of(place).map(&:first)).to eq(%w[T-1 T-2 T-3])
     end
   end

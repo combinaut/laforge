@@ -10,7 +10,8 @@ require 'spec_helper'
 # - Membership: each source records a report for an association, either its complete member list or a partial one
 #   (members it includes or excludes). A report names members by key: the records a join row references, `key:` columns,
 #   or else the primary key, where a member named without an id is new and named by a placeholder until it is created
-#   and the owner saved. An id must be one of the owner's members. Membership is decided per member by the
+#   and the owner saved. An id must be one of the owner's members. An explicitly excluded member keyed by id is destroyed,
+#   and its exclusion keeps a tombstone, which `tombstone_matcher:` recognises in what sources report later. Membership is decided per member by the
 #   highest-precedence report with an opinion on it; a complete list excludes every member it doesn't list. A partial
 #   source's report remembers the members it stopped including, which are removed unless another source includes them.
 #   Rows no source has ever reported are left alone.
@@ -797,6 +798,84 @@ describe 'Association tracking capabilities' do
       expect { place.record_data_entries({ parcel_link_ids: [] }, top, mode: :edit) }.to raise_error(LaForge::InvalidAttributeName, /Cannot record Place#parcel_link_ids/)
       expect { place.record_data_entries({ tenants_attributes: [] }, top) }.to raise_error(ArgumentError, /record it with mode: :edit/)
       expect { place.record_data_entries({ tenants: [{ name: 'Florist', opening_hours_attributes: [] }] }, top) }.to raise_error(ArgumentError, /Tenant#opening_hours_attributes describes edits/)
+    end
+  end
+
+  describe 'tombstones' do
+    def exclude_corner_cafe
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Harbor Books')] }, low)
+      place.forge!
+      place.exclude_association_member(:tenants, { id: Tenant.find_by!(name: 'Corner Café').id }, top)
+      place.forge!
+    end
+
+    it 'destroys an excluded member and keeps a tombstone that keeps it out when a lower source reports it again', capability: 'C92' do
+      exclude_corner_cafe
+      expect(Tenant.pluck(:name)).to eq(['Harbor Books'])
+      tombstone = place.reload.laforge_tombstones(:tenants).sole
+      expect([tombstone.source, tombstone.attributes['name'], tombstone.excluded_at]).to match([top, 'Corner Café', be_within(1.minute).of(Time.current)])
+
+      place.record_data_entries({ tenants: [{ name: 'Corner Café', unit: '1A' }, tenant('T-2', name: 'Harbor Books')] }, low)
+      expect(place.forge_diff['tenants']).to include(added: [], removed: [])
+      place.forge!
+
+      expect(place.reload.tenants.pluck(:name)).to eq(['Harbor Books'])
+    end
+
+    it 'keeps a tombstone through the excluding source\'s later partial reports, and drops it when the source is withdrawn', capability: 'C93' do
+      exclude_corner_cafe
+      place.reload.record_data_entries({ tenants: [tenant('T-2')] }, top, mode: :partial)
+      place.forge!
+      expect(place.reload.laforge_tombstones(:tenants).size).to eq(1)
+
+      place.withdraw_source(top)
+      expect(place.reload.laforge_tombstones(:tenants)).to be_empty
+    end
+
+    it 'can only be forgotten, by the tombstone or its to_h', capability: 'C94' do
+      exclude_corner_cafe
+      tombstone = place.reload.laforge_tombstones(:tenants).sole
+
+      expect { place.include_association_member(:tenants, tombstone, top) }.to raise_error(ArgumentError, /can only be forgotten, which lets sources add the member again/)
+      place.forget_association_member(:tenants, tombstone.to_h, top)
+      place.save!
+      expect(place.reload.laforge_tombstones(:tenants)).to be_empty
+    end
+
+    it 'raises, saying what to declare, for an exclusion that could not outlast its row', capability: 'C95' do
+      stub_const('UnmatchedPlace', Class.new(ActiveRecord::Base))
+      UnmatchedPlace.table_name = 'places'
+      UnmatchedPlace.has_many :tenants, as: :occupiable, dependent: :destroy
+      UnmatchedPlace.laforged(associations: { tenants: {} })
+      unmatched_place = UnmatchedPlace.create!(name: 'Harbor Building')
+      corner_cafe = unmatched_place.tenants.create!(name: 'Corner Café')
+
+      message = /Cannot exclude Tenant #{corner_cafe.id} from UnmatchedPlace #{unmatched_place.id}'s tenants: excluding it destroys it.*Declare tombstone_matcher: on UnmatchedPlace's tenants.*tombstone_matcher: ->\(tenant, tombstones\)/
+      expect { unmatched_place.exclude_association_member(:tenants, corner_cafe, top) }.to raise_error(ArgumentError, message)
+      expect { unmatched_place.record_data_entries({ tenants: { exclude: [corner_cafe] } }, top, mode: :partial) }.to raise_error(ArgumentError, message)
+      expect { unmatched_place.record_data_entries({ tenants_attributes: [{ id: corner_cafe.id, _destroy: '1' }] }, top, mode: :edit) }.to raise_error(ArgumentError, message)
+    end
+
+    it 'rejects tombstone_matcher: where it could never run, or is not callable', capability: 'C96' do
+      matcher = ->(*) {}
+      expect { LaForge::AssociationConfig.new(Place, :place_categories, tombstone_matcher: matcher) }.to raise_error(ArgumentError, /Place#place_categories does not use a tombstone_matcher: its members are keyed by category_id, so an exclusion names something that outlasts the row. Remove tombstone_matcher:/)
+      expect { LaForge::AssociationConfig.new(Place, :marker, tombstone_matcher: matcher) }.to raise_error(ArgumentError, /Place#marker does not use a tombstone_matcher: it is a has_one/)
+      expect { LaForge::AssociationConfig.new(Place, :tenants, tombstone_matcher: :name) }.to raise_error(ArgumentError, /tombstone_matcher: must respond to call/)
+    end
+
+    it 'tells code that creates members itself whether a tombstone keeps a new member out, raising when it cannot check', capability: 'C97' do
+      exclude_corner_cafe
+      place.reload
+
+      expect(LaForge.tombstone_blocking(place.tenants.build(name: 'Corner Café'), low)).to have_attributes(source: top)
+      expect(LaForge.tombstone_blocking(place.tenants.build(name: 'Florist'), low)).to be_nil
+      expect(LaForge.tombstone_blocking(place.tenants.build(name: 'Corner Café'), top)).to be_nil # the source that excluded it may add it again
+
+      expect { LaForge.tombstone_blocking(place.tenants.first, low) }.to raise_error(ArgumentError, /already exists; tombstone_blocking checks a new member before it is created/)
+      expect { LaForge.tombstone_blocking(Tenant.new(name: 'Corner Café'), low) }.to raise_error(ArgumentError, /Tenant is not a member of an association LaForge tracks \(checked occupiable, which is not set\)/)
+
+      allow(Place.laforged_association(:tenants)).to receive(:tombstone_matcher).and_return(->(_tenant, _tombstones) { Tenant.new })
+      expect { LaForge.tombstone_blocking(place.tenants.build(name: 'Corner Café'), low) }.to raise_error(ArgumentError, /Place#tenants tombstone_matcher: returned .* which is not one of the tombstones it was given/)
     end
   end
 
