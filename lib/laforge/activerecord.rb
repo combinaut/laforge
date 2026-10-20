@@ -9,8 +9,12 @@ module LaForge
     # associations: { name => { key: } } tracks has_many and has_one associations. Members are keyed by `key:` if given,
     # else by the foreign keys of the records a join row references, else by primary key (a has_one's single member needs
     # no key)
-    def laforged(associations: {})
+    # attribute_groups: { name => [attributes] } names attributes that must come from one source together, such as the
+    # lines of a postal address: the highest-ranked source with an entry for any of them supplies all of them, sources
+    # record them together, and precedence rules are set on the group
+    def laforged(associations: {}, attribute_groups: {})
       LaForge::ActiveRecord.assert_no_collisions!(self)
+      groups = LaForge::ActiveRecord.attribute_groups(self, attribute_groups, associations)
 
       has_many :data_entries, as: :record, dependent: :delete_all, autosave: true, class_name: 'LaForge::DataEntry' do
         # The tombstones of a tracked association: members a source excluded whose rows are gone (see Tombstone)
@@ -31,6 +35,8 @@ module LaForge
       scope :without_attribute_with_source, ->(attribute, source) { joins(:data_entries).merge(DataEntry.without_attribute(attribute).with_source(source)) }
 
       class_attribute :laforged_associations, instance_writer: false, default: {}
+      class_attribute :laforged_attribute_groups, instance_writer: false, default: {}
+      self.laforged_attribute_groups = groups
 
       configs = associations.to_h { |name, options| [name.to_s, AssociationConfig.new(self, name, **options)] }
       configs.each_value { |config| AssociationTracking.declare(self, config) }
@@ -58,6 +64,36 @@ module LaForge
       raise ArgumentError, "#{model.name} already defines #{names.join(', ')}, which `laforged` would replace. Rename #{model.name}'s " \
                            "#{names.one? ? 'method' : 'methods'}, or, to wrap LaForge's and call super, define #{names.one? ? 'it' : 'them'} after `laforged`"
     end
+
+    # The attribute groups declared on a model, as { group name => [attribute names] }, after checking that each names at
+    # least two attributes, that no attribute is in two groups or is a tracked association, and that no group is named
+    # like an attribute
+    def self.attribute_groups(model, groups, associations)
+      groups = groups.to_h { |name, attributes| [name.to_s, Array.wrap(attributes).map(&:to_s)] }
+      seen = {}
+      groups.each do |name, attributes|
+        raise ArgumentError, "#{model.name} attribute group #{name} names #{attributes.size} attribute#{'s' unless attributes.one?}; a group needs at least two" if attributes.uniq.size < 2
+        raise ArgumentError, "#{model.name} attribute group #{name} is named like one of its attributes; give the group its own name" if attributes.include?(name)
+
+        attributes.each do |attribute|
+          raise ArgumentError, "#{model.name}##{attribute} is in attribute groups #{seen[attribute]} and #{name}; an attribute belongs to one group at most" if seen[attribute]
+          raise ArgumentError, "#{model.name}##{attribute} is a tracked association, which cannot be in an attribute group" if associations.key?(attribute) || associations.key?(attribute.to_sym)
+
+          seen[attribute] = name
+        end
+      end
+      clash = groups.keys & seen.keys
+      raise ArgumentError, "#{model.name} attribute group #{clash.first} is also an attribute of group #{seen[clash.first]}; give the group its own name" if clash.any?
+
+      groups
+    end
+
+    # The sources ranked highest first, as [{ source:, level: }], given each source's rank (see PrecedenceRule::Resolver)
+    # from the block and the names of the rank's levels
+    def self.order_by_rank(sources, levels)
+      ranked = sources.map { |source| [source, yield(source)] }.sort_by { |source, rank| rank.map(&:-@) + [source.id] }
+      ranked.map { |source, rank| { source: source, level: levels[rank.index { |precedence| precedence != -Float::INFINITY }] } }
+    end
   end
 
   module ClassMethods
@@ -65,8 +101,10 @@ module LaForge
       laforged_associations.fetch(name.to_s)
     end
 
-    # Set and save the precedence of a source for one attribute on every record of this model. Pass nil to remove it.
+    # Set and save the precedence of a source for one attribute, or one attribute group, on every record of this model.
+    # Pass nil to remove it.
     def update_attribute_source_precedence(attribute, source, precedence)
+      laforge_assert_rule_attribute!(attribute)
       update_model_precedence_rule(attribute.to_s, source, precedence)
     end
 
@@ -75,8 +113,29 @@ module LaForge
       update_model_precedence_rule(PrecedenceRule::ANY_ATTRIBUTE, source, precedence)
     end
 
-    # Returns `{ attribute_name => { source => precedence } }` for this model's model-wide rules. A rule for every
-    # attribute is keyed by `PrecedenceRule::ANY_ATTRIBUTE`.
+    # Set and save the order of sources for one attribute, or attribute group, on every record of this model, or for
+    # every attribute when no attribute is given, highest first. Sources not listed rank below the listed ones, in the
+    # order of the next level down. Replaces the order at that level; nil or [] removes it.
+    def update_precedence_order(sources, attribute: nil)
+      laforge_assert_rule_attribute!(attribute) if attribute
+      attribute_name = attribute ? attribute.to_s : PrecedenceRule::ANY_ATTRIBUTE
+      source_ids = DataSource.normalize_source_ids(sources)
+
+      transaction do
+        PrecedenceRule.for_model(self).where(attribute_name: attribute_name).where.not(source_id: source_ids).destroy_all
+        source_ids.each_with_index { |source_id, index| update_model_precedence_rule(attribute_name, source_id, source_ids.size - index) }
+      end
+    end
+
+    # The active sources in the order they rank for one attribute, or attribute group, on records of this model with no
+    # rules of their own, as [{ source:, level: }], the level being the most specific one the source has a rule at:
+    # :attribute, :model or :global
+    def precedence_order(attribute: nil)
+      resolver = PrecedenceRule::Resolver.new(self)
+      LaForge::ActiveRecord.order_by_rank(DataSource.active.to_a, %i[record attribute model global]) { |source| resolver.rank(nil, attribute.to_s, source.id) }
+    end
+
+    # Returns { attribute_name => { source => precedence } } for the model-wide rules, '' standing for every attribute
     def source_precedences
       PrecedenceRule.for_model(self).includes(:source).group_by(&:attribute_name).transform_values { |rules| rules.to_h { |rule| [rule.source, rule.precedence] } }
     end
@@ -84,6 +143,40 @@ module LaForge
     # Returns { record_id => { source => [member hashes] } } for the given records
     def source_values(name, records:)
       AssociationTracking.source_values(self, laforged_association(name), records)
+    end
+
+    # @api private
+    # The attribute names with every attribute group one of them belongs to filled in, in the group's order
+    def laforge_with_groups(attribute_names)
+      Array.wrap(attribute_names).map(&:to_s).flat_map { |name| (group = laforge_attribute_group(name)) ? laforged_attribute_groups[group] : [name] }.uniq
+    end
+
+    # @api private
+    # Raises unless the attributes recorded together include every attribute of each group they touch, naming the
+    # missing ones. `where` describes what is being recorded, for the message.
+    def laforge_assert_whole_groups!(attribute_names, where: name)
+      attribute_names = attribute_names.map(&:to_s)
+      laforged_attribute_groups.each do |group, attributes|
+        given = attributes & attribute_names
+        next if given.empty? || given.size == attributes.size
+
+        raise ArgumentError, "#{where}: #{attributes.join(', ')} are attribute group #{group}, which a source records together (missing: #{(attributes - given).join(', ')}). " \
+                             'Pass nil for a value the source does not have'
+      end
+    end
+
+    # @api private
+    # Raises when a precedence rule is set on an attribute of a group, which the group's rule ranks
+    def laforge_assert_rule_attribute!(attribute)
+      group = laforge_attribute_group(attribute)
+      raise ArgumentError, "#{name}##{attribute} is in attribute group #{group}, which is ranked as a whole; set the precedence on #{group}" if group
+    end
+
+    # @api private
+    # The name of the attribute group an attribute belongs to, or nil
+    def laforge_attribute_group(attribute_name)
+      attribute_name = attribute_name.to_s
+      laforged_attribute_groups.find { |_, attributes| attributes.include?(attribute_name) }&.first
     end
 
     private
@@ -139,23 +232,29 @@ module LaForge
     # Returns a hash of the attributes generated from the record's the data entries
     # Optionally pass `attributes` to limit data entries used in the calculation to only those for the given attributes
     # Optionally pass `sources` to limit data entries used in the calculation to only those from the given sources
-    # Entries marked for destruction are left out, so each of their attributes takes the value of the next entry, and an
-    # attribute with no other entry is left out of the hash.
-    def forge_attributes(attributes: nil, sources: nil)
+    # Optionally pass `except_sources` to leave out the entries of the given sources, as when asking what would be forged
+    # without one source's values
+    # Entries marked for destruction are left out, as the next forge will not find them, so each attribute falls back to
+    # the next source, and an attribute no other source has an entry for keeps its value.
+    # Entries of inactive sources are left out. An attribute group takes every attribute from the source whose entry for
+    # any of them ranks highest; an attribute that source has no entry for is nil.
+    def forge_attributes(attributes: nil, sources: nil, except_sources: nil)
       @laforge_precedence_resolver = nil # read the model-wide and global rules afresh (or from the precedence cache) for each forge
       forged_attrs = {}
-      data_entries = filter_data_entries_in_memory(attributes: attributes, sources: sources).reject { |data_entry| data_entry.marked_for_destruction? || laforged_associations.key?(data_entry.attribute_name) }
-      winners = DataEntry.in_precedence_order(data_entries, record: self).uniq(&:attribute_name).index_by(&:attribute_name)
+      attributes = self.class.laforge_with_groups(attributes) unless attributes.nil?
+      data_entries = laforge_forging_entries(attributes: attributes, sources: sources, except_sources: except_sources).reject { |data_entry| data_entry.marked_for_destruction? || laforged_associations.key?(data_entry.attribute_name) }
+      winners = laforge_winning_entries(data_entries)
 
       # The hash's key order is the order `forge` calls the setters, which matters when one setter
-      # resets another attribute. It is by each attribute's highest effective precedence, highest first.
-      # Attributes that share one come in no defined order.
-      assignment_order = data_entries.sort_by { |data_entry| laforge_precedence_of(data_entry) }.reverse.map(&:attribute_name).uniq
+      # resets another attribute. It follows precedence, highest first, independently of which entry
+      # wins each attribute. Attributes that share a precedence come in no defined order.
+      assignment_order = self.class.laforge_with_groups(data_entries.sort_by { |data_entry| laforge_rank_of(data_entry) }.reverse.map(&:attribute_name).uniq)
 
       assignment_order.each do |attribute_name|
         next unless respond_to?("#{attribute_name}=")
 
-        forged_attrs[attribute_name] = winners.fetch(attribute_name).value
+        data_entry = winners.fetch(attribute_name).last
+        forged_attrs[attribute_name] = data_entry&.value
       end
 
       return forged_attrs
@@ -163,9 +262,11 @@ module LaForge
 
     # Mark several data entries for destruction, so they are destroyed when the record is saved and a forge leaves them
     # out. To blank an attribute instead, record nil for it.
-    # Optionally pass `attribute_names` to remove only the entries for those attributes, and `sources` to remove only the
-    # entries from those sources.
+    # Optionally pass `attributes` to limit data entries used in the calculation to only those for the given attributes
+    # Optionally pass `sources` to limit data entries used in the calculation to only those from the given sources
+    # An attribute of a group removes the source's entries for the whole group.
     def remove_data_entries(attribute_names: nil, sources: nil)
+      attribute_names = self.class.laforge_with_groups(attribute_names) unless attribute_names.nil?
       filter_data_entries_in_memory(attributes: attribute_names, sources: sources).each do |data_entry|
         data_entry.mark_for_destruction
       end
@@ -185,11 +286,14 @@ module LaForge
     # A member is a hash of its key and what the source says about it, or a saved record; where members are keyed by
     # primary key, a hash without an id is a new member. When the owner is forged, the hash's attributes are recorded on
     # the member as the source's entries.
+    # The attributes of an attribute group are recorded together, on the record and on members alike.
     def record_data_entries(attributes_hash, source, precedence: NOT_GIVEN, mode: :complete)
       raise ArgumentError, "Unknown mode #{mode.inspect}; pass :complete, :partial or :edit" unless %i[complete partial edit].include?(mode)
 
       edit = mode == :edit
-      Payload.translate(self.class, attributes_hash, (self unless new_record?), edit: edit).each do |attribute_name, value|
+      payload = Payload.translate(self.class, attributes_hash, (self unless new_record?), edit: edit)
+      self.class.laforge_assert_whole_groups!(payload.keys.reject { |attribute_name| laforged_associations.key?(attribute_name.to_s) }, where: "Recording #{self.class.name}")
+      payload.each do |attribute_name, value|
         if edit && (config = laforged_associations[attribute_name.to_s])
           AssociationTracking.edit(self, config, value, source, precedence: precedence)
         elsif (config = laforged_associations[attribute_name.to_s])
@@ -197,7 +301,7 @@ module LaForge
           options[:partial] = true if mode == :partial
           AssociationTracking.record(self, config, value, source, **options)
         else
-          record_data_entry(attribute_name, value, source, precedence: precedence)
+          laforge_record_attribute(attribute_name, value, source, precedence: precedence)
         end
       end
     end
@@ -206,17 +310,10 @@ module LaForge
     # Optionally pass a precedence for that attribute and source on this record at the same time; it is saved with the
     # record. An existing precedence is kept when none is passed, and removed when nil is passed.
     # A belongs_to association is recorded as its foreign key (and type, when polymorphic): pass the record or nil.
+    # An attribute of an attribute group is recorded with the rest of its group, through `record_data_entries`.
     def record_data_entry(attribute_name, value, source, precedence: NOT_GIVEN)
-      reflection = self.class.reflect_on_association(attribute_name)
-      if reflection&.belongs_to?
-        return laforge_reference_columns(reflection, value).each { |column, column_value| write_data_entry(column, column_value, source, precedence: precedence) }
-      end
-
-      raise InvalidAttributeName, "#{self.class.name}##{attribute_name} is not a tracked association" if reflection
-      raise InvalidAttributeName, "Cannot set #{attribute_name} on #{self.class.name}" unless respond_to?("#{attribute_name}=")
-      raise InvalidValue, "Cannot record #{value.class} for #{self.class.name}##{attribute_name}; values are stored as JSON, so record a string, number, boolean, date, nil, or an array or hash of those" unless DataEntry.storable?(value)
-
-      write_data_entry(attribute_name, value, source, precedence: precedence)
+      self.class.laforge_assert_whole_groups!([attribute_name], where: "Recording #{self.class.name}##{attribute_name}")
+      laforge_record_attribute(attribute_name, value, source, precedence: precedence)
     end
 
     # For an orphan sweep: the source no longer reports this record. Destroys its attribute entries and withdraws every
@@ -235,17 +332,50 @@ module LaForge
       end
     end
 
-    # Set the precedence of a source for one attribute of this record, whether or not the source has recorded it yet.
-    # Saved immediately on a persisted record, otherwise with the record. Pass nil to remove it.
+    # Set the precedence of a source for one attribute, or one attribute group, of this record, whether or not the source
+    # has recorded it yet. Saved immediately on a persisted record, otherwise with the record. Pass nil to remove it.
     def update_attribute_source_precedence(attribute, source, precedence)
+      self.class.laforge_assert_rule_attribute!(attribute)
       rule = write_precedence_rule(attribute, source, precedence)
       return unless persisted? && rule
 
       rule.marked_for_destruction? ? precedence_rules.destroy(rule) : rule.save!
     end
 
-    # Returns `{ attribute_name => { source => precedence } }` for this record's own rules, unsaved ones included and
-    # those marked for destruction left out
+    # Set the order of sources for one attribute, or attribute group, of this record, highest first. Sources not listed
+    # rank below the listed ones, in the order of the next level down. Replaces the record's order for the attribute;
+    # nil or [] removes it. Saved with the record.
+    def update_precedence_order(attribute, sources)
+      self.class.laforge_assert_rule_attribute!(attribute)
+      source_ids = DataSource.normalize_source_ids(sources)
+      precedence_rules.select { |rule| rule.attribute_name == attribute.to_s && !source_ids.include?(rule.source_id) }.each { |rule| write_precedence_rule(attribute, rule.source_id, nil) }
+      source_ids.each_with_index { |source_id, index| write_precedence_rule(attribute, source_id, source_ids.size - index) }
+    end
+
+    # The active sources in the order they rank for one attribute, or attribute group, of this record, as
+    # [{ source:, level: }], the level being the most specific one the source has a rule at: :record, :attribute, :model
+    # or :global
+    def precedence_order(attribute)
+      resolver = PrecedenceRule::Resolver.new(self.class) # rules changed since the last forge count
+      LaForge::ActiveRecord.order_by_rank(DataSource.active.to_a, %i[record attribute model global]) { |source| resolver.rank(self, attribute, source.id) }
+    end
+
+    # @api private
+    # Records one attribute, without checking its group
+    def laforge_record_attribute(attribute_name, value, source, precedence: NOT_GIVEN)
+      reflection = self.class.reflect_on_association(attribute_name)
+      if reflection&.belongs_to?
+        return laforge_reference_columns(reflection, value).each { |column, column_value| write_data_entry(column, column_value, source, precedence: precedence) }
+      end
+
+      raise InvalidAttributeName, "#{self.class.name}##{attribute_name} is not a tracked association" if reflection
+      raise InvalidAttributeName, "Cannot set #{attribute_name} on #{self.class.name}" unless respond_to?("#{attribute_name}=")
+      raise InvalidValue, "Cannot record #{value.class} for #{self.class.name}##{attribute_name}; values are stored as JSON, so record a string, number, boolean, date, nil, or an array or hash of those" unless DataEntry.storable?(value)
+
+      write_data_entry(attribute_name, value, source, precedence: precedence)
+    end
+
+    # Returns { attribute_name => { source => precedence } } for the rules set on this record
     def source_precedences
       precedence_rules.reject(&:marked_for_destruction?).group_by(&:attribute_name).transform_values { |rules| rules.to_h { |rule| [rule.source, rule.precedence] } }
     end
@@ -257,9 +387,9 @@ module LaForge
     end
 
     # @api private
-    # The source's global precedence, which breaks ties between equal effective precedences
-    def laforge_global_precedence(source_id)
-      laforge_precedence_resolver.global_precedence(source_id)
+    # How a data entry's value ranks on this record, to compare with other entries' ranks (see PrecedenceRule::Resolver)
+    def laforge_rank_of(data_entry)
+      laforge_precedence_resolver.rank(self, data_entry.attribute_name, data_entry.source_id)
     end
 
     # Whether the source has entries on this record
@@ -278,10 +408,9 @@ module LaForge
     end
 
     # @api private
-    # Whether one source's value for an attribute of this record outranks another's, by effective precedence, then the
-    # sources' global precedence
+    # Whether one source's value for an attribute of this record outranks another's
     def laforge_outranks?(attribute_name, source_id, other_source_id)
-      rank = ->(id) { [laforge_precedence_resolver.precedence(self, attribute_name, id), laforge_precedence_resolver.global_precedence(id)] }
+      rank = ->(id) { laforge_precedence_resolver.rank(self, attribute_name, id) }
       (rank.(source_id) <=> rank.(other_source_id)) == 1
     end
 
@@ -380,7 +509,7 @@ module LaForge
       data_entry ||= data_entries.build(attribute_name: attribute_name, source_id: DataSource.normalize_source_id(source))
       data_entry.value = value
       data_entry.recorded_at = recorded_at if data_entry.new_record? || data_entry.will_save_change_to_value?
-      write_precedence_rule(attribute_name, source, precedence) unless precedence.equal?(NOT_GIVEN)
+      write_precedence_rule(self.class.laforge_attribute_group(attribute_name) || attribute_name, source, precedence) unless precedence.equal?(NOT_GIVEN)
     end
 
     # Sets this record's rule for the attribute and source in memory, and returns it. With a nil `precedence`, marks a
@@ -426,7 +555,10 @@ module LaForge
     def laforge_after_save
       (@laforge_created_members || {}).each { |name, created| AssociationTracking.name_created(self, laforged_associations.fetch(name), created) }
       @laforge_created_members = nil
-      DataEntry.where(id: @laforge_withdrawn_entries.map(&:id)).delete_all if @laforge_withdrawn_entries
+      if @laforge_withdrawn_entries
+        @laforge_withdrawn_entries.each { |entry| DataEntry.publish_change(entry, value_was: entry.value, value: nil, destroyed: true) }
+        DataEntry.where(id: @laforge_withdrawn_entries.map(&:id)).delete_all
+      end
       @laforge_withdrawn_entries = nil
       (@laforge_replaced_members || []).each do |config, record|
         case config.reflection.options[:dependent]
@@ -451,14 +583,38 @@ module LaForge
       laforge_association_reports(config).map { |data_entry, report| [data_entry, report.include] }
     end
 
-    # The association's entries in precedence order, paired with their reports (see MemberList)
-    def laforge_association_reports(config)
-      entries = filter_data_entries_in_memory(attributes: config.name)
+    # The association's entries in precedence order, paired with their reports (see MemberList). Inactive sources' reports
+    # are left out, as forging leaves them out, unless `inactive` is true.
+    def laforge_association_reports(config, inactive: false)
+      entries = inactive ? filter_data_entries_in_memory(attributes: config.name) : laforge_forging_entries(attributes: config.name)
       laforge_by_precedence(entries).map { |data_entry| [data_entry, MemberList.new(data_entry.value, marked: data_entry.marked_for_destruction?)] }
     end
 
     def laforge_by_precedence(entries)
       DataEntry.in_precedence_order(entries, record: self)
+    end
+
+    # { attribute_name => [winning entry, the attribute's entry from the winning source] } for the given entries. They are
+    # the same entry for an attribute outside a group. For a group, the winner is the highest-ranked entry for any of its
+    # attributes, and each attribute takes that source's entry, or nil when it has none.
+    def laforge_winning_entries(entries)
+      entries = laforge_by_precedence(entries)
+      entries.each_with_object({}) do |entry, winners|
+        next if winners.key?(entry.attribute_name)
+
+        group = self.class.laforge_attribute_group(entry.attribute_name)
+        next winners[entry.attribute_name] = [entry, entry] unless group
+
+        self.class.laforged_attribute_groups.fetch(group).each do |attribute_name|
+          winners[attribute_name] = [entry, entries.find { |candidate| candidate.attribute_name == attribute_name && candidate.source_id == entry.source_id }]
+        end
+      end
+    end
+
+    # The entries forging reads: those matching the filters, without the entries of inactive sources and of `except_sources`
+    def laforge_forging_entries(attributes: nil, sources: nil, except_sources: nil)
+      left_out = DataSource.inactive_ids + DataSource.normalize_source_ids(except_sources)
+      filter_data_entries_in_memory(attributes: attributes, sources: sources).reject { |data_entry| left_out.include?(data_entry.source_id) }
     end
 
     # Returns the record's entries matching the filters, from the in-memory association: every saved

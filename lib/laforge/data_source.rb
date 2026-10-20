@@ -4,14 +4,24 @@ module LaForge
 
     has_many :data_entries, class_name: 'LaForge::DataEntry'
     has_many :precedence_rules, class_name: 'LaForge::PrecedenceRule', foreign_key: :source_id, dependent: :delete_all
-    after_destroy { PrecedenceCache.clear } # its rules are deleted without the callbacks that clear the cache
+    after_destroy { PrecedenceCache.clear } # its rules are deleted without callbacks
+    after_save { PrecedenceCache.clear if saved_change_to_active? }
     has_one :global_precedence_rule, -> { global }, class_name: 'LaForge::PrecedenceRule', foreign_key: :source_id, autosave: true, inverse_of: :source
 
     validates :name, presence: true, uniqueness: { case_sensitive: false }
     validates :precedence, presence: true, numericality: { only_integer: true, allow_nil: true }
     validate :precedence_is_unique
 
-    # Sources from the highest global precedence to the lowest, leaving out any source without one
+    scope :active, -> { where(active: true) }
+    scope :inactive, -> { where(active: false) }
+
+    # The ids of inactive sources, whose entries forging leaves out as if they had none. Their entries are kept, and
+    # recording still adds to them, so activating the source again and forging restores what it says.
+    def self.inactive_ids
+      PrecedenceCache.fetch(:inactive_sources) { inactive.ids }
+    end
+
+    # Sources ordered from the highest global precedence to the lowest
     scope :by_precedence, -> { joins(:global_precedence_rule).order(PrecedenceRule.arel_table[:precedence].desc) }
 
     def self.maximum_precedence
@@ -61,6 +71,21 @@ module LaForge
       taken = PrecedenceRule.global.where(precedence: precedence)
       taken = taken.where.not(source_id: id) if persisted?
       errors.add(:precedence, :taken) if taken.exists?
+    end
+  end
+
+  # Set and save the global order of sources, highest first. Sources not listed rank below the listed ones, in their
+  # current order. Every source's global precedence is renumbered, so the order is all that matters.
+  def self.update_precedence_order(sources)
+    listed = DataSource.normalize_source_ids(sources)
+    order = listed + DataSource.by_precedence.ids.reject { |id| listed.include?(id) }
+    order += DataSource.where.not(id: order).ids # sources without a global precedence yet
+
+    DataSource.transaction do
+      rules = order.map { |id| PrecedenceRule.global.find_or_initialize_by(source_id: id) }
+      clear = [PrecedenceRule.global.maximum(:precedence) || 0, order.size].max + 1
+      rules.each_with_index { |rule, index| rule.update!(precedence: clear + index) } # out of the way of the unique index first
+      rules.each_with_index { |rule, index| rule.update!(precedence: order.size - index) }
     end
   end
 end

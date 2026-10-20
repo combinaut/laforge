@@ -981,6 +981,56 @@ describe 'Association tracking capabilities' do
     end
   end
 
+  describe 'attribute groups and inactive sources on members' do
+    it 'checks and resolves an attribute group on members as on the record', capability: 'C104' do
+      expect { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', street: '1 Quay')] }, low) }
+        .to raise_error(ArgumentError, /Tenant members of Place#tenants: street, postcode are attribute group postal_address, which a source records together \(missing: postcode\)/)
+
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', street: '1 Quay', postcode: 'H1')] }, low)
+      place.forge!
+      place.record_data_entries({ tenants: [tenant('T-1', street: '9 Pier', postcode: nil)] }, high, mode: :partial)
+      place.forge!
+
+      expect(Tenant.sole).to have_attributes(name: 'Corner Café', street: '9 Pier', postcode: nil)
+    end
+
+    it "leaves an inactive source's members alone and lets its exclusions stop applying, until it is active again", capability: 'C105' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
+      place.record_data_entries({ tenants: [tenant('T-2', name: 'Harbor Books')] }, high, mode: :partial)
+      place.forge!
+      place.record_data_entries({ tenants: { exclude: [{ id: Tenant.find_by!(name: 'Corner Café').id }] } }, top, mode: :edit)
+      place.forge!
+      place.reload.record_data_entries({ tenants: [{ name: 'Corner Café' }] }, low)
+      place.forge!
+      expect(Tenant.pluck(:name)).to eq(['Harbor Books'])
+
+      high.update!(active: false)
+      top.update!(active: false)
+      place.reload.forge!
+      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Harbor Books', 'Corner Café') # high's tenant stays, unnamed; top's tombstone stops blocking
+
+      top.update!(active: true) # its exclusion applies again, to the tenant created meanwhile
+      place.reload.forge!
+      expect(place.reload.tenants.pluck(:name)).to eq(['Harbor Books'])
+      expect(place.data_entries.tombstones(:tenants).map(&:source)).to eq([top])
+    end
+
+    it 'publishes the entries a forge withdraws from members as destroyed', capability: 'C106' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
+      place.forge!
+      place.reload.record_data_entries({ tenants: [tenant('T-1', unit: '1A')] }, high, mode: :partial)
+      place.forge!
+      events = []
+      subscription = ActiveSupport::Notifications.subscribe(LaForge::DataEntry::CHANGED) { |*, payload| events << payload.slice(:attribute_name, :source_id, :destroyed) }
+      place.reload.record_data_entries({ tenants: [] }, high, mode: :partial)
+      place.forge!
+
+      expect(events).to include({ attribute_name: 'unit', source_id: high.id, destroyed: true })
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscription)
+    end
+  end
+
   describe 'has_one' do
     it 'forges the single member from every source that reports it, updating the same row on later runs', capability: 'C57' do
       place.record_data_entries({ marker: { label: 'Harbor', icon: 'pin' } }, low)

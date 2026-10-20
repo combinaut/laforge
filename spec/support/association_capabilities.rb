@@ -61,6 +61,8 @@ module AssociationCapabilities
         t.string :external_id
         t.string :name
         t.string :unit
+        t.string :street
+        t.string :postcode
         t.string :registration_number
         t.string :status, default: 'open', null: false
         t.timestamps null: false
@@ -115,7 +117,8 @@ module AssociationCapabilities
 
       validates :name, presence: true
 
-      laforged associations: { opening_hours: { key: :day } }
+      # A tenant's address comes from one source, its street and postcode together
+      laforged associations: { opening_hours: { key: :day } }, attribute_groups: { postal_address: %i[street postcode] }
     end
 
     define(:Place) do

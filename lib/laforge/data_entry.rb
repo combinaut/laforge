@@ -16,21 +16,35 @@ module LaForge
     # through LaForge sets it; an entry created any other way gets the time it is saved.
     before_save { self.recorded_at ||= Time.current }
 
-    # The precedence this entry's value is ranked by: the most specific precedence rule for its record, attribute and
-    # source, falling back to the source's global precedence
+    # Publishes CHANGED when an entry's value is saved changed, or the entry is destroyed, so a host can follow what
+    # sources say without reading every entry. Writes that skip callbacks, such as `LaForge.merge` moving entries between
+    # records and database cascades, publish nothing.
+    CHANGED = 'data_entry_changed.laforge'.freeze
+
+    after_save { DataEntry.publish_change(self, value_was: value_before_last_save, value: value) if previously_new_record? || saved_change_to_value? }
+    after_destroy { DataEntry.publish_change(self, value_was: value, value: nil, destroyed: true) }
+
+    # The payload: the entry, its record_type, record_id, attribute_name and source_id, its value before and after, and
+    # whether it was destroyed
+    def self.publish_change(entry, value_was:, value:, destroyed: false)
+      ActiveSupport::Notifications.instrument(CHANGED, entry: entry, record_type: entry.record_type, record_id: entry.record_id, attribute_name: entry.attribute_name,
+                                                       source_id: entry.source_id, value_was: value_was, value: value, destroyed: destroyed)
+    end
+
+    # The precedence of the most specific precedence rule for its record, attribute and source, falling back to the
+    # source's global precedence. Entries rank by level first (see PrecedenceRule::Resolver), so compare entries with
+    # `in_precedence_order` rather than by this number.
     def effective_precedence
       record.laforge_precedence_of(self)
     end
 
-    # Returns one record's `entries` in the order `forge` ranks them, so the first entry for each attribute is the one
-    # it applies. `record` defaults to the first entry's record. The order is by, highest first:
-    #   - the entry's effective precedence on `record`
-    #   - its source's global precedence, a source without one ranking below every other
-    #   - recency, which is the id for saved entries. An unsaved entry is newer than every saved one, and among unsaved
-    #     entries a later position in `entries` is newer.
+    # Returns one record's `entries` highest-ranked first, so the first entry for each attribute is the one `forge`
+    # applies. Entries rank by their sources' rules, most specific level first, then by the sources' global precedence
+    # (see PrecedenceRule::Resolver), then by recency. Recency is the id for saved entries; an unsaved entry is newer than
+    # every saved one, and among unsaved entries a later position in `entries` is newer.
     def self.in_precedence_order(entries, record: entries.first&.record)
       entries.each_with_index.sort_by do |entry, position|
-        [-record.laforge_precedence_of(entry), -record.laforge_global_precedence(entry.source_id), -(entry.id || Float::INFINITY), -position]
+        record.laforge_rank_of(entry).map(&:-@) + [-(entry.id || Float::INFINITY), -position]
       end.map(&:first)
     end
 

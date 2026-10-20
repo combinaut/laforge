@@ -29,6 +29,8 @@ Key features:
 
   Upgrading from a version without `recorded_at` on data entries? `rails generate laforge:recorded_at` creates a migration that adds it, filled from `updated_at`.
 
+  Upgrading from a version without `active` on data sources? `rails generate laforge:active_sources` creates a migration that adds it, with every existing source active (see [Deactivating a source](#deactivating-a-source)).
+
 3. Add laforge to your model.
 
   ```ruby
@@ -110,14 +112,16 @@ A source can be given as a `LaForge::DataSource`, its id, or its name. Looking a
 
 ### Precedence
 
-A source's precedence ranks its values everywhere, unless a more specific rule applies. Rules are kept in the `laforge_precedence_rules` table at four levels, and the most specific one that matches decides:
+A source's precedence ranks its values everywhere, unless a more specific rule applies. Rules are kept in the `laforge_precedence_rules` table at four levels:
 
 | Level | Set with |
 |---|---|
-| One attribute of one record | `record.update_attribute_source_precedence(:height, source2, 3)`, or `precedence:` when recording |
-| One attribute of every record of a model | `MyModel.update_attribute_source_precedence(:height, source2, 3)` |
-| Every attribute of every record of a model | `MyModel.update_source_precedence(source2, 3)` |
-| Everything (the source's own precedence) | `source2.update!(precedence: 3)` |
+| One attribute of one record | `record.update_precedence_order(:height, [source2, source1])`, `record.update_attribute_source_precedence(:height, source2, 3)`, or `precedence:` when recording |
+| One attribute of every record of a model | `MyModel.update_precedence_order([source2, source1], attribute: :height)` or `MyModel.update_attribute_source_precedence(:height, source2, 3)` |
+| Every attribute of every record of a model | `MyModel.update_precedence_order([source2, source1])` or `MyModel.update_source_precedence(source2, 3)` |
+| Everything (the source's own precedence) | `LaForge.update_precedence_order([source2, source1])` or `source2.update!(precedence: 3)` |
+
+Sources rank by level first. A source with a rule at a more specific level outranks every source whose most specific rule is at a less specific level, whatever the numbers; precedences only compare sources with rules at the same level. So a rule always puts its source above the sources without one at that level, and an order set at one level, such as one record's order for an attribute, puts the sources it lists above the rest, which keep the order of the next level down. A source added later lands below every order someone set.
 
   ```ruby
     foo = MyModel.new
@@ -153,7 +157,25 @@ A controller action that updates a record can do the same, which helps when it f
     end
   ```
 
-Sources never tie in the global order, since a unique index keeps each source's own precedence unique. Two sources can share a precedence at a more specific level, such as two model-wide rules of 3 for the same attribute, and are then ranked by their own precedence. To reorder sources, update their precedence; `LaForge::DataSource.by_precedence` lists them highest first and `LaForge::DataSource.maximum_precedence` returns the highest.
+Sources never tie in the global order, since a unique index keeps each source's own precedence unique. Two sources can share a precedence at a more specific level, such as two model-wide rules of 3 for the same attribute, and are then ranked by their own precedence. `LaForge::DataSource.by_precedence` lists sources highest first and `LaForge::DataSource.maximum_precedence` returns the highest.
+
+#### Precedence orders
+
+To set the order of sources as a settings screen shows it, pass the order and let LaForge choose the numbers. Sources not listed rank below the listed ones, in the order of the next level down. Each call replaces the order at its level; `nil` or `[]` removes it, so the next level decides again.
+
+  ```ruby
+    foo.update_precedence_order(:height, [source2, source1])        # this record; saved with the record
+    foo.update_precedence_order(:height, nil)                       # back to the model's order
+    MyModel.update_precedence_order([source2], attribute: :height)  # every record, one attribute; saved now
+    MyModel.update_precedence_order([source2, source1])             # every record, every attribute; saved now
+    LaForge.update_precedence_order([source2, source1])             # the global order; renumbers every source, saved now
+
+    foo.precedence_order(:height)
+    # => [{ source: source2, level: :record }, { source: source1, level: :global }]
+    MyModel.precedence_order(attribute: :height) # the same, for records with no rules of their own
+  ```
+
+`precedence_order` lists the active sources in rank order, each with the most specific level it has a rule at: `:record`, `:attribute`, `:model` or `:global`. `LaForge::PrecedenceRule.for_records(MyModel)` lists the rules records of a model have of their own.
 
 ### Querying
   ```ruby
@@ -253,11 +275,18 @@ Entries keep being applied at every forge until they are deleted. To make a valu
 
 ### Per-entry precedence
 
-A source's value for an attribute of one record can outrank sources with a higher precedence. Pass `precedence:` when recording it, and the precedence is kept for that attribute and record, as described in [Precedence](#precedence).
+A source's value for an attribute of one record can outrank sources with a higher precedence. Pass `precedence:` when recording it, and the precedence is kept for that attribute and record, as described in [Precedence](#precedence). A rule puts its source above every source without a rule at that level, so the number only matters against other rules at the same level.
 
   ```ruby
     place.record_data_entries({ land_use: 'Commercial' }, cadastre, precedence: 100) # outranks the map editor's land use on this place
     place.forge!
+  ```
+
+To keep the map editor on top while the cadastre outranks the other importers on this place, set the place's order for the attribute, including both.
+
+  ```ruby
+    place.update_precedence_order(:land_use, [map_editor, cadastre])
+    place.save!
   ```
 
 ### When a source stops reporting a record
@@ -297,10 +326,66 @@ Whether another source still has entries on the record tells whether anything el
     place.data_source?(map_editor)                       # => false
 
     # An attribute's entries, winning entry first
-    place.data_entries.includes(:source).select { |entry| entry.attribute_name == 'name' }.sort_by(&:effective_precedence).reverse
+    LaForge::DataEntry.in_precedence_order(place.data_entries.select { |entry| entry.attribute_name == 'name' }, record: place)
+
+    # The sources in the order they rank for an attribute, and the level that ranks each
+    place.precedence_order(:name)
+
+    # What would be forged without a source, such as the import value an edit replaced
+    place.forge_attributes(attributes: :name, except_sources: map_editor)
   ```
 
+`effective_precedence` on an entry is the precedence of its most specific rule. Since sources rank by level first, compare entries with `in_precedence_order` rather than by that number.
+
 A source that lists a member of a tracked association without saying anything about it has no entries on the member, so it isn't among the member's sources; `member_sources` on the owner reports it (see [Inspecting associations](#inspecting-associations)).
+
+### Fields that come from one source together
+
+Some attributes only make sense from one source together, such as the lines of an address: one source's street with another's postcode is a broken address. Declare them as an attribute group:
+
+  ```ruby
+    class Place < ApplicationRecord
+      laforged attribute_groups: { postal_address: %i[street postcode city] }
+    end
+  ```
+
+- **Forging** takes every attribute of the group from the source whose entry for any of them ranks highest. An attribute that source has no entry for is `nil`.
+- **Recording** some of a group's attributes but not all of them raises, naming the missing ones, in every mode and for members reported through an owner. Pass `nil` for a value the source doesn't have.
+- **Precedence** is set on the group, as `place.update_precedence_order(:postal_address, [...])`. A rule on one of its attributes raises, naming the group. `precedence:` given while recording goes to the group.
+- **Removing and forging** one attribute of a group, with `remove_data_entries(attribute_names:)` or `forge_attributes(attributes:)`, covers the whole group.
+
+### Deactivating a source
+
+A source that is no longer used can be deactivated. From each record's next forge, its entries are left out as if it had none: attributes fall back to the next source, or keep their value where no other source has one. Nothing changes until a record is forged, and its entries are kept: recording still works, and activating it again restores what it says at the next forge.
+
+  ```ruby
+    geocoder.update!(active: false)
+    place.forge! # coordinates fall back to the next source, or stay as they are
+  ```
+
+In a tracked association, an inactive source's reports are left out too: members only it listed become rows no report has named, which are left alone, and its exclusions and tombstones stop applying until it is active again. A tenant created meanwhile that it excluded is removed, per `dependent:`, by the first forge after it is activated again.
+
+### Following changes
+
+Each data entry saved with a new or changed value, and each one destroyed, publishes `LaForge::DataEntry::CHANGED` (`'data_entry_changed.laforge'`), so an application can follow what sources say without reading every entry, such as to notice that an import changed the value an editor's entry replaced:
+
+  ```ruby
+    ActiveSupport::Notifications.subscribe(LaForge::DataEntry::CHANGED) do |*, payload|
+      payload # => { entry:, record_type:, record_id:, attribute_name:, source_id:, value_was:, value:, destroyed: }
+    end
+  ```
+
+Writes that skip callbacks publish nothing: `LaForge.merge` moving entries between records, and rows removed by database cascades, such as when a source is deleted.
+
+### Counting across records
+
+Counts across many records, such as how many places have an order of their own for an attribute, are queries on LaForge's tables: `LaForge::PrecedenceRule.for_records(Place).where(attribute_name: 'name').distinct.count(:record_id)`, or `LaForge::DataEntry.with_source(map_editor).with_attribute(:name).where(record_type: 'Place').count`. The default index on `laforge_data_entries` starts with the record, so for counts by attribute and source on a large table, add one:
+
+  ```ruby
+    add_index :laforge_data_entries, %i[record_type attribute_name source_id], name: :index_laforge_data_entries_on_type_attribute_and_source
+  ```
+
+It costs every write, so add it only where those counts are needed.
 
 ### Merging duplicate records
 

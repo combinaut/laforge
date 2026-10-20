@@ -464,6 +464,7 @@ describe 'Usage' do
     end
 
     it 'ranks by precedence rules changed since the last forge once the record is reloaded' do
+      record.update_attribute_source_precedence(:name, business_directory, nil)
       record.forge
       ActiveRecordMock.update_attribute_source_precedence(:name, cadastre, 200)
       record.reload
@@ -614,6 +615,233 @@ describe 'Usage' do
 
       expect(record.name).to eq('Original')
       expect(record.data_entries).to be_empty
+    end
+  end
+
+  # Attributes that must come from one source together, such as the lines of an address
+  describe 'attribute groups' do
+    let(:grouped_model) do
+      Class.new(ActiveRecordMock) do
+        def self.name = 'ActiveRecordMock'
+
+        laforged attribute_groups: { listing: %i[name count] }
+      end
+    end
+    let(:grouped) { grouped_model.create!(name: 'Original', count: 1) }
+
+    it 'takes every attribute of the group from the source that ranks highest for any of them' do
+      grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      grouped.record_data_entries({ name: 'From Map Editor', count: nil }, map_editor)
+      grouped.forge!
+
+      expect(grouped.reload).to have_attributes(name: 'From Map Editor', count: nil)
+    end
+
+    it 'blanks an attribute the winning source has no entry for' do
+      grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      LaForge::DataEntry.create!(record: grouped, source: map_editor, attribute_name: 'name', value: 'From Map Editor') # recorded before the group was declared
+      grouped.reload.forge!
+
+      expect(grouped.reload).to have_attributes(name: 'From Map Editor', count: nil)
+    end
+
+    it 'raises when a source records part of a group, naming what is missing' do
+      expect { grouped.record_data_entries({ name: 'From Cadastre' }, cadastre) }
+        .to raise_error(ArgumentError, /name, count are attribute group listing, which a source records together \(missing: count\)/)
+      expect { grouped.record_data_entry(:count, 5, cadastre) }.to raise_error(ArgumentError, /missing: name/)
+    end
+
+    it 'ranks the group by rules set on the group, and raises for a rule on one of its attributes' do
+      grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      grouped.record_data_entries({ name: 'From Map Editor', count: 7 }, map_editor)
+      grouped.update_attribute_source_precedence(:listing, cadastre, 1)
+      grouped.forge!
+
+      expect(grouped.reload).to have_attributes(name: 'From Cadastre', count: 5)
+      expect { grouped.update_attribute_source_precedence(:count, cadastre, 1) }.to raise_error(ArgumentError, /ActiveRecordMock#count is in attribute group listing, which is ranked as a whole; set the precedence on listing/)
+      expect { grouped_model.update_attribute_source_precedence(:name, cadastre, 1) }.to raise_error(ArgumentError, /set the precedence on listing/)
+    end
+
+    it 'gives a precedence passed while recording to the group' do
+      grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre, precedence: 1)
+      grouped.record_data_entries({ name: 'From Map Editor', count: 7 }, map_editor)
+      grouped.forge!
+
+      expect(grouped.reload).to have_attributes(name: 'From Cadastre', count: 5)
+      expect(grouped.source_precedences).to eq('listing' => { cadastre => 1 })
+    end
+
+    it 'removes and forges the whole group when given one of its attributes' do
+      grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      grouped.record_data_entries({ name: 'From Map Editor', count: 7 }, map_editor)
+      grouped.save!
+
+      expect(grouped.forge_attributes(attributes: :name)).to eq('name' => 'From Map Editor', 'count' => 7)
+      grouped.remove_data_entries(attribute_names: :name, sources: map_editor)
+      grouped.save!
+
+      expect(grouped.reload.data_entries.map(&:source)).to all(eq(cadastre))
+    end
+
+    it 'raises for a group it cannot use, saying why' do
+      declare = ->(groups) { Class.new(ActiveRecordMock) { def self.name = 'ActiveRecordMock' }.laforged(attribute_groups: groups) }
+
+      expect { declare.(listing: %i[name]) }.to raise_error(ArgumentError, /attribute group listing names 1 attribute; a group needs at least two/)
+      expect { declare.(listing: %i[name count], tally: %i[count active]) }.to raise_error(ArgumentError, /ActiveRecordMock#count is in attribute groups listing and tally/)
+      expect { declare.(name: %i[name count]) }.to raise_error(ArgumentError, /attribute group name is named like one of its attributes/)
+    end
+  end
+
+  # A source the host stops using: its values stop counting from each record's next forge, and are kept
+  describe 'an inactive source' do
+    before do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.record_data_entries({ name: 'From Map Editor', count: 9 }, map_editor)
+      record.forge!
+    end
+
+    it "falls back to the next source, and keeps a value no other source has, once the record is forged again" do
+      record.update!(active: false) # an attribute only the map editor reports
+      record.record_data_entries({ active: true }, map_editor)
+      record.forge!
+      map_editor.update!(active: false)
+
+      expect(record.reload).to have_attributes(name: 'From Map Editor', count: 9, active: true) # nothing changes until the next forge
+      record.forge!
+      expect(record.reload).to have_attributes(name: 'From Cadastre', count: 5, active: true)
+    end
+
+    it 'keeps its entries and still records, so activating it again restores what it says' do
+      map_editor.update!(active: false)
+      record.reload.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor)
+      record.forge!
+      expect(record.reload.name).to eq('From Cadastre')
+
+      map_editor.update!(active: true)
+      record.forge!
+      expect(record.reload.name).to eq('Renamed in the Map Editor')
+    end
+
+    it 'is seen by a forge inside a precedence cache once it changes there' do
+      LaForge.with_precedence_cache do
+        record.reload.forge!
+        map_editor.update!(active: false)
+        record.reload.forge!
+      end
+
+      expect(record.reload.name).to eq('From Cadastre')
+    end
+  end
+
+  # What would be forged without one source, such as the import value an edit replaced
+  describe 'forging without a source' do
+    it 'leaves out the given sources' do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.record_data_entries({ name: 'From Map Editor' }, map_editor)
+
+      expect(record.forge_attributes(attributes: :name, except_sources: map_editor)).to eq('name' => 'From Cadastre')
+      expect(record.forge_attributes(except_sources: [map_editor, cadastre])).to eq({})
+    end
+  end
+
+  # A host following what sources say, such as to notice that an import changed a value an editor replaced
+  describe 'following changes to entries' do
+    let(:events) { [] }
+
+    around do |example|
+      subscription = ActiveSupport::Notifications.subscribe(LaForge::DataEntry::CHANGED) { |*, payload| events << payload.except(:entry) }
+      example.run
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscription)
+    end
+
+    it 'publishes an entry saved with a new or changed value, and an entry destroyed' do
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre)
+      record.save!
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre) # the same value
+      record.save!
+      record.record_data_entries({ name: 'Renamed' }, cadastre)
+      record.save!
+      record.remove_data_entries(sources: cadastre)
+      record.save!
+
+      expected = { record_type: 'ActiveRecordMock', record_id: record.id, attribute_name: 'name', source_id: cadastre.id }
+      expect(events).to eq([
+        expected.merge(value_was: nil, value: 'From Cadastre', destroyed: false),
+        expected.merge(value_was: 'From Cadastre', value: 'Renamed', destroyed: false),
+        expected.merge(value_was: 'Renamed', value: nil, destroyed: true)
+      ])
+    end
+  end
+
+  # The order of sources at each level, as a settings screen sets it, with LaForge choosing the numbers
+  describe 'precedence orders' do
+    before do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.record_data_entries({ name: 'From Business Directory', count: 7 }, business_directory)
+      record.record_data_entries({ name: 'From Map Editor', count: 9 }, map_editor)
+      record.save!
+    end
+
+    it "sets one record's order for an attribute, saved with the record, ranking the sources it leaves out below" do
+      record.update_precedence_order(:name, [cadastre])
+      expect(record.precedence_rules.select(&:new_record?).size).to eq(1)
+      record.forge!
+
+      expect(record.reload).to have_attributes(name: 'From Cadastre', count: 9)
+      expect(record.precedence_order(:name).map { |item| [item[:source], item[:level]] }.first(3))
+        .to eq([[cadastre, :record], [map_editor, :global], [business_directory, :global]])
+    end
+
+    it 'replaces the order at that level, and removes it given nil' do
+      record.update_precedence_order(:name, [cadastre, business_directory])
+      record.update_precedence_order(:name, [business_directory])
+      record.forge!
+      expect(record.reload.name).to eq('From Business Directory')
+      expect(record.source_precedences).to eq('name' => { business_directory => 1 })
+
+      record.update_precedence_order(:name, nil)
+      record.forge!
+      expect(record.reload.name).to eq('From Map Editor')
+    end
+
+    it 'ranks a source added later below an order set at a more specific level, whatever its global precedence' do
+      record.update_precedence_order(:name, [business_directory, cadastre])
+      record.forge!
+      geocoder = LaForge::DataSource.create!(name: 'Geocoder', precedence: 1000)
+      record.reload.record_data_entries({ name: 'From Geocoder' }, geocoder)
+      record.forge!
+
+      expect(record.reload.name).to eq('From Business Directory')
+    end
+
+    it 'sets the order for one attribute, or every attribute, on every record of a model' do
+      ActiveRecordMock.update_precedence_order([cadastre], attribute: :count)
+      ActiveRecordMock.update_precedence_order([business_directory, cadastre])
+      record.reload.forge
+
+      expect(record).to have_attributes(name: 'From Business Directory', count: 5)
+      expect(ActiveRecordMock.precedence_order(attribute: :count).map { |item| [item[:source], item[:level]] }.first(3))
+        .to eq([[cadastre, :attribute], [business_directory, :model], [map_editor, :global]])
+    end
+
+    it 'sets the global order, renumbering every source and keeping those it leaves out below, in their order' do
+      ActiveRecord::Base.transaction do
+        LaForge.update_precedence_order([cadastre, map_editor])
+
+        ranked = LaForge::DataSource.by_precedence.to_a
+        expect(ranked.first(3)).to eq([cadastre, map_editor, business_directory])
+        expect(ranked.map(&:precedence)).to eq((1..ranked.size).to_a.reverse)
+        expect(record.reload.forge_attributes).to include('name' => 'From Cadastre')
+        raise ActiveRecord::Rollback # leave the other specs' sources as they were
+      end
+    end
+
+    it 'lists the records that have an order of their own' do
+      record.update_precedence_order(:name, [cadastre])
+      record.save!
+
+      expect(LaForge::PrecedenceRule.for_records(ActiveRecordMock).pluck(:record_id, :attribute_name)).to eq([[record.id, 'name']])
     end
   end
 

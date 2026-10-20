@@ -24,6 +24,7 @@ module LaForge
 
     scope :global, -> { where(record_type: ANY_TYPE, record_id: ANY_ID, attribute_name: ANY_ATTRIBUTE) }
     scope :for_model, ->(model) { where(record_type: model_type(model), record_id: ANY_ID) }
+    scope :for_records, ->(model) { where(record_type: model_type(model)).where.not(record_id: ANY_ID) }
 
     validates :precedence, presence: true, numericality: { only_integer: true }
     validates :source_id, uniqueness: { scope: %i[record_type record_id attribute_name] }
@@ -53,26 +54,39 @@ module LaForge
       scope.pluck(:record_id, :attribute_name, :source_id, :precedence).to_h { |record_id, attribute_name, source_id, precedence| [[record_id, attribute_name, source_id], precedence] }
     end
 
-    # Used to look up the effective precedence of a source's value for one attribute of a record. It reads a model's
-    # model-wide rules and the global rules once, through `PrecedenceCache`, and takes a record's own rules from its
-    # in-memory association, so unsaved rules count and rules marked for destruction do not.
+    # Answers how a source's value for one attribute of one record ranks, loading the model-wide and global rules once and
+    # taking the record's own rules from its in-memory association, so unsaved rules count too.
+    #
+    # Sources rank by level first: a source with a rule at a more specific level outranks every source whose most specific
+    # rule is less specific, and precedences are compared within a level. So an order set at one level, such as one
+    # record's order for an attribute, puts the sources it names above the rest, which keep the order of the next level.
     class Resolver
       def initialize(model)
         @model = model
+        @groups = model.respond_to?(:laforge_attribute_group) ? model : nil
         type = PrecedenceRule.model_type(model)
         @model_rules = PrecedenceCache.fetch([:model, type]) { PrecedenceRule.index_for(PrecedenceRule.for_model(model)) }
         @global_rules = PrecedenceCache.fetch(:global) { PrecedenceRule.index_for(PrecedenceRule.global) }
       end
 
+      # The source's rank, to compare with other sources' ranks for the same attribute and record: its precedence at each
+      # level, most specific first, with -Infinity where it has no rule
+      def rank(record, attribute_name, source_id)
+        attribute_name = rule_name(attribute_name)
+        levels = [record_rule(record, attribute_name, source_id), @model_rules[[ANY_ID, attribute_name, source_id]], @model_rules[[ANY_ID, ANY_ATTRIBUTE, source_id]]]
+        levels.map { |precedence| precedence || -Float::INFINITY } + [global_precedence(source_id)]
+      end
+
+      # The precedence of the most specific rule for the source, which is the level it ranks at
       def precedence(record, attribute_name, source_id)
-        attribute_name = attribute_name.to_s
+        attribute_name = rule_name(attribute_name)
         record_rule(record, attribute_name, source_id) || model_precedence(attribute_name, source_id) || global_precedence(source_id)
       end
 
       # Returns the precedence of the most specific model-wide rule for the attribute and source, or nil when there is
       # none
       def model_precedence(attribute_name, source_id)
-        @model_rules[[ANY_ID, attribute_name.to_s, source_id]] || @model_rules[[ANY_ID, ANY_ATTRIBUTE, source_id]]
+        @model_rules[[ANY_ID, rule_name(attribute_name), source_id]] || @model_rules[[ANY_ID, ANY_ATTRIBUTE, source_id]]
       end
 
       # Returns the source's global precedence, or `-Float::INFINITY` when it has none, as for the entries of a deleted
@@ -82,6 +96,11 @@ module LaForge
       end
 
       private
+
+      # The attribute group an attribute belongs to ranks it, so rules are set on the group
+      def rule_name(attribute_name)
+        @groups&.laforge_attribute_group(attribute_name) || attribute_name.to_s
+      end
 
       def record_rule(record, attribute_name, source_id)
         return unless record.respond_to?(:precedence_rules)

@@ -144,7 +144,7 @@ module LaForge
       described.uniq.each(&:forge)
       clear_pending(config, reports, included_keys)
       prune_withdrawn(config, reports)
-      entomb(config, reports, existing.values) if config.tombstone_matcher
+      entomb(config, reports, owner.send(:laforge_association_reports, config, inactive: true), existing.values) if config.tombstone_matcher
 
       if config.collection?
         existing.each_value { |record| config.remove(record) }
@@ -269,7 +269,7 @@ module LaForge
       reports = owner.send(:laforge_association_reports, config)
       key = config.key_of(member)
       record = config.members_of(owner).find { |candidate| config.record_key(candidate) == key }
-      candidates = record ? record.send(:filter_data_entries_in_memory).reject { |entry| entry.marked_for_destruction? || config.nested_config(entry.attribute_name) } : []
+      candidates = record ? record.send(:laforge_forging_entries).reject { |entry| entry.marked_for_destruction? || config.nested_config(entry.attribute_name) } : []
 
       deciding = reports.find { |_, report| report.decision(config, key) }
 
@@ -277,7 +277,7 @@ module LaForge
         membership: (deciding[0].source if deciding && deciding[1].decision(config, key) == :include),
         listed_by: reports.select { |_, report| report.decision(config, key) == :include }.map { |entry, _| entry.source },
         excluded_by: reports.select { |_, report| report.partial? && report.decision(config, key) == :exclude }.map { |entry, _| entry.source },
-        attributes: candidates.group_by(&:attribute_name).transform_values { |list| DataEntry.in_precedence_order(list, record: record).first.source }
+        attributes: record ? record.send(:laforge_winning_entries, candidates).transform_values { |winner, _| winner.source } : {}
       }
     end
 
@@ -325,8 +325,9 @@ module LaForge
 
     # When a forge removes a member keyed by primary key that a report explicitly excludes, every report names it by a
     # tombstone key instead of its id, and each excluding report keeps the tombstone: what the member was. Called before
-    # the members are removed.
-    def entomb(config, reports, removed)
+    # the members are removed. `reports` are the reports the forge read; `all_reports` adds inactive sources' reports,
+    # which are renamed too, so they name the member correctly once their source is active again.
+    def entomb(config, reports, all_reports, removed)
       removed.each do |record|
         key = config.record_key(record)
         excluding = reports.reject { |entry, _| entry.marked_for_destruction? }.select { |entry, _| MemberList.new(entry.value).then { |report| report.partial? && report.exclude.any? { |member| config.key_of(member) == key } } }
@@ -334,7 +335,7 @@ module LaForge
 
         tombstone = { AssociationConfig::TOMBSTONE => SecureRandom.hex(8) }
         item = MemberList.tombstone_item(tombstone, tombstone_attributes(config, record), Time.current)
-        reports.each do |entry, _|
+        all_reports.each do |entry, _|
           next if entry.marked_for_destruction?
 
           report = MemberList.new(MemberList.new(entry.value).renamed(config, { key => tombstone }))

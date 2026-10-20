@@ -258,6 +258,11 @@ module LaForge
         end
       end
 
+      if attributes && klass.respond_to?(:laforge_assert_whole_groups!)
+        fields = member.keys.reject { |field| field == NEW_MEMBER || key.include?(field) || nested_config(field) }
+        klass.laforge_assert_whole_groups!(fields, where: "#{klass.name} members of #{owner_class.name}##{name}")
+      end
+
       unless new_member?(member)
         missing = key - member.keys
         raise ArgumentError, "#{owner_class.name}##{name} members must include their key (#{missing.join(', ')} missing)" if missing.any?
