@@ -73,7 +73,8 @@ module LaForge
       # level, most specific first, with -Infinity where it has no rule
       def rank(record, attribute_name, source_id)
         attribute_name = rule_name(attribute_name)
-        levels = [record_rule(record, attribute_name, source_id), @model_rules[[ANY_ID, attribute_name, source_id]], @model_rules[[ANY_ID, ANY_ATTRIBUTE, source_id]]]
+        attribute_rule = @model_rules[[ANY_ID, attribute_name, source_id]] unless attribute_name == ANY_ATTRIBUTE # every attribute is the model level
+        levels = [record_rule(record, attribute_name, source_id), attribute_rule, @model_rules[[ANY_ID, ANY_ATTRIBUTE, source_id]]]
         levels.map { |precedence| precedence || -Float::INFINITY } + [global_precedence(source_id)]
       end
 

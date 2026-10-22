@@ -825,6 +825,13 @@ describe 'Usage' do
         .to eq([[cadastre, :attribute], [business_directory, :model], [map_editor, :global]])
     end
 
+    it 'lists the model-wide order as the model level when asked for no attribute' do
+      ActiveRecordMock.update_source_precedence(cadastre, 5)
+
+      expect(ActiveRecordMock.precedence_order.first).to eq(source: cadastre, level: :model)
+      expect(ActiveRecordMock.precedence_order(attribute: :name).first).to eq(source: cadastre, level: :model)
+    end
+
     it 'sets the global order, renumbering every source and keeping those it leaves out below, in their order' do
       ActiveRecord::Base.transaction do
         LaForge.update_precedence_order([cadastre, map_editor])
