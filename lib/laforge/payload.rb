@@ -11,10 +11,16 @@ module LaForge
   #
   # A member of an association keyed by other columns than its primary key is named by those columns, read from the row
   # its `id` names. A key naming an association that is not tracked raises, rather than being recorded as an attribute.
+  #
+  # Where the owner declares `accepts_nested_attributes_for`, its `reject_if:` and `allow_destroy:` apply as they do when
+  # Rails assigns the rows: a rejected row is left out, and `_destroy` counts only if destroying is allowed.
   module Payload
     extend self
 
     DESTROY = '_destroy'
+
+    # What a has_one's rejected row translates to: nothing is recorded for the association
+    REJECTED = Object.new.freeze
 
     # The payload for `record`, an instance of `model` or nil for a new one, with Rails form shapes translated. Raises for
     # those shapes unless `edit` is true, since they describe edits.
@@ -23,7 +29,8 @@ module LaForge
       payload.to_h.stringify_keys.each_with_object({}) do |(field, value), result|
         if (name = nested_attributes_name(model, field))
           require_edit!(model, field, edit)
-          result[name] = nested_attributes(model.laforged_association(name), value, record)
+          edits = nested_attributes(model.laforged_association(name), field, value, record)
+          result[name] = edits unless edits.equal?(REJECTED)
         elsif (reflection = ids_reflection(model, field))
           require_edit!(model, field, edit)
           result.merge!(ids(model, field, reflection, value, record))
@@ -62,17 +69,22 @@ module LaForge
       raise ArgumentError, "#{model.name}##{field} describes edits, as a Rails form submits them; record it with mode: :edit" unless edit
     end
 
-    def nested_attributes(config, value, owner)
+    def nested_attributes(config, field, value, owner)
+      options = nested_attributes_options(config, field)
       unless config.collection?
         attributes = value.to_h.stringify_keys
-        return destroy?(attributes) ? nil : member(config, attributes.except(DESTROY), owner)
+        return REJECTED if rejected?(config, attributes, owner, options)
+
+        return destroy?(attributes, options) ? nil : member(config, attributes.except(DESTROY), owner)
       end
 
       items = hash?(value) ? value.to_h.stringify_keys : value
       items = items.key?('id') ? [items] : items.values if items.is_a?(Hash) # keyed by index, as Rails forms submit them
       include, exclude = [], []
       Array(items).map { |attributes| attributes.to_h.stringify_keys }.each do |attributes|
-        if !destroy?(attributes)
+        next if rejected?(config, attributes, owner, options)
+
+        if !destroy?(attributes, options)
           include << member(config, attributes.except(DESTROY), owner)
         elsif attributes['id'].present?
           exclude << key_of(config, attributes, owner)
@@ -149,8 +161,36 @@ module LaForge
       value.is_a?(Hash) || value.respond_to?(:permitted?)
     end
 
-    def destroy?(attributes)
-      ::ActiveModel::Type::Boolean.new.cast(attributes[DESTROY]) == true
+    # The owner's `accepts_nested_attributes_for` options for the association, or nil where it declares none. Raises for
+    # the options LaForge does not apply.
+    def nested_attributes_options(config, field)
+      options = config.owner_class.nested_attributes_options[config.name.to_sym]
+      unsupported = %i[limit update_only].select { |option| options&.dig(option) }
+      return options if unsupported.empty?
+
+      raise ArgumentError, "#{config.owner_class.name} accepts nested attributes for #{config.name} with #{unsupported.map { |option| "#{option}:" }.join(' and ')}, " \
+                           "which LaForge does not apply when recording #{field}. Remove #{unsupported.size == 1 ? 'it' : 'them'} from accepts_nested_attributes_for, " \
+                           'or check the rows in the controller before recording them'
+    end
+
+    # Whether the owner's `reject_if:` leaves the row out, as Rails does: never for a row being destroyed
+    def rejected?(config, attributes, owner, options)
+      return false if options.nil? || destroy?(attributes, options)
+
+      attributes = attributes.with_indifferent_access
+      case (reject_if = options[:reject_if])
+      when Symbol
+        target = owner || config.owner_class.new # a new owner's rows are checked on an unsaved one
+        target.method(reject_if).arity.zero? ? target.send(reject_if) : target.send(reject_if, attributes)
+      when Proc then reject_if.call(attributes) # :all_blank is stored as one
+      else false
+      end
+    end
+
+    # Whether the row asks for its member to be destroyed: `_destroy` is truthy, and the owner allows it where it declares
+    # nested attributes
+    def destroy?(attributes, options)
+      (options.nil? || options[:allow_destroy]) && ::ActiveModel::Type::Boolean.new.cast(attributes[DESTROY]) == true
     end
   end
 end

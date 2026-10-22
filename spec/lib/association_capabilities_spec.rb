@@ -776,6 +776,53 @@ describe 'Association tracking capabilities' do
   end
 
   describe 'Rails form payloads' do
+    # A place accepting nested attributes for its tenants with the given options
+    def form_place_model(**options, &body)
+      stub_const('FormPlace', Class.new(ActiveRecord::Base))
+      FormPlace.table_name = 'places'
+      FormPlace.has_many :tenants, as: :occupiable
+      FormPlace.has_one :marker, as: :markable
+      FormPlace.accepts_nested_attributes_for :tenants, :marker, **options
+      FormPlace.class_eval(&body) if body
+      FormPlace.laforged(associations: { tenants: { tombstone_matcher: ->(tenant, tombstones) { tombstones.find { |tombstone| tombstone.name == tenant.name } } }, marker: {} })
+      FormPlace
+    end
+
+    it "applies the owner's reject_if: and allow_destroy: to a form's rows, as Rails assigning them would", capability: 'C111' do
+      form_place = form_place_model(reject_if: :all_blank, allow_destroy: false).create!(name: 'Harbor Building')
+      corner_cafe = form_place.tenants.create!(name: 'Corner Café')
+
+      form_place.record_data_entries({ tenants_attributes: { '0' => { 'name' => '', 'unit' => '' }, '1' => { 'id' => corner_cafe.id.to_s, '_destroy' => '1' } } }, top, mode: :edit)
+      form_place.forge!
+
+      expect(form_place.reload.tenants).to eq([corner_cafe]) # the blank template row is left out, and _destroy ignored
+
+      form_place.record_data_entries({ marker_attributes: { 'label' => '', 'icon' => '' } }, top, mode: :edit) # a has_one's blank row
+      expect(form_place.data_entries.map(&:attribute_name)).not_to include('marker')
+    end
+
+    it 'checks reject_if: on existing rows too but never on a row being destroyed, and on an unsaved owner for a new one', capability: 'C112' do
+      model = form_place_model(reject_if: ->(attributes) { attributes['unit'] == 'skip' }, allow_destroy: true)
+      form_place = model.create!(name: 'Harbor Building')
+      corner_cafe, harbor_books = ['Corner Café', 'Harbor Books'].map { |name| form_place.tenants.create!(name: name) }
+      form_place.record_data_entries({ tenants_attributes: [{ id: corner_cafe.id, name: 'Renamed', unit: 'skip' }, { id: harbor_books.id, unit: 'skip', _destroy: '1' }] }, top, mode: :edit)
+      form_place.forge!
+      expect(form_place.reload.tenants.pluck(:name)).to eq(['Corner Café'])
+
+      model = form_place_model(reject_if: :closed_tenant?) { def closed_tenant?(attributes) = attributes[:name].start_with?('Closed') }
+      new_place = model.new(name: 'Harbor Building')
+      new_place.record_data_entries({ tenants_attributes: [{ name: 'Closed Bakery' }, { name: 'Florist' }] }, top, mode: :edit)
+      new_place.forge!
+      expect(new_place.reload.tenants.pluck(:name)).to eq(['Florist'])
+    end
+
+    it 'raises for accepts_nested_attributes_for options it does not apply, saying what to do', capability: 'C113' do
+      expect { form_place_model(limit: 5).create!(name: 'Harbor Building').record_data_entries({ tenants_attributes: [{ name: 'Florist' }] }, top, mode: :edit) }
+        .to raise_error(ArgumentError, /FormPlace accepts nested attributes for tenants with limit:, which LaForge does not apply when recording tenants_attributes. Remove it from accepts_nested_attributes_for, or check the rows in the controller/)
+      expect { form_place_model(update_only: true).create!(name: 'Harbor Building').record_data_entries({ tenants_attributes: [{ name: 'Florist' }] }, top, mode: :edit) }
+        .to raise_error(ArgumentError, /with update_only:/)
+    end
+
     it 'records nested attributes as a form submits them, multiple levels deep, as edits', capability: 'C89' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', opening_hours: week('08:00', days: [1, 2])), tenant('T-2', name: 'Harbor Books')] }, low)
       place.forge!

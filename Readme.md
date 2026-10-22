@@ -574,6 +574,7 @@ Edits also accept the shapes a Rails form submits, at every level, so a controll
   ```
 
 - `tenants_attributes`, an array or a hash keyed by index, becomes edits of `tenants`: a member with a truthy `_destroy` is excluded by its `id`, and any other is included. A has_one's becomes its single member, or none when destroyed.
+- Where the owner declares `accepts_nested_attributes_for`, its `reject_if:` (a Proc, a method name, or `:all_blank`) leaves out the rows it rejects, new and existing alike but never a row being destroyed, and `_destroy` counts only with `allow_destroy: true`, as when Rails assigns the rows. A new owner's rows are checked on an unsaved instance. `limit:` and `update_only:` are not applied, so recording `*_attributes` for an association that declares them raises.
 - `category_ids` includes the ids listed and excludes the current members left out, so a member another source adds later, which the form never showed, is not excluded. It edits the tracked association it names, or the tracked join association a `has_many :through` goes through, such as `place_categories` for `categories`.
 - Members keyed by other columns than the primary key, such as opening hours keyed by day, are named by the key of the row their `id` names.
 - Ids may be strings, as forms submit them.
