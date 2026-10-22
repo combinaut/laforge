@@ -1182,6 +1182,20 @@ describe 'Association tracking capabilities' do
   end
 
   describe 'integration with attribute tracking' do
+    it "leaves no precedence rule behind on a member after forge_diff previews a report's precedence", capability: 'C109' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
+      place.forge!
+      place.reload.record_data_entries({ tenants: [tenant('T-1', unit: '2B')] }, low, precedence: 50)
+
+      place.forge_diff
+      place.update!(name: 'Harbor Building, renamed') # a save without forging
+      expect(LaForge::PrecedenceRule.where(record_type: 'Tenant')).to be_empty
+
+      place.forge!
+      expect(LaForge::PrecedenceRule.where(record_type: 'Tenant').pluck(:attribute_name, :precedence)).to include(['unit', 50])
+      expect(Tenant.sole.unit).to eq('2B')
+    end
+
     it 'forges attributes and associations in one transaction, rolling back everything if a member is invalid', capability: 'C36' do
       place.record_data_entries({ name: 'Renamed', tenants: [tenant('T-1', name: nil)] }, low)
 

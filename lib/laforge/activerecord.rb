@@ -472,11 +472,15 @@ module LaForge
     def laforge_forge_diff_with(reported)
       entries = data_entries.to_a
       values = entries.to_h { |entry| [entry, [entry.value, entry.recorded_at]] }
+      rules = precedence_rules.to_a # a precedence given with the report builds or changes rules, which the owner's next save would write
+      precedences = rules.to_h { |rule| [rule, [rule.precedence, rule.marked_for_destruction?]] }
       reported.each { |source_id, attributes, recorded_at, edit, precedence| laforge_record_reported(attributes, source_id, recorded_at, edit: edit, precedence: precedence) }
       forge_diff
     ensure
       data_entries.target.replace(entries)
       values.each { |entry, (value, recorded_at)| entry.value = value; entry.recorded_at = recorded_at }
+      precedence_rules.target.replace(rules)
+      precedences.each { |rule, (precedence, marked)| rule.precedence = precedence; rule.instance_variable_set(:@marked_for_destruction, marked) }
     end
 
     # @api private
