@@ -1239,5 +1239,39 @@ describe 'Association tracking capabilities' do
       expect(Tenant.laforged_association(:opening_hours).key).to eq(%w[day])
       expect(Place.laforged_association(:marker).key).to eq([]) # a has_one's single member
     end
+
+    it 'never derives an order column that identifies the member or its owner, so forging keeps their ids', capability: 'C107' do
+      stub_const('LinkedPlace', Class.new(ActiveRecord::Base))
+      LinkedPlace.table_name = 'places'
+      LinkedPlace.has_many :parcel_links, -> { order(:id) }, foreign_key: :place_id # keyed by parcel and type, ordered by id
+      LinkedPlace.laforged(associations: { parcel_links: {} })
+      linked_place = LinkedPlace.create!(name: 'Harbor Building')
+      ParcelLink.create!(place: Place.create!(name: 'Other Building'), parcel: lot_12, parcel_link_type: leases) # holds a low id
+      links = [lot_12, lot_14].map { |parcel| ParcelLink.create!(place_id: linked_place.id, parcel: parcel, parcel_link_type: occupies) }
+
+      expect(LinkedPlace.laforged_association(:parcel_links).order_column).to be_nil
+      linked_place.record_data_entries({ parcel_links: [parcel_link(lot_12, occupies), parcel_link(lot_14, occupies)] }, low)
+      expect { linked_place.forge! }.not_to raise_error
+      expect(ParcelLink.where(place_id: linked_place.id).order(:id).ids).to eq(links.map(&:id))
+    end
+
+    it 'writes member order to order_column: when given, which a scope ordering by an expression needs, and none for false', capability: 'C108' do
+      stub_const('ListedPlace', Class.new(ActiveRecord::Base))
+      ListedPlace.table_name = 'places'
+      ListedPlace.has_many :place_categories, -> { order(Arel.sql('position IS NULL, position')) }, foreign_key: :place_id
+      ListedPlace.laforged(associations: { place_categories: { order_column: :position } })
+      listed_place = ListedPlace.create!(name: 'Harbor Building')
+      listed_place.record_data_entries({ place_categories: categories(bakery, cafe) }, low)
+      listed_place.forge!
+      expect(PlaceCategory.where(place_id: listed_place.id).order(:position).map(&:category)).to eq([bakery, cafe])
+
+      expect(LaForge::AssociationConfig.new(Place, :place_categories, order_column: false).order_column).to be_nil
+      expect(LaForge::AssociationConfig.new(Place, :place_categories).order_column).to eq('position')
+      expect { LaForge::AssociationConfig.new(Place, :place_categories, order_column: :rank) }
+        .to raise_error(ArgumentError, /Place#place_categories order_column: "rank" is not a column of place_categories; name an integer column to write member order to, or pass false for none/)
+      expect { LaForge::AssociationConfig.new(Place, :parcel_links, order_column: :external_id) }.to raise_error(ArgumentError, /order_column: "external_id" is a string column/)
+      expect { LaForge::AssociationConfig.new(Place, :place_categories, order_column: :category_id) }
+        .to raise_error(ArgumentError, /order_column: "category_id" identifies the member or its owner, so writing order to it would change which record it is/)
+    end
   end
 end

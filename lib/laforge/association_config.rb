@@ -9,6 +9,9 @@ module LaForge
   # A member keyed by primary key that a source explicitly excludes is destroyed like any removed member, and the
   # exclusion keeps a tombstone in its place: what the member was, so that `tombstone_matcher:` can recognise it when a
   # source reports it again (see Tombstone).
+  #
+  # Member order is written to `order_column:` when given, or else to the integer column the association scope orders
+  # by, unless it identifies the member or its owner. `order_column: false` writes none.
   class AssociationConfig
     # The field of a placeholder key, which names a new member until it has an id
     NEW_MEMBER = 'new'
@@ -17,7 +20,7 @@ module LaForge
 
     attr_reader :owner_class, :name, :reflection, :key, :order_column, :tombstone_matcher
 
-    def initialize(owner_class, name, key: nil, tombstone_matcher: nil)
+    def initialize(owner_class, name, key: nil, order_column: nil, tombstone_matcher: nil)
       @owner_class = owner_class
       @name = name.to_s
       @reflection = owner_class.reflect_on_association(name)
@@ -29,7 +32,7 @@ module LaForge
       @tombstone_matcher = tombstone_matcher
       assert_tombstone_matcher_usable! if tombstone_matcher
 
-      @order_column = derived_order_column
+      @order_column = order_column.nil? ? derived_order_column : given_order_column(order_column)
     end
 
     def klass
@@ -311,7 +314,22 @@ module LaForge
       reference.klass.where(reference.association_primary_key => ids).pluck(reference.association_primary_key)
     end
 
-    # An integer column the association scope orders by, other than a key column, is where member order is written
+    # The `order_column:` given, after checking it can hold member order: an integer column of the member that does not
+    # identify the member or its owner. false is none.
+    def given_order_column(column)
+      return if column == false
+
+      column = column.to_s
+      where = "#{owner_class.name}##{name} order_column: #{column.inspect}"
+      raise ArgumentError, "#{where} is not a column of #{klass.table_name}; name an integer column to write member order to, or pass false for none" unless klass.columns_hash.key?(column)
+      raise ArgumentError, "#{where} is a #{klass.columns_hash[column].type} column; member order is written as an integer, so name an integer column" unless klass.columns_hash[column].type == :integer
+      raise ArgumentError, "#{where} identifies the member or its owner, so writing order to it would change which record it is; name another integer column" if identifying_columns.include?(column)
+
+      column
+    end
+
+    # An integer column the association scope orders by is where member order is written, unless it identifies the
+    # member or its owner. A scope ordering by an expression, such as Arel.sql, names no column; declare order_column:.
     def derived_order_column
       scope = reflection.scope
       return unless scope&.arity&.zero?
@@ -324,7 +342,12 @@ module LaForge
         end
       end
 
-      columns.find { |column| !key.include?(column) && klass.columns_hash[column]&.type == :integer }
+      columns.find { |column| identifying_columns.exclude?(column) && klass.columns_hash[column]&.type == :integer }
+    end
+
+    # The member's primary key, key columns, and the columns pointing back at its owner
+    def identifying_columns
+      key + [klass.primary_key, owner_foreign_key, owner_type_column].compact
     end
   end
 end
