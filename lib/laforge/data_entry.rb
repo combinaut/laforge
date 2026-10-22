@@ -17,18 +17,21 @@ module LaForge
     before_save { self.recorded_at ||= Time.current }
 
     # Publishes CHANGED when an entry's value is saved changed, or the entry is destroyed, so a host can follow what
-    # sources say without reading every entry. Writes that skip callbacks, such as `LaForge.merge` moving entries between
-    # records and database cascades, publish nothing.
+    # sources say without reading every entry. It is published once the write is committed, and not at all if it rolls
+    # back, so a subscriber only hears of changes that happened. Writes that skip callbacks, such as `LaForge.merge`
+    # moving entries between records and database cascades, publish nothing.
     CHANGED = 'data_entry_changed.laforge'.freeze
 
     after_save { DataEntry.publish_change(self, value_was: value_before_last_save, value: value) if previously_new_record? || saved_change_to_value? }
     after_destroy { DataEntry.publish_change(self, value_was: value, value: nil, destroyed: true) }
 
-    # The payload: the entry, its record_type, record_id, attribute_name and source_id, its value before and after, and
-    # whether it was destroyed
+    # Publishes the change once the current transaction commits, with the payload as it is now: the entry, its
+    # record_type, record_id, attribute_name and source_id, its value before and after, and whether it was destroyed.
+    # Taking the payload when the write is made keeps value_was right when one transaction saves an entry more than once.
     def self.publish_change(entry, value_was:, value:, destroyed: false)
-      ActiveSupport::Notifications.instrument(CHANGED, entry: entry, record_type: entry.record_type, record_id: entry.record_id, attribute_name: entry.attribute_name,
-                                                       source_id: entry.source_id, value_was: value_was, value: value, destroyed: destroyed)
+      payload = { entry: entry, record_type: entry.record_type, record_id: entry.record_id, attribute_name: entry.attribute_name,
+                  source_id: entry.source_id, value_was: value_was, value: value, destroyed: destroyed }
+      ::ActiveRecord::Base.current_transaction.after_commit { ActiveSupport::Notifications.instrument(CHANGED, payload) }
     end
 
     # The precedence of the most specific precedence rule for its record, attribute and source, falling back to the

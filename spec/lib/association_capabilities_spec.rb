@@ -1029,6 +1029,26 @@ describe 'Association tracking capabilities' do
     ensure
       ActiveSupport::Notifications.unsubscribe(subscription)
     end
+
+    it 'publishes nothing for entries a forge withdraws from members when the forge rolls back', capability: 'C110' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
+      place.forge!
+      place.reload.record_data_entries({ tenants: [tenant('T-1', unit: '1A')] }, high, mode: :partial)
+      place.forge!
+      events = []
+      subscription = ActiveSupport::Notifications.subscribe(LaForge::DataEntry::CHANGED) { |*, payload| events << payload.slice(:attribute_name, :source_id, :destroyed) }
+
+      ActiveRecord::Base.transaction do
+        place.reload.record_data_entries({ tenants: [] }, high, mode: :partial)
+        place.forge!
+        raise ActiveRecord::Rollback
+      end
+
+      expect(events).to be_empty
+      expect(Tenant.sole.data_entries.with_source(high).with_attribute(:unit)).to exist
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscription)
+    end
   end
 
   describe 'has_one' do

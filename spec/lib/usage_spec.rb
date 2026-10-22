@@ -772,6 +772,26 @@ describe 'Usage' do
         expected.merge(value_was: 'Renamed', value: nil, destroyed: true)
       ])
     end
+
+    it 'publishes once the write is committed, at once outside a transaction, and nothing for a write that rolls back' do
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre)
+      record.save! # no explicit transaction
+      expect(events.map { |event| event[:value] }).to eq(['From Cadastre'])
+
+      ActiveRecord::Base.transaction do
+        record.record_data_entries({ name: 'Renamed' }, cadastre)
+        record.save!
+        expect(events.size).to eq(1) # not committed yet
+      end
+      expect(events.map { |event| event[:value] }).to eq(['From Cadastre', 'Renamed'])
+
+      ActiveRecord::Base.transaction do
+        record.record_data_entries({ name: 'Renamed again' }, cadastre)
+        record.forge!
+        raise ActiveRecord::Rollback
+      end
+      expect(events.size).to eq(2)
+    end
   end
 
   # The order of sources at each level, as a settings screen sets it, with LaForge choosing the numbers

@@ -375,6 +375,8 @@ Each data entry saved with a new or changed value, and each one destroyed, publi
     end
   ```
 
+The event fires once the write is committed, and not at all if the transaction rolls back, so a subscriber can enqueue a job, notify someone, or update another store without acting on a change that never happened. A write outside an explicit transaction is committed, and published, as it is saved. Each payload is taken when its write is made, so `value_was` is right when one transaction saves an entry more than once.
+
 Writes that skip callbacks publish nothing: `LaForge.merge` moving entries between records, and rows removed by database cascades, such as when a source is deleted.
 
 ### Counting across records
