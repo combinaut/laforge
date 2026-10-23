@@ -1237,6 +1237,14 @@ describe 'Association tracking capabilities' do
         .to eq(low => [cafe.id, bakery.id], high => [bakery.id, florist.id])
     end
 
+    it "returns only members the tracked association's scope includes", capability: 'C118' do
+      link = ParcelLink.create!(place: place, parcel: lot_12, parcel_link_type: computed) # outside reported_parcel_links
+      link.record_data_entries({ external_id: 'C-1' }, low)
+      link.save!
+
+      expect(place.source_values(:reported_parcel_links)).to eq({})
+    end
+
     it "returns each source's members for many records in a constant number of queries", capability: 'C32' do
       places = Array.new(6) { |i| Place.create!(name: "Place #{i}") }
       places.each do |record|

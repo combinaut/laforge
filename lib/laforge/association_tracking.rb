@@ -198,6 +198,8 @@ module LaForge
 
       member_scope = config.klass.where(config.owner_foreign_key => owner_ids)
       member_scope = member_scope.where(config.owner_type_column => owner_class.polymorphic_name) if config.owner_type_column
+      scope = config.reflection.scope
+      member_scope = member_scope.merge(config.klass.unscoped.instance_exec(&scope)) if scope&.arity&.zero? # one taking the owner can't be applied to many at once
       member_records = member_scope.to_a
       member_entries = DataEntry.where(record_type: config.klass.base_class.name, record_id: member_records.map(&:id)).preload(:source).to_a
                                 .reject { |entry| config.nested_config(entry.attribute_name) }
