@@ -219,6 +219,19 @@ module LaForge
     private
 
     def normalize_member(member, attributes:, edit:)
+      member = member_hash(member)
+      return named_tombstone(member, attributes: attributes) if tombstone?(member)
+
+      member = keyed_member(member, attributes: attributes)
+      member.each { |field, value| assert_attribute!(field, value, attributes: attributes, edit: edit) }
+      assert_whole_groups!(member) if attributes
+      assert_key!(member) unless new_member?(member)
+      [key_hash(member), member.except(*key, NEW_MEMBER)]
+    end
+
+    # Returns `member`, a saved record, a Tombstone or a hash, as a hash with string keys. A record gives its key hash.
+    # Raises for a record of another model, and for an unsaved one.
+    def member_hash(member)
       if member.is_a?(::ActiveRecord::Base)
         raise InvalidValue, "#{owner_class.name}##{name} members must be #{klass.name} records, not #{member.class.name}" unless member.is_a?(klass)
         raise InvalidValue, "Cannot list an unsaved #{klass.name} in #{owner_class.name}##{name}; save it first, or pass its attributes as a hash" if member.new_record?
@@ -226,52 +239,70 @@ module LaForge
         member = key_hash(member)
       end
       member = member.to_h if member.is_a?(Tombstone)
-      member = member.to_h.stringify_keys
-      if tombstone?(member)
-        raise ArgumentError, "A tombstone in #{owner_class.name}##{name} can only be forgotten, which lets sources add the member again; it has no row to include or exclude" if attributes
+      member.to_h.stringify_keys
+    end
 
-        return [member.slice(TOMBSTONE), {}]
-      end
+    # Returns [key hash, no attributes] for a tombstone, which can only be named. Raises when `attributes` is true.
+    def named_tombstone(member, attributes:)
+      raise ArgumentError, "A tombstone in #{owner_class.name}##{name} can only be forgotten, which lets sources add the member again; it has no row to include or exclude" if attributes
+
+      [member.slice(TOMBSTONE), {}]
+    end
+
+    # Returns `member` with its key values cast to the key columns' types, and with a placeholder key when it is a new
+    # member. Raises for a new member when `attributes` is false, since it can only be named by its primary key.
+    def keyed_member(member, attributes:)
       key.each { |column| member[column] = klass.type_for_attribute(column).cast(member[column]) if member.key?(column) } # ids from params are strings
-      if primary_keyed? && member[klass.primary_key].nil?
-        raise ArgumentError, "#{owner_class.name}##{name} members are named here by #{klass.primary_key}, which a new member does not have yet" unless attributes
+      return member unless primary_keyed? && member[klass.primary_key].nil?
 
-        member = member.merge(NEW_MEMBER => SecureRandom.hex(8))
+      raise ArgumentError, "#{owner_class.name}##{name} members are named here by #{klass.primary_key}, which a new member does not have yet" unless attributes
+
+      member.merge(NEW_MEMBER => SecureRandom.hex(8))
+    end
+
+    # Raises unless `field` of a member is its key, its placeholder key, or, when `attributes` is true, a nested tracked
+    # association or a column LaForge can record. The column must not be the member's primary key, its link to the
+    # owner or the order column, and `value` must be storable.
+    def assert_attribute!(field, value, attributes:, edit:)
+      return if (field == NEW_MEMBER && primary_keyed?) || key.include?(field)
+
+      if !attributes
+        raise ArgumentError, "#{owner_class.name}##{name} members are named here by key only (#{key.join(', ')}), not #{field}"
+      elsif (nested = nested_config(field)) # validated now, recorded on the member when a forge of the owner includes it
+        assert_nested_list!(nested, value, edit: edit)
+      elsif field == klass.primary_key || field == owner_foreign_key || field == owner_type_column || !klass.column_names.include?(field)
+        raise InvalidAttributeName, "Cannot set #{field} on #{klass.name} members of #{owner_class.name}##{name}"
+      elsif field == order_column
+        raise ArgumentError, "Cannot set #{field} on #{klass.name} members of #{owner_class.name}##{name}; LaForge writes it from the order of the list"
+      elsif !DataEntry.storable?(value)
+        raise InvalidValue, "Cannot record #{value.class} for #{field} on #{klass.name} members of #{owner_class.name}##{name}; values are stored as JSON, so record a string, number, boolean, date, nil, or an array or hash of those"
       end
+    end
 
-      member.each do |field, value|
-        next if field == NEW_MEMBER && primary_keyed?
-        next if key.include?(field)
-
-        if !attributes
-          raise ArgumentError, "#{owner_class.name}##{name} members are named here by key only (#{key.join(', ')}), not #{field}"
-        elsif (nested = nested_config(field)) # validated now, recorded on the member when a forge of the owner includes it
-          if edit && nested.collection? && !value.nil?
-            nested.edits(value).each { |action, nested_member| nested.normalize_members([nested_member], attributes: action == :include, edit: true) }
-          else
-            nested.normalize_members(value)
-          end
-        elsif field == klass.primary_key || field == owner_foreign_key || field == owner_type_column || !klass.column_names.include?(field)
-          raise InvalidAttributeName, "Cannot set #{field} on #{klass.name} members of #{owner_class.name}##{name}"
-        elsif field == order_column
-          raise ArgumentError, "Cannot set #{field} on #{klass.name} members of #{owner_class.name}##{name}; LaForge writes it from the order of the list"
-        elsif !DataEntry.storable?(value)
-          raise InvalidValue, "Cannot record #{value.class} for #{field} on #{klass.name} members of #{owner_class.name}##{name}; values are stored as JSON, so record a string, number, boolean, date, nil, or an array or hash of those"
-        end
+    # Raises when `value`, a member's list for the nested tracked association `nested`, is invalid. A collection's list
+    # in an edit is validated as edits.
+    def assert_nested_list!(nested, value, edit:)
+      if edit && nested.collection? && !value.nil?
+        nested.edits(value).each { |action, nested_member| nested.normalize_members([nested_member], attributes: action == :include, edit: true) }
+      else
+        nested.normalize_members(value)
       end
+    end
 
-      if attributes && klass.respond_to?(:laforge_assert_whole_groups!)
-        fields = member.keys.reject { |field| field == NEW_MEMBER || key.include?(field) || nested_config(field) }
-        klass.laforge_assert_whole_groups!(fields, where: "#{klass.name} members of #{owner_class.name}##{name}")
-      end
+    # Raises unless the member's attributes include every attribute of each attribute group of the member model they
+    # touch
+    def assert_whole_groups!(member)
+      return unless klass.respond_to?(:laforge_assert_whole_groups!)
 
-      unless new_member?(member)
-        missing = key - member.keys
-        raise ArgumentError, "#{owner_class.name}##{name} members must include their key (#{missing.join(', ')} missing)" if missing.any?
-        raise ArgumentError, "#{owner_class.name}##{name} members must have a value for each key column (#{key.join(', ')})" if blank_key?(key_of(member))
-      end
+      fields = member.keys.reject { |field| field == NEW_MEMBER || key.include?(field) || nested_config(field) }
+      klass.laforge_assert_whole_groups!(fields, where: "#{klass.name} members of #{owner_class.name}##{name}")
+    end
 
-      [key_hash(member), member.except(*key, NEW_MEMBER)]
+    # Raises unless the member has a value for each key column
+    def assert_key!(member)
+      missing = key - member.keys
+      raise ArgumentError, "#{owner_class.name}##{name} members must include their key (#{missing.join(', ')} missing)" if missing.any?
+      raise ArgumentError, "#{owner_class.name}##{name} members must have a value for each key column (#{key.join(', ')})" if blank_key?(key_of(member))
     end
 
     def assert_members_of!(owner, members)
