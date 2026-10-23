@@ -1,6 +1,6 @@
-# Schema and models for spec/lib/association_capabilities_spec.rb.
+# Schema and models for `association_capabilities_spec.rb` and `association_importer_scenarios_spec.rb`.
 #
-# Models are defined lazily from a `before` hook, once their tables exist, rather than at load time.
+# `setup!` is called from a `before` hook, since `laforged` reads a model's columns when it is declared.
 module AssociationCapabilities
   TABLES = %w[places categories place_categories parcels parcel_link_types parcel_links tenants opening_hours markers].freeze
 
@@ -23,7 +23,7 @@ module AssociationCapabilities
         t.timestamps null: false
       end
 
-      # Referenced (shared) records: only ever pointed at by the owner, never owned by it
+      # Records a place references and never owns
       create_table :categories, force: true do |t|
         t.string :name
       end
@@ -36,7 +36,7 @@ module AssociationCapabilities
         t.string :key
       end
 
-      # Plain has_many :through join with an order column
+      # A plain `has_many :through` join with an order column
       create_table :place_categories, force: true do |t|
         t.bigint :place_id
         t.bigint :category_id
@@ -44,7 +44,7 @@ module AssociationCapabilities
         t.timestamps null: false
       end
 
-      # 3-way join with its own metadata
+      # A three-way join with columns of its own
       create_table :parcel_links, force: true do |t|
         t.bigint :place_id
         t.bigint :parcel_id
@@ -68,7 +68,7 @@ module AssociationCapabilities
         t.timestamps null: false
       end
 
-      # A has_one owned record with no key of its own: every source describes the place's single marker
+      # A has_one owned record with no key of its own, so every source describes the place's single marker
       create_table :markers, force: true do |t|
         t.string :markable_type
         t.bigint :markable_id
@@ -126,7 +126,7 @@ module AssociationCapabilities
       has_many :categories, through: :place_categories
 
       has_many :parcel_links, dependent: :destroy
-      # Computed links are derived from parcel geometry by another process and must never be touched by forging
+      # Leaves out computed links, which another process derives from parcel geometry, so forging never touches them
       has_many :reported_parcel_links,
                -> { where.not(parcel_link_type_id: ParcelLinkType.where(key: 'computed').select(:id)) },
                class_name: 'ParcelLink'
@@ -137,17 +137,18 @@ module AssociationCapabilities
       validates :name, presence: true
 
       laforged associations: {
-        place_categories: {},          # key derived from the reflection: category_id
-        reported_parcel_links: {},     # key derived: parcel_id + parcel_link_type_id
-        # Owned records are keyed by primary key. An excluded tenant is destroyed, and recognised by its name when a source
+        place_categories: {},          # key derived from the reflection, `category_id`
+        reported_parcel_links: {},     # key derived, `parcel_id` and `parcel_link_type_id`
+        # Tenants are keyed by primary key. An excluded tenant is destroyed, and recognised by its name when a source
         # reports it again.
         tenants: { tombstone_matcher: ->(tenant, tombstones) { tombstones.find { |tombstone| tombstone.name == tenant.name } } },
-        marker: {}                      # a has_one with no key: there is only ever one
+        marker: {}                      # a has_one with no key, as there is only ever one
       }
     end
   end
 
-  # Assign the constant before evaluating the body so association macros can infer names from the class
+  # Defines the model `name` with the given body, unless it is already defined. The constant is assigned before the body
+  # runs so that association macros can infer names from the class, and removed again when the body raises.
   def self.define(name, &body)
     return if Object.const_defined?(name, false)
 
@@ -155,7 +156,7 @@ module AssociationCapabilities
     Object.const_set(name, klass)
     begin
       klass.class_eval(&body)
-    rescue StandardError, ScriptError # NotImplementedError when no strategy is selected
+    rescue StandardError, ScriptError # ScriptError covers NotImplementedError
       Object.send(:remove_const, name)
       raise
     end

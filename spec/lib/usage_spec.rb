@@ -1,7 +1,7 @@
 require 'spec_helper'
 
 # Common ways of using LaForge to merge several data sources into one record, one group per intention. Association
-# assignment by importers is in association_importer_scenarios_spec.rb.
+# assignment by importers is in `association_importer_scenarios_spec.rb`.
 describe 'Usage' do
   # Runs before the sources below are created
   before do
@@ -144,7 +144,7 @@ describe 'Usage' do
       expect(record.reload.tap(&:forge).name).to eq('From Cadastre') # and the next forge agrees
     end
 
-    it 'keeps a value recorded again after its entry was removed, unsaved' do
+    it 'keeps a value recorded again after an unsaved removal of its entry' do
       record.record_data_entry(:name, 'From Map Editor', map_editor)
       record.forge!
 
@@ -540,8 +540,9 @@ describe 'Usage' do
     end
   end
 
-  # A belongs_to association is recorded by passing the record (or nil); it is stored as the foreign key, and the type
-  # when polymorphic, so the link resolves across sources like any attribute and its entries tell who set it
+  # A belongs_to association is recorded by passing the record, or nil. It is stored as the foreign key, and as the
+  # type too when polymorphic, so the link resolves across sources like any attribute and its entries tell which source
+  # set it.
   describe 'a belongs_to association' do
     let(:parent) { ActiveRecordMock.create!(name: 'Parent') }
     let(:other_parent) { ActiveRecordMock.create!(name: 'Other Parent') }
@@ -704,7 +705,7 @@ describe 'Usage' do
     end
   end
 
-  # A source the host stops using: its values stop counting from each record's next forge, and are kept
+  # A source the host stops using. Its values stop counting from each record's next forge, and its entries are kept.
   describe 'an inactive source' do
     before do
       record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
@@ -713,8 +714,8 @@ describe 'Usage' do
     end
 
     it "falls back to the next source, and keeps a value no other source has, once the record is forged again" do
-      record.update!(active: false) # an attribute only the map editor reports
-      record.record_data_entries({ active: true }, map_editor)
+      record.update!(active: false)
+      record.record_data_entries({ active: true }, map_editor) # an attribute only the map editor reports
       record.forge!
       map_editor.update!(active: false)
 
@@ -887,7 +888,7 @@ describe 'Usage' do
     end
 
     it 'lists a source with no global precedence last, with no level' do
-      LaForge::PrecedenceRule.global.where(source_id: cadastre.id).delete_all # as an upgrade leaves a deleted source's entries
+      LaForge::PrecedenceRule.global.where(source_id: cadastre.id).delete_all
 
       expect(ActiveRecordMock.precedence_order.last).to include(source: cadastre, level: nil)
     ensure

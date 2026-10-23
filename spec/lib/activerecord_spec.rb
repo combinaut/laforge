@@ -209,7 +209,7 @@ describe 'ActiveRecordExtensions' do
       expect { record.forge }.to change { record.name }.from("Post").to("From the lower source")
     end
 
-    it 'breaks a tie at one level by the higher source precedence' do
+    it 'breaks a tie at one level by the higher global precedence' do
       data_entry.update(attribute_name: "name", value: "From the lower source")
       preceding_data_entry.update(attribute_name: "name", value: "From the higher source")
       record.update_attribute_source_precedence(:name, data_source, 2)

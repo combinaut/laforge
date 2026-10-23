@@ -1,14 +1,16 @@
 require 'spec_helper'
 
-# Association assignment as importers drive it, run end to end across several import runs.
+# Association assignment as importers drive it, end to end across several import runs.
 #
-# Every run records everything the source currently says about a record, including whole association lists, then
-# forges. A tenant's attributes, reported in the place's list, are recorded on the tenant itself. An orphan sweep destroys a source's entries for records it no longer reports, without forging, and closes a
-# record only when no other source still has entries on it. Map editor edits are recorded on the highest-precedence source.
+# Each run records everything the source currently says about a record, whole association lists included, then forges.
+# A tenant's attributes, reported in the place's list, are recorded on the tenant itself. An orphan sweep withdraws a
+# source from a record it no longer reports, without forging, and closes the record only when no other source has
+# entries on it.
 #
-# Sources, lowest to highest: cadastre, business directory, business registry, map editor.
+# Sources, lowest to highest precedence: cadastre, business directory, business registry, and the map editor, which
+# records people's edits.
 #
-# Uses the association API from association_capabilities_spec.rb.
+# `association_capabilities_spec.rb` shows the association API one capability at a time.
 describe 'Association assignment by importers' do
   before do
     AssociationCapabilities.setup!
@@ -34,15 +36,15 @@ describe 'Association assignment by importers' do
   let(:leases) { ParcelLinkType.create!(key: 'leases') }
   let(:computed) { ParcelLinkType.create!(key: 'computed') }
 
-  # One importer run for one record: record everything the source says, then forge and save
+  # One importer run for one record. Records everything the source says, then forges and saves.
   def import(record, source, **data)
     record.record_data_entries(data, source)
     record.forge!
     record
   end
 
-  # An orphan sweep: withdraw the source without forging; close the record only when no other source has entries on it or
-  # reports it in a list
+  # An orphan sweep. Withdraws the source without forging, and closes a record with a status when no other source has
+  # entries on it.
   def sweep(record, source)
     record.withdraw_source(source)
     record.update!(status: 'closed') if record.has_attribute?(:status) && (record.data_source_names - [source.name]).empty?
@@ -52,7 +54,8 @@ describe 'Association assignment by importers' do
   def categories_of(record) = record.reload.place_categories.map(&:category)
   def parcel_link(parcel, type, **fields) = { parcel_id: parcel.id, parcel_link_type_id: type.id, **fields }
   def parcel_links_of(record) = record.reload.parcel_links.order(:id).map { |row| [row.parcel, row.parcel_link_type, row.active, row.external_id] }
-  # The importer finds a tenant it reported before by its own identifier and names it by id; otherwise it is new
+  # Names a tenant as the importer does, by id once a tenant with the `external_id` exists, otherwise as a new tenant.
+  # The name defaults to one made from the `external_id`.
   def tenant(external_id, **fields)
     existing = Tenant.find_by(external_id: external_id)
     { **(existing ? { id: existing.id } : {}), external_id: external_id, name: "Tenant #{external_id}", **fields }
@@ -183,8 +186,8 @@ describe 'Association assignment by importers' do
   end
 
   describe 'tenants listed by a business directory and enriched by a business registry' do
-    # The business registry records on the tenant itself, and is authoritative for its registration number regardless
-    # of source precedence
+    # Records on the tenant as the business registry does, giving the registration number precedence 100 so that it
+    # outranks every other source
     def register(tenant, registration_number, **fields)
       tenant.record_data_entries({ registration_number: registration_number }, business_registry, precedence: 100)
       tenant.record_data_entries(fields, business_registry) if fields.any?
@@ -208,8 +211,7 @@ describe 'Association assignment by importers' do
     it "clears the registration number and restores the importer's unit once the business registry stops reporting the business" do
       register(t1, 'R-10', unit: '3C')
 
-      # Blank the registration number, let the unit fall back to the importer's, then keep the tenant only if another
-      # source still reports it
+      # Blanks the registration number and lets the unit fall back to the importer's
       t1.reload.forge! do
         t1.record_data_entries({ registration_number: nil }, business_registry)
         t1.remove_data_entries(attribute_names: :unit, sources: business_registry)
@@ -234,7 +236,7 @@ describe 'Association assignment by importers' do
       import(place.reload, business_directory, tenants: [tenant('T-2', unit: '1A')])
 
       expect(tenants_of(place)).to eq([['T-2', 'Tenant T-2', '1A']])
-      expect(LaForge::DataEntry.where(record_type: 'Tenant', record_id: t1.id)).to be_empty # noted: deleted with the tenant (dependent: :destroy)
+      expect(LaForge::DataEntry.where(record_type: 'Tenant', record_id: t1.id)).to be_empty # noted: deleted with the tenant, per `dependent: :destroy`
     end
 
     it 'does not bring back a closed tenant when the business registry or the importer re-forges it' do
@@ -314,7 +316,8 @@ describe 'Association assignment by importers' do
   end
 
   describe 'an importer that creates tenants itself, one row at a time' do
-    # Builds and saves each tenant directly, as many importers do, checking tombstones before saving a new one
+    # Builds or finds one tenant and saves it directly, as many importers do. Returns :skipped for a new tenant a
+    # tombstone blocks, and :saved otherwise.
     def import_row(record, source, external_id)
       tenant = record.tenants.find_by(external_id: external_id) || record.tenants.build(external_id: external_id)
       tenant.record_data_entries({ name: "Tenant #{external_id}" }, source)

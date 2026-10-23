@@ -1,48 +1,27 @@
 require 'spec_helper'
 
-# What association tracking does, capability by capability.
+# What association tracking does, one capability per example. Its vocabulary (report, member, membership, tombstone)
+# is defined on `LaForge::AssociationTracking`, `LaForge::MemberList` and `LaForge::AssociationConfig`.
 #
-# The API is experimental: `laforged associations:`, association names as keys in `record_data_entries`,
-# `source_values`, `member_sources`. The behaviour is the point; the names can change.
+# The API is experimental. These names can change while the behaviour stays:
+# - `laforged associations:`
+# - association names as keys in `record_data_entries`
+# - `source_values`
+# - `member_sources`
 #
-# Model:
-# - Recording never touches an association; forging resolves its final state and assigns it.
-# - Membership: each source records a report for an association, either its complete member list or a partial one
-#   (members it includes or excludes). A report names members by key: the records a join row references, `key:` columns,
-#   or else the primary key, where a member named without an id is new and named by a placeholder until it is created
-#   and the owner saved. An id must be one of the owner's members. An explicitly excluded member keyed by id is destroyed,
-#   and its exclusion keeps a tombstone, which `tombstone_matcher:` recognises in what sources report later.
-#   Membership is decided per member by the highest-precedence report with an opinion on it; a complete list excludes
-#   every member some report named that it doesn't list. A report remembers the members it stopped including, which
-#   are removed unless another source includes them. Rows no report has named, such as ones from before the association
-#   was tracked, are left alone by every report, and destroying a report forgets what it named; withdrawing a source
-#   retracts it.
-# - Member attributes: a member in a report is a hash of its key and what the source says about it, or a saved record.
-#   The hash's attributes are kept in the report as pending until a forge of the owner includes the member; that forge
-#   records them on the member as that source's entries, as if the source had recorded them on the member directly, and
-#   forges the member. Nothing is created for a member that membership excludes; its attributes wait in the report until
-#   membership includes it, or the source's next report replaces them. A member's attributes are resolved on the member
-#   alone, under its precedence rules. When a source's report drops a member another source keeps, the forge withdraws
-#   the source from the member, down its own lists; an attribute no other source has an entry for keeps its value.
-#   Withdrawn keys are dropped once a forge settles them, and an emptied partial report with them. An attribute the
-#   member has a newer value for from the same source is not recorded.
-# - A member that membership includes but that doesn't exist is created from its key when no report has attributes for
-#   it, unless it is invalid with its key alone; then the forge skips it and logs a warning until a source reports it
-#   with its attributes. A member named by an id that is no longer one of the owner's is skipped the same way.
+# A forge removes a row only where assigning the resolved collection to the association would. A comment starting
+# `noted:` marks an example's line that checks a removed row. The rows removed are:
+# - owned records (tenants) that membership no longer includes, per the association's `dependent:` option, as
+#   `place.tenants = [...]` would. They are destroyed for `:destroy`, as the spec model's tenants are, deleted for
+#   `:delete_all`, and have their foreign key nullified otherwise. The entries other sources recorded on them go with
+#   them.
+# - join rows (place categories) that membership no longer includes, the same way, with the entries recorded on them.
+# - the join row of a member whose referenced record was deleted, since the forge drops the member (C30).
+# - the duplicate's join row that `LaForge.merge` merges into the survivor's (C102).
 #
-# Removal: forge has exactly the effect of assigning the resolved collection to the association, nothing more.
-# Destroying records is otherwise out of scope. Every place a row is deleted, noted for later consideration:
-# - Owned records (e.g. tenants) that membership no longer includes are removed per the association's `dependent:`
-#   option, as `place.tenants = [...]` would: destroyed for `:destroy` (as the spec model's tenants are), deleted for
-#   `:delete_all`, FK nullified otherwise. Any attribute entries other sources recorded on them (e.g. a registration number
-#   another system recorded) go with them.
-# - Join rows (e.g. place categories) that membership no longer includes are removed the same way, along with any
-#   attribute entries other sources recorded on those rows.
-# - A member whose referenced record has been deleted is dropped from the resolved collection (C30), so its join row
-#   is removed too.
-# - A record keyed by `key:` columns and destroyed by another mechanism is recreated by the next forge if membership
-#   still includes it, from its key or from what sources then report about it. One keyed by primary key is not; a source
-#   reporting it without its id creates a new one. Attribute entries never resurrect a record by themselves.
+# A record keyed by `key:` columns and destroyed some other way is recreated by the next forge while membership includes
+# it. One keyed by primary key is not, and a source reporting it without its id creates a new one. Entries alone never
+# recreate a record.
 #
 # Every example carries a `capability:` id. Retired ids (C09 C10 C11 C23 C35 C48 C66 C67 C76 C82 C83 C84) are not reused.
 describe 'Association tracking capabilities' do
@@ -53,7 +32,7 @@ describe 'Association tracking capabilities' do
     AssociationCapabilities.reset!
   end
 
-  # Sources are mechanically identical; only their precedence differs. Precedences stay clear of the other specs' sources.
+  # The sources differ only in precedence, numbered clear of the other specs' sources.
   let(:low) { LaForge::DataSource.create!(name: 'low', precedence: 11) }
   let(:high) { LaForge::DataSource.create!(name: 'high', precedence: 12) }
   let(:top) { LaForge::DataSource.create!(name: 'top', precedence: 13) }
@@ -76,7 +55,7 @@ describe 'Association tracking capabilities' do
   def parcel_link(parcel, type, **fields) = { parcel_id: parcel.id, parcel_link_type_id: type.id, **fields }
   def parcel_link_row(record, parcel, type) = record.reload.parcel_links.find_by(parcel_id: parcel.id, parcel_link_type_id: type.id)
 
-  # How an importer names a tenant: by id once it exists, found by an identifier of its own, otherwise as a new tenant
+  # Names a tenant as an importer does, by id once a tenant with the `external_id` exists, otherwise as a new tenant
   def tenant(external_id, **attributes)
     existing = Tenant.find_by(external_id: external_id)
     { **(existing ? { id: existing.id } : {}), external_id: external_id, **attributes }
@@ -172,7 +151,7 @@ describe 'Association tracking capabilities' do
 
       place.record_data_entries({ place_categories: categories(florist) }, high)
       place.forge!
-      place.data_entries.with_source(high).with_attribute(:place_categories).destroy_all # stops tracking what high said
+      place.data_entries.with_source(high).with_attribute(:place_categories).destroy_all
       place.data_entries.reset
       place.forge!
       expect(categories_of(place)).to eq([cafe, bakery, florist]) # no report names florist, so it is left alone, like a row from before tracking
@@ -186,7 +165,7 @@ describe 'Association tracking capabilities' do
 
       place.data_entries.with_source(high).with_attribute(:reported_parcel_links).destroy_all
       place.reload.forge!
-      expect(parcel_link_row(place, lot_14, occupies)).to have_attributes(active: false) # kept in the low report until now
+      expect(parcel_link_row(place, lot_14, occupies)).to have_attributes(active: false) # from the attributes low's report kept pending
     end
 
     it "creates an owned record with the attributes a lower-precedence source's list gave it once that list takes over, and skips one named by an id that no longer exists", capability: 'C47' do
@@ -444,7 +423,7 @@ describe 'Association tracking capabilities' do
       expect(place.forge_diff['tenants']).to include(removed: [])
       place.forge!
 
-      expect(corner_cafe.reload).to have_attributes(name: 'Corner Café', unit: '1A') # no other source has a unit, so it stays, as withdraw_source leaves it
+      expect(corner_cafe.reload).to have_attributes(name: 'Corner Café', unit: '1A') # no other source has a unit, so it stays, as `withdraw_source` leaves it
       expect(corner_cafe.opening_hours).to be_empty
       expect(corner_cafe.data_source?(low)).to be(false)
       expect(LaForge::DataEntry.where(record_type: 'OpeningHour')).to be_empty # noted: the opening hour was destroyed per `dependent: :destroy`
@@ -587,7 +566,7 @@ describe 'Association tracking capabilities' do
     it 'detaches a removed member without validating it, as assigning the collection would', capability: 'C122' do
       stub_const('DetachingPlace', Class.new(ActiveRecord::Base))
       DetachingPlace.table_name = 'places'
-      DetachingPlace.has_many :parcel_links, foreign_key: :place_id # no dependent:, so removal nullifies; a parcel link requires its place
+      DetachingPlace.has_many :parcel_links, foreign_key: :place_id # no `dependent:`, so removal nullifies the `place_id` that `ParcelLink` requires
       DetachingPlace.laforged(associations: { parcel_links: {} })
       detaching_place = DetachingPlace.create!(name: 'Harbor Building')
       detaching_place.record_data_entries({ parcel_links: [parcel_link(lot_12, occupies), parcel_link(lot_14, occupies)] }, low)
@@ -601,7 +580,7 @@ describe 'Association tracking capabilities' do
       expect(detaching_place.parcel_links.map(&:parcel)).to eq([lot_12])
     end
 
-    it 'still removes a member an earlier forge, not saved yet, removed, when a forge of the same report follows', capability: 'C124' do
+    it 'removes a member that an earlier unsaved forge removed, when a forge of the same report follows', capability: 'C124' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
       place.forge!
       place.reload.record_data_entries({ place_categories: categories(cafe) }, low)
@@ -611,7 +590,7 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([cafe])
     end
 
-    it 'keeps a partial report an earlier forge, not saved yet, emptied, once the source includes a member again', capability: 'C126' do
+    it 'keeps a partial report that an earlier unsaved forge emptied, once the source includes a member again', capability: 'C126' do
       place.record_data_entries({ place_categories: categories(cafe) }, low, mode: :partial)
       place.forge!
       place.reload.record_data_entries({ place_categories: [] }, low, mode: :partial)
@@ -623,7 +602,7 @@ describe 'Association tracking capabilities' do
       expect(place.data_entries.with_attribute(:place_categories)).to exist
     end
 
-    it 'keeps a member an earlier forge, not saved yet, removed, once a forge includes it again', capability: 'C121' do
+    it 'keeps a member that an earlier unsaved forge removed, once a forge includes it again', capability: 'C121' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
       place.forge!
       place.reload.record_data_entries({ place_categories: categories(cafe) }, low)
@@ -668,7 +647,7 @@ describe 'Association tracking capabilities' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
       place.forge!
 
-      expect(Tenant.pluck(:external_id)).to eq(['T-1']) # Place declares has_many :tenants, dependent: :destroy
+      expect(Tenant.pluck(:external_id)).to eq(['T-1']) # noted: T-2 destroyed per `dependent: :destroy`
     end
 
     it 'keeps an edit made directly on an owned record when its owner is forged', capability: 'C24' do
@@ -710,7 +689,7 @@ describe 'Association tracking capabilities' do
       expect(corner_cafe.data_source?(top)).to be(false)
       expect(place.reload.member_sources(:tenants, id: corner_cafe.id)).to eq(membership: top, listed_by: [top, low], excluded_by: [], attributes: { 'external_id' => low, 'name' => low })
 
-      # An orphan check for low: nothing else records on the tenant, but top still lists it
+      # As an orphan check for low sees it, no other source records on the tenant, but top still lists it
       corner_cafe.withdraw_source(low)
       expect(corner_cafe.data_entries.without_source(low)).to be_empty
       expect(place.member_sources(:tenants, id: corner_cafe.id)[:listed_by] - [low]).to eq([top])
@@ -806,7 +785,7 @@ describe 'Association tracking capabilities' do
       expect(place.data_entries.with_source(low).with_attribute(:tenants).sole.value).to eq([{ 'id' => place.tenants.sole.id }])
     end
 
-    it 'raises for a member named by an id that is not one of the owner members, rather than move it from another owner', capability: 'C77' do
+    it "raises for a member named by an id that is not one of the owner's members, rather than move it from another owner", capability: 'C77' do
       other = Place.create!(name: 'Other')
       other_cafe = other.tenants.create!(name: 'Corner Café')
 
@@ -885,7 +864,7 @@ describe 'Association tracking capabilities' do
   end
 
   describe 'Rails form payloads' do
-    # A place accepting nested attributes for its tenants with the given options
+    # Returns a place model accepting nested attributes for its tenants and marker with the given options
     def form_place_model(**options, &body)
       stub_const('FormPlace', Class.new(ActiveRecord::Base))
       FormPlace.table_name = 'places'
@@ -1190,7 +1169,7 @@ describe 'Association tracking capabilities' do
       high.update!(active: false)
       top.update!(active: false)
       place.reload.forge!
-      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Harbor Books', 'Corner Café') # high's tenant stays, unnamed; top's tombstone stops blocking
+      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Harbor Books', 'Corner Café') # high's tenant stays though unnamed, and top's tombstone stops blocking
 
       top.update!(active: true) # its exclusion applies again, to the tenant created meanwhile
       place.reload.forge!
@@ -1264,7 +1243,7 @@ describe 'Association tracking capabilities' do
     it 'discards a member a forge built, not saved yet, when a later forge before the save removes it', capability: 'C127' do
       stub_const('DetachingPlace', Class.new(ActiveRecord::Base))
       DetachingPlace.table_name = 'places'
-      DetachingPlace.has_one :marker, as: :markable # no dependent:, so removal nullifies
+      DetachingPlace.has_one :marker, as: :markable # no `dependent:`, so removal nullifies
       DetachingPlace.laforged(associations: { marker: {} })
       detaching_place = DetachingPlace.create!(name: 'Harbor Building')
 
@@ -1355,7 +1334,7 @@ describe 'Association tracking capabilities' do
     end
   end
 
-  describe 'inspection (data hub)' do
+  describe 'inspection' do
     it "returns each source's members for a record", capability: 'C31' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
       place.record_data_entries({ place_categories: categories(bakery, florist) }, high)
