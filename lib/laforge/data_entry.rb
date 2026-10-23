@@ -27,10 +27,11 @@ module LaForge
 
     # Publishes the change once the current transaction commits, with the payload as it is now: the entry, its
     # record_type, record_id, attribute_name and source_id, its value before and after, and whether it was destroyed.
-    # Taking the payload when the write is made keeps value_was right when one transaction saves an entry more than once.
+    # Taking the payload, values copied, when the write is made keeps it right when one transaction saves an entry more
+    # than once or changes its value in place after saving it.
     def self.publish_change(entry, value_was:, value:, destroyed: false)
       payload = { entry: entry, record_type: entry.record_type, record_id: entry.record_id, attribute_name: entry.attribute_name,
-                  source_id: entry.source_id, value_was: value_was, value: value, destroyed: destroyed }
+                  source_id: entry.source_id, value_was: value_was.deep_dup, value: value.deep_dup, destroyed: destroyed }
       ::ActiveRecord::Base.current_transaction.after_commit { ActiveSupport::Notifications.instrument(CHANGED, payload) }
     end
 

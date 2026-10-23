@@ -722,6 +722,18 @@ describe 'Usage' do
       expect(record.reload.name).to eq('Renamed in the Map Editor')
     end
 
+    it 'is seen as active again inside a precedence cache once deactivating it rolls back' do
+      LaForge.with_precedence_cache do
+        ActiveRecord::Base.transaction do
+          map_editor.update!(active: false)
+          record.reload.forge
+          raise ActiveRecord::Rollback
+        end
+        record.reload.forge
+        expect(record.name).to eq('From Map Editor')
+      end
+    end
+
     it 'is seen by a forge inside a precedence cache once it changes there' do
       LaForge.with_precedence_cache do
         record.reload.forge!
@@ -771,6 +783,16 @@ describe 'Usage' do
         expected.merge(value_was: 'From Cadastre', value: 'Renamed', destroyed: false),
         expected.merge(value_was: 'Renamed', value: nil, destroyed: true)
       ])
+    end
+
+    it 'publishes the values as they were saved, even when one is changed in place before the commit' do
+      ActiveRecord::Base.transaction do
+        record.record_data_entries({ name: ['From Cadastre'] }, cadastre)
+        record.save!
+        record.data_entries.sole.value << 'changed in place'
+      end
+
+      expect(events.map { |event| event[:value] }).to eq([['From Cadastre']])
     end
 
     it 'publishes once the write is committed, at once outside a transaction, and nothing for a write that rolls back' do

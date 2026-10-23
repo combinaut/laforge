@@ -6,6 +6,7 @@ module LaForge
     has_many :precedence_rules, class_name: 'LaForge::PrecedenceRule', foreign_key: :source_id, dependent: :delete_all
     after_destroy { PrecedenceCache.clear } # its rules are deleted without callbacks
     after_save { PrecedenceCache.clear if saved_change_to_active? }
+    after_rollback { PrecedenceCache.clear } # a rolled-back change to active must not stay cached
     has_one :global_precedence_rule, -> { global }, class_name: 'LaForge::PrecedenceRule', foreign_key: :source_id, autosave: true, inverse_of: :source
 
     validates :name, presence: true, uniqueness: { case_sensitive: false }
