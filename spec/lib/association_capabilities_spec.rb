@@ -1016,7 +1016,7 @@ describe 'Association tracking capabilities' do
       unmatched_place = UnmatchedPlace.create!(name: 'Harbor Building')
       corner_cafe = unmatched_place.tenants.create!(name: 'Corner Café')
 
-      message = /Cannot exclude Tenant #{corner_cafe.id} from UnmatchedPlace #{unmatched_place.id}'s tenants: excluding it destroys it.*Declare tombstone_matcher: on UnmatchedPlace's tenants.*tombstone_matcher: ->\(tenant, tombstones\)/
+      message = /Cannot exclude Tenant #{corner_cafe.id} from UnmatchedPlace #{unmatched_place.id}'s tenants: excluding it removes it per `dependent:`.*Declare tombstone_matcher: on UnmatchedPlace's tenants.*tombstone_matcher: ->\(tenant, tombstones\)/
       expect { unmatched_place.record_data_entries({ tenants: { exclude: [corner_cafe] } }, top, mode: :edit) }.to raise_error(ArgumentError, message)
       expect { unmatched_place.record_data_entries({ tenants: { exclude: [corner_cafe] } }, top, mode: :partial) }.to raise_error(ArgumentError, message)
       expect { unmatched_place.record_data_entries({ tenants_attributes: [{ id: corner_cafe.id, _destroy: '1' }] }, top, mode: :edit) }.to raise_error(ArgumentError, message)
@@ -1453,12 +1453,12 @@ describe 'Association tracking capabilities' do
       expect(Place.laforged_association(:reported_parcel_links).key).to eq(%w[parcel_id parcel_link_type_id])
     end
 
-    it 'raises for a method the model already defines that laforged would replace, and lets one defined after it wrap LaForge\'s', capability: 'C98' do
+    it 'raises for a method the model already defines that would hide LaForge\'s, and lets one defined after it wrap LaForge\'s', capability: 'C98' do
       stub_const('CollidingPlace', Class.new(ActiveRecord::Base))
       CollidingPlace.table_name = 'places'
       CollidingPlace.define_method(:source_values) { |*| :own }
       CollidingPlace.define_singleton_method(:source_precedences) { :own }
-      expect { CollidingPlace.laforged }.to raise_error(ArgumentError, /CollidingPlace already defines #source_values, .source_precedences, which `laforged` would replace. Rename CollidingPlace's methods, or, to wrap LaForge's and call super, define them after `laforged`/)
+      expect { CollidingPlace.laforged }.to raise_error(ArgumentError, /CollidingPlace already defines #source_values, .source_precedences, which would hide LaForge's of the same name. Rename CollidingPlace's methods, or, to wrap LaForge's and call super, define them after `laforged`/)
 
       stub_const('WrappingPlace', Class.new(ActiveRecord::Base))
       WrappingPlace.table_name = 'places'

@@ -63,7 +63,7 @@ module LaForge
       return if instance.empty? && klass.empty?
 
       names = instance.map { |name| "##{name}" } + klass.map { |name| ".#{name}" }
-      raise ArgumentError, "#{model.name} already defines #{names.join(', ')}, which `laforged` would replace. Rename #{model.name}'s " \
+      raise ArgumentError, "#{model.name} already defines #{names.join(', ')}, which would hide LaForge's of the same name. Rename #{model.name}'s " \
                            "#{names.one? ? 'method' : 'methods'}, or, to wrap LaForge's and call super, define #{names.one? ? 'it' : 'them'} after `laforged`"
     end
 

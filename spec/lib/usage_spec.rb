@@ -888,6 +888,7 @@ describe 'Usage' do
     end
 
     it 'lists a source with no global precedence last, with no level' do
+      # As for a source whose rules were deleted with it, while its entries, which have no foreign key, stayed
       LaForge::PrecedenceRule.global.where(source_id: cadastre.id).delete_all
 
       expect(ActiveRecordMock.precedence_order.last).to include(source: cadastre, level: nil)

@@ -145,7 +145,7 @@ module LaForge
       ids = members.reject { |member| tombstone?(member) }.map { |member| member[klass.primary_key] }
       return if ids.empty?
 
-      raise ArgumentError, "Cannot exclude #{klass.name} #{ids.join(', ')} from #{owner_class.name} #{owner.id.inspect}'s #{name}: excluding it destroys it, " \
+      raise ArgumentError, "Cannot exclude #{klass.name} #{ids.join(', ')} from #{owner_class.name} #{owner.id.inspect}'s #{name}: excluding it removes it per `dependent:`, " \
                            "and without a tombstone_matcher LaForge could not recognise it when a source reports it again, so it would come back. " \
                            "Declare tombstone_matcher: on #{owner_class.name}'s #{name}, a callable given the reported #{klass.name} and the excluded ones " \
                            "that returns the one it is, or nil, such as " \
