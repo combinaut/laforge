@@ -100,6 +100,16 @@ describe 'ActiveRecordExtensions' do
     end
   end
 
+  describe '#dup' do
+    it 'gives the duplicate its own laforge, bound to the duplicate' do
+      record = ActiveRecordMock.create!(name: "Post")
+      original = record.laforge
+
+      expect(record.dup.laforge).not_to equal(original)
+      expect(record.laforge).to equal(original)
+    end
+  end
+
   describe '#forge!' do
     let(:record) { ActiveRecordMock.create(name: "Post", active: true) }
     let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }

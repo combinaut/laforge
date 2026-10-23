@@ -147,7 +147,7 @@ module LaForge
       return record(value, source, precedence: precedence, recorded_at: recorded_at) unless config.collection?
 
       config.edits(value).each { |action, member| edit_member(member, source, action, recorded_at: recorded_at, precedence: precedence) }
-      owner.send(:write_precedence_rule, config.name, source, precedence) unless precedence.equal?(NOT_GIVEN)
+      owner.laforge.write_precedence_rule(config.name, source, precedence) unless precedence.equal?(NOT_GIVEN)
     end
 
     # Writes the source's report of `members`, replacing its previous one. `members` is a list of members, or for
@@ -168,7 +168,7 @@ module LaForge
         if partial then MemberList::Partial.replacing(report(source), config, include: keys, exclude: excluded, pending: pending)
         else MemberList::Complete.replacing(report(source), config, include: keys, pending: pending)
         end
-      owner.send(:write_data_entry, config.name, value, source, precedence: precedence, recorded_at: recorded_at)
+      owner.laforge.write_data_entry(config.name, value, source, precedence: precedence, recorded_at: recorded_at)
     end
 
     # Changes the source's report for one member. A source with no report gets a partial one. `action` is one of:
@@ -195,7 +195,7 @@ module LaForge
         when :exclude then previous.excluding(config, member)
         when :forget then previous.forgetting(config, member)
         end
-      owner.send(:write_data_entry, config.name, value, source, recorded_at: recorded_at)
+      owner.laforge.write_data_entry(config.name, value, source, recorded_at: recorded_at)
     end
 
     # Applies membership to the owner's members in memory, for the owner's save to write. Does nothing when no source
@@ -242,7 +242,7 @@ module LaForge
       names = created.select { |_, record| record.persisted? }.transform_values { |record| config.key_hash(record) }
       return if names.empty?
 
-      owner.send(:filter_data_entries_in_memory, attributes: config.name).each do |entry|
+      owner.laforge.filter_data_entries_in_memory(attributes: config.name).each do |entry|
         next if entry.destroyed? || entry.marked_for_destruction?
 
         value = MemberList.new(entry.value).renamed(config, names)
@@ -255,7 +255,7 @@ module LaForge
     def tombstone_blocking(record, source_id)
       return unless config.tombstone_matcher
 
-      outranking = tombstones.select { |tombstone| owner.laforge_outranks?(config.name, tombstone.source_id, source_id) }
+      outranking = tombstones.select { |tombstone| owner.laforge.outranks?(config.name, tombstone.source_id, source_id) }
       match_tombstone(record, outranking)
     end
 
@@ -276,7 +276,7 @@ module LaForge
     def member_sources(member)
       key = config.key_of(member)
       record = config.members_of(owner).find { |candidate| config.record_key(candidate) == key }
-      candidates = record ? record.send(:laforge_forging_entries).reject { |entry| entry.marked_for_destruction? || config.nested_config(entry.attribute_name) } : []
+      candidates = record ? record.laforge.forging_entries.reject { |entry| entry.marked_for_destruction? || config.nested_config(entry.attribute_name) } : []
 
       deciding = reports.find { |_, report| report.decision(config, key) }
 
@@ -284,7 +284,7 @@ module LaForge
         membership: (deciding[0].source if deciding && deciding[1].decision(config, key) == :include),
         listed_by: reports.select { |_, report| report.decision(config, key) == :include }.map { |entry, _| entry.source },
         excluded_by: reports.select { |_, report| report.partial? && report.decision(config, key) == :exclude }.map { |entry, _| entry.source },
-        attributes: record ? record.send(:laforge_winning_entries, candidates).transform_values { |winner, _| winner.source } : {}
+        attributes: record ? record.laforge.winning_entries(candidates).transform_values { |winner, _| winner.source } : {}
       }
     end
 
@@ -304,7 +304,7 @@ module LaForge
     # Adds the members an earlier forge removed in the owner's pending writes to `existing`, so this forge can include
     # them again
     def include_removed_members
-      owner.laforge_pending_writes.removed_members(config).each { |record| existing[config.record_key(record)] ||= record }
+      owner.laforge.pending_writes.removed_members(config).each { |record| existing[config.record_key(record)] ||= record }
     end
 
     # Names each new member whose pending item the tombstone matcher matches to a tombstone by that tombstone's key in
@@ -365,10 +365,10 @@ module LaForge
       included.filter_map do |member|
         key = config.key_of(member)
         items = pending.fetch(key, [])
-        record = existing.delete(key)&.tap { |kept| owner.laforge_pending_writes.cancel_removal(config, kept) } || created[key] || add(member, described: items.any?)
+        record = existing.delete(key)&.tap { |kept| owner.laforge.pending_writes.cancel_removal(config, kept) } || created[key] || add(member, described: items.any?)
         next unless record
 
-        recorded = items.map { |source_id, attributes, recorded_at, edit, precedence| record.laforge_record_reported(attributes, source_id, recorded_at, edit: edit, precedence: precedence) }
+        recorded = items.map { |source_id, attributes, recorded_at, edit, precedence| record.laforge.record_reported(attributes, source_id, recorded_at, edit: edit, precedence: precedence) }
         recorded_on << record if recorded.any?
         record
       end
@@ -426,7 +426,7 @@ module LaForge
 
         key = config.record_key(record)
         withdrawing = reports.select { |_, report| report.decision(config, key) == :exclude || report.withdrew?(config, key) }
-        withdrawing.map { |entry, _| record.laforge_withdraw(entry.source_id, owner) }.any?
+        withdrawing.map { |entry, _| record.laforge.withdraw(entry.source_id, owner) }.any?
       end
     end
 
@@ -462,7 +462,7 @@ module LaForge
     # Every report names the member by the tombstone's key in place of its id, inactive sources' included so they still
     # name it when their source is active again, and each excluding report keeps the tombstone.
     def entomb
-      all_reports = owner.send(:laforge_association_reports, config, inactive: true)
+      all_reports = owner.laforge.association_reports(config, inactive: true)
       existing.each_value do |record|
         key = config.record_key(record)
         excluding = reports.reject { |entry, _| entry.marked_for_destruction? }.select { |entry, _| MemberList.new(entry.value).exclude.any? { |member| config.key_of(member) == key } }
@@ -491,10 +491,10 @@ module LaForge
     # A has_one's target becomes the first of `records`.
     def remove_unclaimed(records)
       if config.collection?
-        existing.each_value { |record| owner.laforge_pending_writes.remove(config, record) }
+        existing.each_value { |record| owner.laforge.pending_writes.remove(config, record) }
       else
         association.target = records.first
-        existing.each_value { |record| owner.laforge_pending_writes.remove_on_save(config, record) }
+        existing.each_value { |record| owner.laforge.pending_writes.remove_on_save(config, record) }
       end
     end
 
@@ -506,7 +506,7 @@ module LaForge
         items = pending.fetch(config.key_of(member), [])
         next unless record && items.any?
 
-        changes = record.laforge_forge_diff_with(items)
+        changes = record.laforge.forge_diff_with(items)
         config.key_hash(record).merge(changes) if changes.any?
       end
     end
@@ -603,18 +603,18 @@ module LaForge
 
     # Returns the new members forges built and the owner has not saved yet, by placeholder key
     def created
-      @created ||= owner.laforge_pending_writes.created_members(config)
+      @created ||= owner.laforge.pending_writes.created_members(config)
     end
 
     # Returns the source's report, or `MemberList.none` when it has none or its entry is marked for destruction
     def report(source)
-      entry = owner.send(:filter_data_entries_in_memory, attributes: config.name, sources: source).first
+      entry = owner.laforge.filter_data_entries_in_memory(attributes: config.name, sources: source).first
       entry && !entry.marked_for_destruction? ? MemberList.new(entry.value) : MemberList.none
     end
 
     # Returns the association's entries in precedence order, each paired with its report, as read when first called
     def reports
-      @reports ||= owner.send(:laforge_association_reports, config)
+      @reports ||= owner.laforge.association_reports(config)
     end
 
     def association

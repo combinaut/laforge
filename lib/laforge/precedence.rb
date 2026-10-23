@@ -6,7 +6,7 @@ module LaForge
     # it. Raises for an attribute in a group, whose precedence is set on the group.
     def update_attribute_source_precedence(attribute, source, precedence)
       self.class.laforge_assert_rule_attribute!(attribute)
-      rule = write_precedence_rule(attribute, source, precedence)
+      rule = laforge.write_precedence_rule(attribute, source, precedence)
       return unless persisted? && rule
 
       rule.marked_for_destruction? ? precedence_rules.destroy(rule) : rule.save!
@@ -18,8 +18,8 @@ module LaForge
     def update_precedence_order(attribute, sources)
       self.class.laforge_assert_rule_attribute!(attribute)
       source_ids = DataSource.normalize_source_ids(sources)
-      precedence_rules.select { |rule| rule.attribute_name == attribute.to_s && !source_ids.include?(rule.source_id) }.each { |rule| write_precedence_rule(attribute, rule.source_id, nil) }
-      source_ids.each_with_index { |source_id, index| write_precedence_rule(attribute, source_id, source_ids.size - index) }
+      precedence_rules.select { |rule| rule.attribute_name == attribute.to_s && !source_ids.include?(rule.source_id) }.each { |rule| laforge.write_precedence_rule(attribute, rule.source_id, nil) }
+      source_ids.each_with_index { |source_id, index| laforge.write_precedence_rule(attribute, source_id, source_ids.size - index) }
     end
 
     # Returns the active sources in the order they rank for one attribute of this record, as [{ source:, level: }]. An
@@ -34,53 +34,6 @@ module LaForge
     # those marked for destruction left out
     def source_precedences
       precedence_rules.reject(&:marked_for_destruction?).group_by(&:attribute_name).transform_values { |rules| rules.to_h { |rule| [rule.source, rule.precedence] } }
-    end
-
-    # @api private
-    # Returns the effective precedence of `data_entry` on this record
-    def laforge_precedence_of(data_entry)
-      laforge_precedence_resolver.precedence(self, data_entry.attribute_name, data_entry.source_id)
-    end
-
-    # @api private
-    # Returns the rank of `data_entry`'s source for its attribute on this record (see `PrecedenceRule::Resolver#rank`)
-    def laforge_rank_of(data_entry)
-      laforge_precedence_resolver.rank(self, data_entry.attribute_name, data_entry.source_id)
-    end
-
-    # @api private
-    # Whether one source's value for an attribute of this record outranks another's
-    def laforge_outranks?(attribute_name, source_id, other_source_id)
-      rank = ->(id) { laforge_precedence_resolver.rank(self, attribute_name, id) }
-      (rank.(source_id) <=> rank.(other_source_id)) == 1
-    end
-
-    private
-
-    # Sets this record's rule for the attribute and source in memory, and returns it. With a nil `precedence`, marks a
-    # saved rule for destruction and returns it, or otherwise drops any unsaved rule and returns nil.
-    def write_precedence_rule(attribute_name, source, precedence)
-      source_id = DataSource.normalize_source_id(source)
-      rule = precedence_rules.find { |candidate| candidate.attribute_name == attribute_name.to_s && candidate.source_id == source_id }
-
-      if precedence.nil?
-        return unless rule
-
-        if rule.new_record?
-          precedence_rules.target.delete(rule)
-          return
-        end
-        rule.mark_for_destruction
-      else
-        rule ||= precedence_rules.build(attribute_name: attribute_name.to_s, source_id: source_id)
-        LaForge::ActiveRecord.set_marked_for_destruction(rule, false) # setting a precedence again undoes an unsaved removal
-        rule.precedence = precedence
-      end
-      rule
-    end
-
-    def laforge_precedence_resolver
-      @laforge_precedence_resolver ||= PrecedenceRule::Resolver.new(self.class)
     end
 
     # The class methods of `Precedence`, which set and read the model-wide rules

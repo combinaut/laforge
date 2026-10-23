@@ -35,7 +35,7 @@ module LaForge
 
     # OVERRIDES are the methods LaForge defines over Active Record's own, calling super, which `assert_no_collisions!`
     # lets through
-    OVERRIDES = %i[reload].freeze
+    OVERRIDES = %i[reload initialize_dup].freeze
 
     # Raises when the model already has a method by a name `laforged` adds, other than `OVERRIDES`, naming each one. A
     # method defined after `laforged` is not checked, so a model can wrap LaForge's and call super. Nothing is checked
@@ -178,12 +178,12 @@ module LaForge
 
     # Whether the source has entries on this record
     def data_source?(source)
-      filter_data_entries_in_memory(sources: source).any?
+      laforge.filter_data_entries_in_memory(sources: source).any?
     end
 
     # Returns the names of the sources with entries on this record, for `attributes` when given
     def data_source_names(attributes: nil)
-      filter_data_entries_in_memory(attributes: attributes).map(&:source).map(&:name).uniq
+      laforge.filter_data_entries_in_memory(attributes: attributes).map(&:source).map(&:name).uniq
     end
 
     # Returns what each source says about the members of the tracked association `name`, as
@@ -198,24 +198,23 @@ module LaForge
       TrackedAssociation.new(self, self.class.laforged_association(name)).member_sources(member.stringify_keys)
     end
 
-    private
+    # @api private
+    # Returns what LaForge keeps for this record (see RecordState), made on first use
+    def laforge
+      @laforge ||= RecordState.new(self)
+    end
 
-    # Returns the record's entries matching the filters, from the in-memory association: every saved
-    # entry (loaded on first use), plus entries built but not yet saved and entries marked for destruction.
-    def filter_data_entries_in_memory(attributes: nil, sources: nil)
-      list = data_entries.to_a
+    # Also drops what LaForge keeps for this record, so its pending writes go and the next ranking reads the model-wide
+    # and global rules again
+    def reload(*)
+      @laforge = nil
+      super
+    end
 
-      unless attributes.nil?
-        attributes = Array.wrap(attributes).map(&:to_s)
-        list.select! {|data_entry| attributes.include?(data_entry.attribute_name) }
-      end
-
-      unless sources.nil?
-        source_ids = Array.wrap(sources).map {|source| DataSource.normalize_source_id(source) }
-        list.select! {|data_entry| source_ids.include?(data_entry.source_id) }
-      end
-
-      return list
+    # Gives a duplicate its own `laforge`, rather than the one bound to the record it was duplicated from
+    def initialize_dup(*)
+      @laforge = nil
+      super
     end
   end
 

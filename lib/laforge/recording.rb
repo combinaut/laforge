@@ -41,7 +41,7 @@ module LaForge
           options[:partial] = true if mode == :partial
           TrackedAssociation.new(self, config).record(value, source, **options)
         else
-          laforge_record_attribute(attribute_name, value, source, precedence: precedence)
+          laforge.record_attribute(attribute_name, value, source, precedence: precedence)
         end
       end
     end
@@ -52,7 +52,7 @@ module LaForge
     # the entries from those sources. An attribute in a group removes the entries for its whole group.
     def remove_data_entries(attribute_names: nil, sources: nil)
       attribute_names = self.class.laforge_with_groups(attribute_names) unless attribute_names.nil?
-      filter_data_entries_in_memory(attributes: attribute_names, sources: sources).each do |data_entry|
+      laforge.filter_data_entries_in_memory(attributes: attribute_names, sources: sources).each do |data_entry|
         data_entry.mark_for_destruction
       end
     end
@@ -62,7 +62,7 @@ module LaForge
     # Precedence rules for the source are kept.
     def withdraw_source(source)
       transaction do
-        filter_data_entries_in_memory(sources: source).each do |data_entry|
+        laforge.filter_data_entries_in_memory(sources: source).each do |data_entry|
           if (config = laforged_associations[data_entry.attribute_name])
             data_entry.value = MemberList.new(data_entry.value).withdrawing_all(config)
             data_entry.save! if data_entry.persisted?
@@ -71,91 +71,6 @@ module LaForge
           end
         end
       end
-    end
-
-    # @api private
-    # Records one attribute, without checking its group
-    def laforge_record_attribute(attribute_name, value, source, precedence: NOT_GIVEN)
-      reflection = self.class.reflect_on_association(attribute_name)
-      if reflection&.belongs_to?
-        return laforge_reference_columns(reflection, value).each { |column, column_value| write_data_entry(column, column_value, source, precedence: precedence) }
-      end
-
-      raise InvalidAttributeName, "#{self.class.name}##{attribute_name} is not a tracked association" if reflection
-      raise InvalidAttributeName, "Cannot set #{attribute_name} on #{self.class.name}" unless respond_to?("#{attribute_name}=")
-      raise InvalidValue, "Cannot record #{value.class} for #{self.class.name}##{attribute_name}; values are stored as JSON, so record a string, number, boolean, date, nil, or an array or hash of those" unless DataEntry.storable?(value)
-
-      write_data_entry(attribute_name, value, source, precedence: precedence)
-    end
-
-    # @api private
-    # Withdraws the source from this record, a member of `owner`, in memory, as `owner`'s forge does when the source's
-    # report there excludes or has withdrawn it. The source's attribute entries are dropped, to be destroyed when
-    # `owner` is saved, and each of its reports in this record's tracked associations withdraws every member it named.
-    # Returns whether the source had any entry on this record not marked for destruction.
-    def laforge_withdraw(source_id, owner)
-      entries = filter_data_entries_in_memory(sources: source_id).reject(&:marked_for_destruction?)
-      entries.each do |data_entry|
-        if (config = laforged_associations[data_entry.attribute_name])
-          data_entry.value = MemberList.new(data_entry.value).withdrawing_all(config)
-        else
-          data_entries.target.delete(data_entry)
-          owner.laforge_pending_writes.delete_entry(data_entry) if data_entry.persisted?
-        end
-      end
-      entries.any?
-    end
-
-    # @api private
-    # Records what the source's report on this record's owner said about it at `recorded_at`, which the owner validated
-    # when recording the report. An attribute this record has a newer entry for from the same source is left out, so an
-    # older report does not undo it. With `edit`, nested lists are recorded as edits. `precedence` covers everything
-    # recorded, nested lists included. Returns whether anything was recorded.
-    def laforge_record_reported(attributes, source, recorded_at, edit: false, precedence: NOT_GIVEN)
-      newer = filter_data_entries_in_memory(sources: source).select { |entry| entry.recorded_at && entry.recorded_at > recorded_at }.map(&:attribute_name)
-      attributes = attributes.except(*newer)
-
-      attributes.each do |attribute_name, value|
-        if (config = laforged_associations[attribute_name]) && edit && config.collection?
-          TrackedAssociation.new(self, config).edit(value, source, precedence: precedence, recorded_at: recorded_at)
-        elsif config
-          TrackedAssociation.new(self, config).record(value, source, precedence: precedence, recorded_at: recorded_at)
-        else
-          write_data_entry(attribute_name, value, source, precedence: precedence, recorded_at: recorded_at)
-        end
-      end
-      attributes.any?
-    end
-
-    private
-
-    # Writes the source's entry for the attribute in memory, and the precedence rule for the attribute, or its attribute
-    # group, when `precedence` is given. Recording onto an entry marked for destruction undoes the unsaved removal.
-    def write_data_entry(attribute_name, value, source, precedence: NOT_GIVEN, recorded_at: Time.current)
-      data_entry = filter_data_entries_in_memory(attributes: attribute_name, sources: source).first
-      data_entry ||= data_entries.build(attribute_name: attribute_name, source_id: DataSource.normalize_source_id(source))
-      LaForge::ActiveRecord.set_marked_for_destruction(data_entry, false)
-      data_entry.value = value
-      data_entry.recorded_at = recorded_at if data_entry.new_record? || data_entry.will_save_change_to_value?
-      write_precedence_rule(self.class.laforge_attribute_group(attribute_name) || attribute_name, source, precedence) unless precedence.equal?(NOT_GIVEN)
-    end
-
-    # Returns { foreign_key => id, foreign_type => class name } for `target`, a record or nil, assigned to the
-    # belongs_to `reflection`, foreign_type only when it is polymorphic. Raises unless `target` is nil or a saved record
-    # of a class the association takes.
-    def laforge_reference_columns(reflection, target)
-      unless target.nil? || target.is_a?(::ActiveRecord::Base)
-        raise InvalidValue, "#{self.class.name}##{reflection.name} must be recorded as a record or nil, not #{target.class}"
-      end
-      raise InvalidValue, "Cannot record an unsaved #{target.class.name} for #{self.class.name}##{reflection.name}" if target&.new_record?
-      if target && !reflection.polymorphic? && !target.is_a?(reflection.klass)
-        raise InvalidValue, "#{self.class.name}##{reflection.name} must be a #{reflection.klass.name}, not #{target.class.name}"
-      end
-
-      primary_key = reflection.polymorphic? ? target&.class&.primary_key : reflection.association_primary_key
-      columns = { reflection.foreign_key.to_s => target && target[primary_key] }
-      columns[reflection.foreign_type.to_s] = target&.class&.polymorphic_name if reflection.polymorphic?
-      columns
     end
   end
 end

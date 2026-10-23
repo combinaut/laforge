@@ -15,6 +15,7 @@ require 'laforge/recording'
 require 'laforge/forging'
 require 'laforge/precedence'
 require 'laforge/pending_writes'
+require 'laforge/record_state'
 require 'laforge/activerecord'
 
 ActiveSupport.on_load :active_record do
