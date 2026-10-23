@@ -5,7 +5,8 @@ module LaForge
   #   for the same attribute and source, the winner's is kept and the other's destroyed.
   # - In each tracked association, the duplicate's members move to the survivor, keeping their ids and everything
   #   recorded on them. Where both records have a member with the same key, as join rows naming the same record do, the
-  #   survivor's row is kept: the duplicate's row is merged into it the same way, then destroyed.
+  #   survivor's row is kept: the duplicate's row is merged into it the same way, then destroyed. Where both have a
+  #   has_one member and their keys differ, the merge raises before anything moves.
   # - Each source's reports on the two records are combined, so the survivor's report names every member either named.
   #   Where the reports disagree on a member, the winner's opinion is kept.
   #
@@ -27,6 +28,7 @@ module LaForge
     private
 
     def merge_records(survivor, duplicate, winner, report)
+      assert_has_ones_mergeable!(survivor, duplicate)
       merge_entries(survivor, duplicate, winner, report)
       merge_precedence_rules(survivor, duplicate, winner, report)
       survivor.class.laforged_associations.each_value { |config| merge_members(survivor, duplicate, config, winner, report) }
@@ -78,6 +80,23 @@ module LaForge
         end
       end
       PrecedenceCache.clear
+    end
+
+    # Raises when both records have a member in a tracked has_one and their keys differ, since moving the duplicate's
+    # would give the survivor two rows behind a reader that shows one. Called before anything moves.
+    def assert_has_ones_mergeable!(survivor, duplicate)
+      survivor.class.laforged_associations.each_value do |config|
+        next if config.collection?
+
+        kept, moving = [survivor, duplicate].map { |record| config.members_of(record).first }
+        next unless kept && moving
+        next if !config.primary_keyed? && config.record_key(kept) == config.record_key(moving)
+
+        model = survivor.class.name
+        raise ArgumentError, "Cannot merge #{model} #{duplicate.id} into #{model} #{survivor.id}: both have a #{config.name}, with " \
+                             "#{config.describe_key(config.record_key(kept))} and #{config.describe_key(config.record_key(moving))}, and #{model}##{config.name} holds one. " \
+                             'Remove one of them, or give them the same key so the merge combines them, then merge again'
+      end
     end
 
     # Moves the duplicate's members to the survivor, merging a member the survivor already has by key into the survivor's

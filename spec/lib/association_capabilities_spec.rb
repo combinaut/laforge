@@ -1138,6 +1138,21 @@ describe 'Association tracking capabilities' do
       expect(duplicate.reload.parcel_links).to be_empty
     end
 
+    it 'raises before moving anything when both records have a has_one member and their keys differ', capability: 'C128' do
+      stub_const('LabelledPlace', Class.new(ActiveRecord::Base))
+      LabelledPlace.table_name = 'places'
+      LabelledPlace.has_one :marker, as: :markable, dependent: :destroy
+      LabelledPlace.laforged(associations: { marker: { key: :label } })
+      survivor, copy = ['Harbor Building', 'Harbor Bldg'].map { |name| LabelledPlace.create!(name: name) }
+      survivor.forge! { survivor.record_data_entries({ marker: { label: 'Harbor' } }, low) }
+      copy.forge! { copy.record_data_entries({ name: 'Harbor Bldg', marker: { label: 'Quay' } }, low) }
+
+      expect { LaForge.merge(survivor, copy) }.to raise_error(ArgumentError, /Cannot merge LabelledPlace #{copy.id} into LabelledPlace #{survivor.id}: both have a marker, with label "Harbor" and label "Quay", and LabelledPlace#marker holds one. Remove one of them, or give them the same key so the merge combines them, then merge again/)
+      expect(copy.reload.marker.label).to eq('Quay')
+      expect(copy.data_entries.count).to eq(2)
+      expect(Marker.where(markable_type: 'LabelledPlace', markable_id: survivor.id).count).to eq(1)
+    end
+
     it 'raises, saying why, for records it cannot merge', capability: 'C103' do
       expect { LaForge.merge(place, Tenant.create!(name: 'Corner Café')) }.to raise_error(ArgumentError, /merges two records of the same model, not Place #{place.id} and Tenant/)
       expect { LaForge.merge(place, place) }.to raise_error(ArgumentError, /Cannot merge Place #{place.id} into itself/)

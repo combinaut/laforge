@@ -413,7 +413,7 @@ When two records turn out to be the same, merge what LaForge holds for the dupli
   ```
 
 - **Attribute entries and per-record precedence rules** move to the survivor. Where both records have one for the same attribute and source, that's a conflict, and the function decides which is kept. The other is destroyed.
-- **Members of tracked associations** move to the survivor with their ids and everything recorded on them. Where both records have a member with the same key, as two join rows naming the same category do, the survivor's row is kept, and the duplicate's row is merged into it the same way, forged, and destroyed.
+- **Members of tracked associations** move to the survivor with their ids and everything recorded on them. Where both records have a member with the same key, as two join rows naming the same category do, the survivor's row is kept, and the duplicate's row is merged into it the same way, forged, and destroyed. Where both have a has_one member with different keys, such as markers with different labels, the merge raises `ArgumentError` before anything moves, since the survivor can hold only one. Remove one of them, or give them the same key, then merge again.
 - **Each source's reports** on the two records are combined, so the survivor's report names every member either named, and keeps both records' tombstones. Where the reports disagree about a member, the winner's opinion is kept.
 - **Not touched:** associations LaForge doesn't track, and the duplicate itself, which is left with no LaForge data for the application to archive or destroy.
 
