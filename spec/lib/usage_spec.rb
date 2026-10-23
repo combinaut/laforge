@@ -133,11 +133,22 @@ describe 'Usage' do
       expect(record.reload.name).to eq('Changed In Cadastre')
     end
 
-    it 'blanks the attribute instead of falling back when the override is only marked for removal' do
+    it 'falls back the same way when the override is removed inside forge!' do
       record.record_data_entry(:name, 'From Map Editor', map_editor)
-      record.forge!(attributes: :name)
+      record.forge!
 
-      record.forge! { record.remove_data_entries(attribute_names: :name, sources: map_editor) }
+      record.forge!(attributes: :name) { record.remove_data_entries(attribute_names: :name, sources: map_editor) }
+
+      expect(record.reload.name).to eq('From Cadastre')
+      expect(record.reload.tap(&:forge).name).to eq('From Cadastre') # and the next forge agrees
+    end
+
+    it 'blanks the attribute when the editor records nil' do
+      record.record_data_entry(:name, 'From Map Editor', map_editor)
+      record.forge!
+
+      record.record_data_entry(:name, nil, map_editor)
+      record.forge!
 
       expect(record.reload.name).to be_nil
     end
@@ -365,36 +376,37 @@ describe 'Usage' do
       record.forge!
     end
 
-    it 'blanks the attributes the source was supplying, even where a lower source has a value' do
-      record.forge! { record.remove_data_entries(attribute_names: %i[name count], sources: business_directory) }
+    it 'blanks the attributes the source was supplying by recording nil, even where a lower source has a value' do
+      record.record_data_entries({ name: nil, count: nil }, business_directory)
+      record.forge!
 
       expect(record.reload).to have_attributes(name: nil, count: nil, active: false)
-      expect(record.data_entries.with_source(business_directory).pluck(:attribute_name)).to eq(['active'])
     end
 
     it "keeps a higher source's value while blanking the source's own" do
       record.record_data_entries({ name: 'From Map Editor' }, map_editor)
       record.forge!
 
-      record.forge! { record.remove_data_entries(attribute_names: %i[name count], sources: business_directory) }
+      record.record_data_entries({ name: nil, count: nil }, business_directory)
+      record.forge!
 
       expect(record.reload).to have_attributes(name: 'From Map Editor', count: nil)
     end
 
+    it 'falls back to the lower source when the entries are removed, and keeps the value no other source has' do
+      record.forge! { record.remove_data_entries(attribute_names: %i[name count active], sources: business_directory) }
+
+      expect(record.reload).to have_attributes(name: 'From Cadastre', count: 5, active: false)
+      expect(record.data_entries.with_source(business_directory)).not_to exist
+      expect(record.tap(&:forge)).to have_attributes(name: 'From Cadastre', count: 5, active: false) # and the next forge agrees
+    end
+
     it 'deletes entries without changing the attribute when they are removed outside forge and the record saved' do
-      # For columns that cannot be blank: remove after forging, then save with an explicit value
       record.remove_data_entries(attribute_names: :active, sources: business_directory)
       record.update!(count: 0)
 
       expect(record.reload).to have_attributes(active: false, count: 0)
       expect(record.data_entries.with_source(business_directory).with_attribute(:active)).not_to exist
-    end
-
-    it 'restores the lower source on the next forge once the removed entries are gone' do
-      record.forge! { record.remove_data_entries(attribute_names: :name, sources: business_directory) }
-      record.reload.forge!
-
-      expect(record.reload.name).to eq('From Cadastre')
     end
 
     it 'tells whether any other source still has entries on the record, to decide whether to orphan it' do

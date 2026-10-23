@@ -115,10 +115,27 @@ describe 'ActiveRecordExtensions' do
       expect { record.forge! { record.record_data_entries({name: "Article"}, data_source.name) }}.to change { record.reload.name }.from("Post").to("Article")
     end
 
-    it 'nils out the attribute when a block is passed that destroys the only data entry with that attribute' do
+    it 'keeps the attribute when a block is passed that removes the only data entry with that attribute' do
+      data_entry.update(attribute_name: "name", value: "Article")
+      record.update!(name: "Post")
+
+      expect { record.forge! { record.remove_data_entries(sources: data_source.name) }}.not_to change { record.reload.name }
+      expect(record.data_entries).to be_empty
+    end
+
+    it 'falls back to the next source when a block is passed that removes the winning data entry' do
+      LaForge::DataEntry.create!(record: record, source_id: data_source.id, attribute_name: "name", value: "Article")
+      higher = LaForge::DataSource.find_or_create_by!(name: "guardian") { |source| source.precedence = 2 }
+      LaForge::DataEntry.create!(record: record, source_id: higher.id, attribute_name: "name", value: "Story")
+      record.reload.forge!
+
+      expect { record.forge! { record.remove_data_entries(sources: higher.name) }}.to change { record.reload.name }.from("Story").to("Article")
+    end
+
+    it 'blanks the attribute when a block is passed that records nil for it' do
       data_entry.update(attribute_name: "name", value: "Post")
 
-      expect { record.forge! { record.remove_data_entries(sources: data_source.name) }}.to change { record.reload.name }.from("Post").to(nil)
+      expect { record.forge! { record.record_data_entries({ name: nil }, data_source.name) }}.to change { record.reload.name }.from("Post").to(nil)
     end
 
     it 'does not change the attribute when the only data_entry with that attribute is destroyed outside of the block' do

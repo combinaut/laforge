@@ -81,10 +81,12 @@ module LaForge
     # Returns a hash of the attributes generated from the record's the data entries
     # Optionally pass `attributes` to limit data entries used in the calculation to only those for the given attributes
     # Optionally pass `sources` to limit data entries used in the calculation to only those from the given sources
+    # Entries marked for destruction are left out, as the next forge will not find them, so each attribute falls back to
+    # the next source, and an attribute no other source has an entry for keeps its value.
     def forge_attributes(attributes: nil, sources: nil)
       @laforge_precedence_resolver = nil # read the model-wide and global rules afresh (or from the precedence cache) for each forge
       forged_attrs = {}
-      data_entries = filter_data_entries_in_memory(attributes: attributes, sources: sources)
+      data_entries = filter_data_entries_in_memory(attributes: attributes, sources: sources).reject(&:marked_for_destruction?)
       winners = DataEntry.in_precedence_order(data_entries, record: self).uniq(&:attribute_name).index_by(&:attribute_name)
 
       # The hash's key order is the order `forge` calls the setters, which matters when one setter
@@ -95,14 +97,14 @@ module LaForge
       assignment_order.each do |attribute_name|
         next unless respond_to?("#{attribute_name}=")
 
-        data_entry = winners.fetch(attribute_name)
-        forged_attrs[attribute_name] = data_entry.marked_for_destruction? ? nil : data_entry.value
+        forged_attrs[attribute_name] = winners.fetch(attribute_name).value
       end
 
       return forged_attrs
     end
 
-    # Mark several data entries for destruction
+    # Mark several data entries for destruction, so they are destroyed when the record is saved and a forge leaves them
+    # out. To blank an attribute instead, record nil for it.
     # Optionally pass `attributes` to limit data entries used in the calculation to only those for the given attributes
     # Optionally pass `sources` to limit data entries used in the calculation to only those from the given sources
     def remove_data_entries(attribute_names: nil, sources: nil)

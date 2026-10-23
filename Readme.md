@@ -60,10 +60,16 @@ Key features:
 3. Remove data for an existing model from any of your sources.
   ```ruby
     foo.forge! { foo.remove_data_entries(sources: source1) }
-    # => Saves the model with the attributes { height: nil, width: nil, name: 'El Capitan' }
+    # => Saves the model with the attributes { height: 19, width: 5, name: 'El Capitan' }
   ```
 
-**Note:** calling `remove_data_entries` marks the Data Entries for destruction, but they are not destroyed and the removed attributes not nullified until `forge!` is called. A marked entry still takes part in the forge as a `nil` value, so the attribute is blanked rather than falling back to a lower precedence source. See [Falling back to the next source](#falling-back-to-the-next-source).
+**Note:** calling `remove_data_entries` marks the Data Entries for destruction, and they are destroyed when the record is saved. A forge leaves marked entries out, so each removed attribute falls back to the next source, and an attribute no other source has an entry for keeps its value. In the example, `height` falls back to source2 and `width` keeps its value.
+
+4. Blank data by recording `nil` for it. The source's `nil` outranks lower precedence sources as any value would, and keeps doing so at every later forge.
+  ```ruby
+    foo.record_data_entries({ height: nil, width: nil }, source1)
+    foo.forge! # => Saves the model with the attributes { height: nil, width: nil, name: 'El Capitan' }
+  ```
 
 A source can be given as a `LaForge::DataSource`, its id, or its name. Looking a source up by a name that has no row raises `LaForge::DataSource::Invalid`.
 
@@ -187,13 +193,14 @@ A value that was applied some other way, such as an approved suggested edit, can
 
 ### Falling back to the next source
 
-To drop an override so the next source's value takes over, destroy its entries rather than marking them with `remove_data_entries`, which would blank the attribute.
+To drop an override so the next source's value takes over, remove its entries.
 
   ```ruby
-    place.data_entries.with_source(map_editor).with_attribute(:name).destroy_all
-    place.data_entries.reset
-    place.forge!(attributes: :name) # => name is the business directory's latest value
+    place.forge!(attributes: :name) { place.remove_data_entries(attribute_names: :name, sources: map_editor) }
+    # => name is the business directory's latest value
   ```
+
+Destroying the entries, as `place.data_entries.with_source(map_editor).with_attribute(:name).destroy_all`, has the same effect from the next forge.
 
 Entries keep being applied at every forge until they are deleted. To make a value written directly to a column stick, or to let a lower source's value win, delete the outranking entries:
 
@@ -214,13 +221,20 @@ A source can be made authoritative for some attributes regardless of its own pre
 
 ### When a source stops reporting a record
 
-To blank what the source supplied, remove its entries inside the `forge!` block. Attributes a higher source supplies are unaffected, and once the marked entries are gone the next forge falls back to lower sources.
+To blank what the source supplied, record `nil` for it. Attributes a higher source supplies are unaffected.
+
+  ```ruby
+    place.record_data_entries({ name: nil, phone_number: nil }, business_directory)
+    place.forge!
+  ```
+
+To stop applying what the source supplied instead, remove its entries. Each attribute falls back to the next source, or keeps its value where no other source has one.
 
   ```ruby
     place.forge! { place.remove_data_entries(attribute_names: %i[name phone_number], sources: business_directory) }
   ```
 
-For columns that cannot be blank, remove the entries outside `forge!` and save an explicit value. The entries are deleted on save without the attribute being forged.
+To save an explicit value instead, such as for a column that cannot be blank, remove the entries outside `forge!` and save the value. The entries are deleted on save without the attribute being forged.
 
   ```ruby
     place.remove_data_entries(attribute_names: :listed, sources: business_directory)
