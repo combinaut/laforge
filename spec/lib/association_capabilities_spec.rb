@@ -611,6 +611,18 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([cafe])
     end
 
+    it 'keeps a partial report an earlier forge, not saved yet, emptied, once the source includes a member again', capability: 'C126' do
+      place.record_data_entries({ place_categories: categories(cafe) }, low, mode: :partial)
+      place.forge!
+      place.reload.record_data_entries({ place_categories: [] }, low, mode: :partial)
+      place.forge # withdraws the café and marks the emptied report for destruction, unsaved
+      place.record_data_entries({ place_categories: categories(bakery) }, low, mode: :partial)
+      place.forge!
+
+      expect(categories_of(place)).to eq([bakery])
+      expect(place.data_entries.with_attribute(:place_categories)).to exist
+    end
+
     it 'keeps a member an earlier forge, not saved yet, removed, once a forge includes it again', capability: 'C121' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
       place.forge!

@@ -144,6 +144,18 @@ describe 'Usage' do
       expect(record.reload.tap(&:forge).name).to eq('From Cadastre') # and the next forge agrees
     end
 
+    it 'keeps a value recorded again after its entry was removed, unsaved' do
+      record.record_data_entry(:name, 'From Map Editor', map_editor)
+      record.forge!
+
+      record.remove_data_entries(attribute_names: :name, sources: map_editor)
+      record.record_data_entry(:name, 'Renamed In Map Editor', map_editor)
+      record.forge!
+
+      expect(record.reload.name).to eq('Renamed In Map Editor')
+      expect(record.data_entries.with_source(map_editor).with_attribute(:name)).to exist
+    end
+
     it 'blanks the attribute when the editor records nil' do
       record.record_data_entry(:name, 'From Map Editor', map_editor)
       record.forge!

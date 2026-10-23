@@ -503,14 +503,14 @@ module LaForge
     # recorded at, edit, precedence], ...], were recorded on it, without recording it
     def laforge_forge_diff_with(reported)
       entries = data_entries.to_a
-      values = entries.to_h { |entry| [entry, [entry.value, entry.recorded_at]] }
+      values = entries.to_h { |entry| [entry, [entry.value, entry.recorded_at, entry.marked_for_destruction?]] }
       rules = precedence_rules.to_a # a precedence given with the report builds or changes rules, which the owner's next save would write
       precedences = rules.to_h { |rule| [rule, [rule.precedence, rule.marked_for_destruction?]] }
       reported.each { |source_id, attributes, recorded_at, edit, precedence| laforge_record_reported(attributes, source_id, recorded_at, edit: edit, precedence: precedence) }
       forge_diff
     ensure
       data_entries.target.replace(entries)
-      values.each { |entry, (value, recorded_at)| entry.value = value; entry.recorded_at = recorded_at }
+      values.each { |entry, (value, recorded_at, marked)| entry.value = value; entry.recorded_at = recorded_at; entry.instance_variable_set(:@marked_for_destruction, marked) }
       precedence_rules.target.replace(rules)
       precedences.each { |rule, (precedence, marked)| rule.precedence = precedence; rule.instance_variable_set(:@marked_for_destruction, marked) }
     end
@@ -539,10 +539,11 @@ module LaForge
     private
 
     # An entry's recorded_at is when its value last changed by being recorded, so a report kept for later can be told
-    # apart from a newer value
+    # apart from a newer value. Recording again onto an entry marked for destruction undoes the unsaved removal.
     def write_data_entry(attribute_name, value, source, precedence: NOT_GIVEN, recorded_at: Time.current)
       data_entry = filter_data_entries_in_memory(attributes: attribute_name, sources: source).first
       data_entry ||= data_entries.build(attribute_name: attribute_name, source_id: DataSource.normalize_source_id(source))
+      data_entry.instance_variable_set(:@marked_for_destruction, false)
       data_entry.value = value
       data_entry.recorded_at = recorded_at if data_entry.new_record? || data_entry.will_save_change_to_value?
       write_precedence_rule(self.class.laforge_attribute_group(attribute_name) || attribute_name, source, precedence) unless precedence.equal?(NOT_GIVEN)
