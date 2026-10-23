@@ -1423,6 +1423,7 @@ describe 'Association tracking capabilities' do
       PinnedPlace.has_many :pins, class_name: 'ActiveRecordMock', foreign_key: :parent_id # each pin references a subject of any model
       PinnedPlace.laforged(associations: { pins: {} })
       pinned_place = PinnedPlace.create!(name: 'Harbor Building')
+      ActiveRecordMock.where(parent_id: pinned_place.id).delete_all # rows other specs left pointing at this id
 
       expect(PinnedPlace.laforged_association(:pins).key).to eq(%w[subject_id subject_type])
       pinned_place.record_data_entries({ pins: [{ subject_id: 1, subject_type: 'Category' }, { subject_id: 1, subject_type: 'Parcel' }] }, low)
