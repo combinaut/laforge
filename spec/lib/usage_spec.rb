@@ -886,6 +886,14 @@ describe 'Usage' do
       expect(ActiveRecordMock.precedence_order(attribute: :name).first).to eq(source: cadastre, level: :model)
     end
 
+    it 'lists a source with no global precedence last, with no level' do
+      LaForge::PrecedenceRule.global.where(source_id: cadastre.id).delete_all # as an upgrade leaves a deleted source's entries
+
+      expect(ActiveRecordMock.precedence_order.last).to include(source: cadastre, level: nil)
+    ensure
+      cadastre.update!(precedence: 31) # specs in other files expect every source to have a global precedence
+    end
+
     it 'sets the global order, renumbering every source and keeping those it leaves out below, in their order' do
       ActiveRecord::Base.transaction do
         LaForge.update_precedence_order([cadastre, map_editor])

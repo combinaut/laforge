@@ -89,10 +89,14 @@ module LaForge
     end
 
     # The sources ranked highest first, as [{ source:, level: }], given each source's rank (see PrecedenceRule::Resolver)
-    # from the block and the names of the rank's levels
+    # from the block and the names of the rank's levels. A source with no rule at any level, such as one whose global
+    # rule was deleted, ranks last with a nil level.
     def self.order_by_rank(sources, levels)
       ranked = sources.map { |source| [source, yield(source)] }.sort_by { |source, rank| rank.map(&:-@) + [source.id] }
-      ranked.map { |source, rank| { source: source, level: levels[rank.index { |precedence| precedence != -Float::INFINITY }] } }
+      ranked.map do |source, rank|
+        level = rank.index { |precedence| precedence != -Float::INFINITY }
+        { source: source, level: level && levels[level] }
+      end
     end
   end
 
