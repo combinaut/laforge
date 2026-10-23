@@ -1,7 +1,12 @@
 # Moves source and entry priorities into laforge_precedence_rules as precedence rules: each source's priority becomes
 # its global rule, and each entry's custom priority becomes a rule for that record, attribute and source.
+#
+# `up` checks the sources first, and changes nothing if a source has no priority or two share one: those would be lost
+# or collide in the unique index on global precedences, leaving the migration half done.
 class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
   def up
+    assert_priorities_migratable!
+
     create_table :laforge_precedence_rules do |t|
       t.string :record_type, null: false, default: ''
       t.bigint :record_id, null: false, default: 0
@@ -28,6 +33,18 @@ class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version
 
     remove_column :laforge_data_entries, :priority
     remove_column :laforge_data_sources, :priority
+  end
+
+  # Raises, naming the sources, unless every source has a priority and no two share one
+  def assert_priorities_migratable!
+    missing = select_values("SELECT name FROM laforge_data_sources WHERE priority IS NULL ORDER BY name")
+    raise "Give these LaForge data sources a priority before migrating, as each becomes the source's global precedence: #{missing.join(', ')}" if missing.any?
+
+    shared = select_rows("SELECT priority, name FROM laforge_data_sources WHERE priority IN (SELECT priority FROM laforge_data_sources GROUP BY priority HAVING COUNT(*) > 1) ORDER BY priority, name")
+    return if shared.empty?
+
+    described = shared.group_by(&:first).map { |priority, rows| "#{priority} (#{rows.map(&:last).join(', ')})" }
+    raise "LaForge data sources share priorities #{described.join('; ')}; give each source a unique priority before migrating, as global precedences are unique"
   end
 
   def down
