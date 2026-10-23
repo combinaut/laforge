@@ -300,8 +300,10 @@ module LaForge
     end
 
     # Every belongs_to on the member other than the one pointing back at the owner identifies a join member
+    # A polymorphic reference is identified by its type as well as its id, since records of two models can share an id
     def derived_key
-      klass.reflect_on_all_associations(:belongs_to).reject { |reference| reference.foreign_key.to_s == owner_foreign_key }.map { |reference| reference.foreign_key.to_s }
+      references = klass.reflect_on_all_associations(:belongs_to).reject { |reference| reference.foreign_key.to_s == owner_foreign_key }
+      references.flat_map { |reference| reference.polymorphic? ? [reference.foreign_key.to_s, reference.foreign_type.to_s] : [reference.foreign_key.to_s] }
     end
 
     def reference_reflections

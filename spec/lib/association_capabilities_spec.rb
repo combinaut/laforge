@@ -1361,6 +1361,19 @@ describe 'Association tracking capabilities' do
       expect { WrappingPlace.laforged }.not_to raise_error # declaring again finds LaForge's own methods
     end
 
+    it "keys a join member by a polymorphic reference's type as well as its id", capability: 'C119' do
+      stub_const('PinnedPlace', Class.new(ActiveRecord::Base))
+      PinnedPlace.table_name = 'places'
+      PinnedPlace.has_many :pins, class_name: 'ActiveRecordMock', foreign_key: :parent_id # each pin references a subject of any model
+      PinnedPlace.laforged(associations: { pins: {} })
+      pinned_place = PinnedPlace.create!(name: 'Harbor Building')
+
+      expect(PinnedPlace.laforged_association(:pins).key).to eq(%w[subject_id subject_type])
+      pinned_place.record_data_entries({ pins: [{ subject_id: 1, subject_type: 'Category' }, { subject_id: 1, subject_type: 'Parcel' }] }, low)
+      pinned_place.forge!
+      expect(ActiveRecordMock.where(parent_id: pinned_place.id).pluck(:subject_type, :subject_id)).to contain_exactly(['Category', 1], ['Parcel', 1])
+    end
+
     it 'keys owned records by primary key unless key: names other columns', capability: 'C40' do
       expect(Place.laforged_association(:tenants).key).to eq(%w[id])
       expect(Tenant.laforged_association(:opening_hours).key).to eq(%w[day])

@@ -430,7 +430,7 @@ A `belongs_to` association needs no declaration: record the associated record, o
 
 Tracking a `has_many` or `has_one` association is about membership: which records belong to it. Every member is identified by a key:
 
-- The rows of a join model, such as those behind a `has_many :through`, are identified by the records they reference. LaForge derives that key from the association's reflection: every `belongs_to` on the member other than the one pointing back at the owner.
+- The rows of a join model, such as those behind a `has_many :through`, are identified by the records they reference. LaForge derives that key from the association's reflection: every `belongs_to` on the member other than the one pointing back at the owner, with its type column for a polymorphic one.
 - Other records, such as tenants, are identified by their primary key. A source names an existing member by its `id`, and a new member by its attributes alone (see [Naming members](#naming-members)).
 - `key:` names other columns instead, for a natural key such as a weekday, or an identifier every source shares. It also overrides a derived key, as `key: :id` does for an owned model that happens to belong to another record.
 - A `has_one` with no key has a single member, which every source reports.
