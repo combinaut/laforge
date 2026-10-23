@@ -1,22 +1,37 @@
 module LaForge
-  # One source's report of a tracked association's members, as stored in its data entry on the owner.
+  # Used to read and build the value of a source's `DataEntry` for a tracked association, which is the source's report
+  # of the association's members. Members are named by key (see AssociationConfig).
   #
-  # A complete report is an array of members: it includes every member it lists and excludes every other member some
-  # report has named. It is stored as { 'include' => [...], 'withdrawn' => [...] } while it remembers members it used to
-  # include, until a forge has acted on them.
-  # A partial report is { 'partial' => true, 'include' => [...], 'exclude' => [...], 'withdrawn' => [...] }: it has an
-  # opinion only on the members it includes or excludes. 'withdrawn' keeps the keys of members it used to include, so a
-  # member nobody includes any more can be removed, while rows no source ever reported are left alone.
+  # A report is one of:
+  # - complete: has an opinion on every member. It includes the members it lists and excludes every other member some
+  #   report names.
+  # - partial: has an opinion only on the members it includes or excludes, and leaves the rest to other sources.
   #
-  # Members are listed by key. What the source said about an included member besides its key is kept in 'pending', as
-  # [{ 'key' => {...}, 'attributes' => {...}, 'recorded_at' => time }], until a forge of the owner records it on the
-  # member. An item from an edit also has 'edit' => true, so its nested lists are recorded as edits, and a member can
-  # have several, recorded in order. A complete report with pending attributes is stored as
-  # { 'include' => [...], 'pending' => [...] }.
+  # A report holds these lists:
+  # - include: the members it includes.
+  # - exclude: the members a partial report excludes. A complete report has none, since it excludes a member by leaving
+  #   it out.
+  # - withdrawn: the members it included before and no longer names. They stay named until the next forge, which
+  #   removes each one no report includes and drops the source's entries on each one it keeps, then empties the list.
+  #   A row no report names is left alone.
+  # - pending: what the source said about included members besides their keys, until a forge of the owner includes the
+  #   member and records it there. A member can have several items, recorded oldest first. Each item holds:
+  #   - 'key': the member's key
+  #   - 'attributes': what the source said about the member
+  #   - 'recorded_at': when the source said it
+  #   - 'edit': true for an item from an edit, whose nested lists are then recorded as edits
+  #   - 'precedence': when present, given to every attribute the item records, as recording them directly with
+  #     `precedence:` would. nil removes the source's precedence for them.
+  # - tombstones: what each member a partial report excluded was, once a forge has removed its row (see Tombstone).
+  #   Each item is { 'key' => { 'tombstone' => token }, 'attributes' => {...}, 'excluded_at' => time }, and every report
+  #   names the member by that tombstone key from then on. A tombstone is kept until its source forgets the member,
+  #   records a complete report, or withdraws its whole report.
   #
-  # A partial report that excluded a member keyed by primary key whose row is now gone names it in 'exclude' by a
-  # tombstone key, { 'tombstone' => token }, and keeps what it was in 'tombstones', as
-  # [{ 'key' => {...}, 'attributes' => {...}, 'excluded_at' => time }], until the source forgets it.
+  # The stored value is:
+  # - complete: the array of included members, or { 'include' => [...] } with 'withdrawn' and 'pending' when either has
+  #   items
+  # - partial: { 'partial' => true, 'include' => [...], 'exclude' => [...], 'withdrawn' => [...] }, with 'pending' and
+  #   'tombstones' when either has items
   class MemberList
     attr_reader :include, :exclude, :withdrawn, :pending, :tombstones
 
@@ -24,7 +39,8 @@ module LaForge
       value(include: include, exclude: exclude, withdrawn: withdrawn, pending: pending, tombstones: tombstones, partial: true)
     end
 
-    # The value stored for a report; pending items whose attributes are empty are left out
+    # Returns the value stored for a report with the given lists. Pending items whose attributes are empty are left out,
+    # and so are the exclusions and tombstones given for a complete report.
     def self.value(include: [], exclude: [], withdrawn: [], pending: [], tombstones: [], partial: false)
       pending = pending.reject { |item| item['attributes'].empty? }
       value = partial ? { 'partial' => true, 'include' => include, 'exclude' => exclude, 'withdrawn' => withdrawn } : include
@@ -39,8 +55,8 @@ module LaForge
       { 'key' => key_hash, 'attributes' => attributes, 'excluded_at' => excluded_at.utc.iso8601(6) }
     end
 
-    # An item with 'precedence' gives that precedence to every attribute it records, as recording them directly with
-    # `precedence:` would; nil removes it
+    # Returns a pending item for the member with the given key. It has 'precedence' only when `precedence:` is given, so
+    # an explicit nil is kept and removes the source's precedence.
     def self.pending_item(key_hash, attributes, recorded_at, edit: false, precedence: NOT_GIVEN)
       item = { 'key' => key_hash, 'attributes' => attributes, 'recorded_at' => recorded_at.utc.iso8601(6) }
       item['edit'] = true if edit
@@ -48,7 +64,9 @@ module LaForge
       item
     end
 
-    # A report marked for destruction says nothing: a complete one excludes everything, a partial one withdraws all
+    # Reads a report from its stored value. `marked: true` reads the report of an entry marked for destruction, which
+    # includes nothing, has no pending items or tombstones, and withdraws every member it included. A complete one then
+    # excludes every member, and a partial one has no opinion on any.
     def initialize(value, marked: false)
       if value.is_a?(Hash) && value['partial']
         @partial = true
@@ -70,14 +88,15 @@ module LaForge
       @partial
     end
 
-    # The stored value for this report with its pending items replaced
+    # Returns the stored value for this report with `pending` as its pending items.
     def with_pending(pending)
       self.class.value(include: include, exclude: exclude, withdrawn: withdrawn, pending: pending, tombstones: tombstones, partial: partial?)
     end
 
-    # The stored value for this report with the members named by the keys in `names` ({ key values => key hash }) named
-    # by those key hashes instead, such as a new member's placeholder replaced by its id. A tombstone renamed this way
-    # names a row again, so it is no longer kept. Members that become the same member are listed once.
+    # Returns the stored value for this report with each member whose key is in `names` named by the key hash `names`
+    # maps that key to, in every list and pending item. For example, `{ ['new', '9f2c4e1a7b3d5f60'] => { 'id' => 42 } }`
+    # names a new member by the id it was saved with. Members that end up with the same key are listed once. A tombstone
+    # whose key is renamed is dropped, since its member is named by a row again.
     def renamed(config, names)
       rename = ->(member) { names[config.key_of(member)] || member }
       unique = ->(list) { list.map(&rename).uniq { |member| config.key_of(member) } }
@@ -86,7 +105,8 @@ module LaForge
       self.class.value(include: unique.(include), exclude: unique.(exclude), withdrawn: unique.(withdrawn), pending: pending, tombstones: tombstones, partial: partial?)
     end
 
-    # :include, :exclude, or nil when this report has no opinion on the member with the given key
+    # Returns :include or :exclude for the member with the given key, or nil when this report has no opinion on it. A
+    # complete report excludes every member it does not include.
     def decision(config, key)
       return :include if include.any? { |member| config.key_of(member) == key }
       return :exclude if !partial? || exclude.any? { |member| config.key_of(member) == key }
@@ -98,7 +118,6 @@ module LaForge
       withdrawn.any? { |member| config.key_of(member) == key }
     end
 
-    # Every key this report has ever had an opinion on, as key hashes
     def reported_keys(config)
       (include + exclude + withdrawn).map { |member| config.key_hash(member) }.uniq
     end
