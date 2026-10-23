@@ -18,8 +18,12 @@ module LaForge
   # "Any" is stored as `ANY_TYPE`, `ANY_ID` or `ANY_ATTRIBUTE` and never as NULL, which a unique index lets repeat, so
   # the unique index on the scope and source covers every level. The generated `global_precedence` column holds the
   # precedence of global rules only, so a unique index on it keeps the global order free of ties.
+  #
+  # Only a record's own rules can expire (see Expiring), so the model-wide and global rules `PrecedenceCache` holds do
+  # not depend on the time.
   class PrecedenceRule < ::ActiveRecord::Base
     self.table_name = "laforge_precedence_rules"
+    include Expiring
 
     ANY_TYPE = ''.freeze
     ANY_ID = 0
@@ -34,6 +38,7 @@ module LaForge
     validates :precedence, presence: true, numericality: { only_integer: true }
     validates :source_id, uniqueness: { scope: %i[record_type record_id attribute_name] }
     validate :scope_is_one_of_the_four_levels
+    validate :expires_only_on_one_record
 
     # A rule change clears the precedence cache at once, so later forges in the same transaction see it, and a rollback
     # clears it again, so no forge sees the undone change
@@ -61,7 +66,7 @@ module LaForge
 
     # Used to rank a source's value for one attribute of a record. It reads a model's model-wide rules and the global
     # rules once, through `PrecedenceCache`, and takes a record's own rules from its in-memory association, so unsaved
-    # rules count and rules marked for destruction do not.
+    # rules count, and rules marked for destruction or expired do not.
     class Resolver
       def initialize(model)
         @model = model
@@ -113,7 +118,7 @@ module LaForge
       def record_rule(record, attribute_name, source_id)
         return unless record.respond_to?(:precedence_rules)
 
-        record.precedence_rules.find { |rule| !rule.marked_for_destruction? && rule.attribute_name == attribute_name && rule.source_id == source_id }&.precedence
+        record.precedence_rules.find { |rule| !rule.marked_for_destruction? && !rule.expired? && rule.attribute_name == attribute_name && rule.source_id == source_id }&.precedence
       end
     end
 
@@ -125,6 +130,14 @@ module LaForge
       elsif record_id != ANY_ID && attribute_name == ANY_ATTRIBUTE
         errors.add(:attribute_name, 'is required for a rule on one record')
       end
+    end
+
+    def expires_only_on_one_record
+      return if record_id != ANY_ID || (expires_at.nil? && expires_on_source_id.nil?)
+
+      rule = global? ? 'a global rule' : "a model-wide rule on #{record_type}"
+      raise ArgumentError, "Only a precedence rule on one record can expire, and this is #{rule}. Model-wide and global rules are configuration: " \
+                           'leave out expires_at and expires_on_source, and set the order again when it should change, or set the rule on each record'
     end
   end
 end

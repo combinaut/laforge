@@ -4,20 +4,21 @@ module LaForge
     class Complete < MemberList
       # Returns the value stored for a complete report with the given lists. It has no exclusions or tombstones, so
       # those given are left out, and so are pending items whose attributes are empty.
-      def self.value(include: [], exclude: [], withdrawn: [], pending: [], tombstones: [])
+      def self.value(include: [], exclude: [], withdrawn: [], pending: [], tombstones: [], expiries: [])
         pending = pending.reject { |item| item['attributes'].empty? }
-        return include if withdrawn.empty? && pending.empty?
+        return include if withdrawn.empty? && pending.empty? && expiries.empty?
 
         value = { 'include' => include }
         value['withdrawn'] = withdrawn if withdrawn.any?
+        value['expiries'] = expiries if expiries.any?
         value['pending'] = pending if pending.any?
         value
       end
 
       # Returns the stored value for a complete report of `include` replacing `previous`, withdrawing what `previous`
       # included or withdrew and this one leaves out (see `MemberList#left_out_by`)
-      def self.replacing(previous, config, include:, pending:)
-        value(include: include, withdrawn: previous.left_out_by(config, include), pending: pending)
+      def self.replacing(previous, config, include:, pending:, expiries:)
+        value(include: include, withdrawn: previous.left_out_by(config, include), pending: pending, expiries: expiries)
       end
 
       def initialize(value, marked: false)
@@ -27,15 +28,17 @@ module LaForge
         @withdrawn = Array(value.is_a?(Hash) ? value['withdrawn'] : nil) + (marked ? listed : [])
         @pending = marked || !value.is_a?(Hash) ? [] : Array(value['pending'])
         @tombstones = []
+        @expiries = marked || !value.is_a?(Hash) ? [] : Array(value['expiries'])
       end
 
       def partial?
         false
       end
 
-      # Returns :include for a member this report includes, and :exclude for every other member
+      # Returns :include for a member this report includes by an inclusion that has not expired, and :exclude for every
+      # other member
       def decision(config, key)
-        includes?(config, key) ? :include : :exclude
+        includes?(config, key) && !expired?(config, key) ? :include : :exclude
       end
 
       # Returns false, since an empty complete report still excludes every member
@@ -44,10 +47,12 @@ module LaForge
       end
 
       # Returns the stored value for this report leaving out the member named by the key hash `member`, without its
-      # pending items, and withdrawing it when this report included it
-      def excluding(config, member)
+      # pending items, and withdrawing it when this report included it. The member's expiry is replaced as `including`
+      # replaces it.
+      def excluding(config, member, expiry: nil)
         key = config.key_of(member)
-        with(include: others(config, include, key), withdrawn: withdrawn_with(config, member), pending: items_without(config, pending, key))
+        with(include: others(config, include, key), withdrawn: withdrawn_with(config, member), pending: items_without(config, pending, key),
+             expiries: expiries_with(config, key, expiry))
       end
     end
   end

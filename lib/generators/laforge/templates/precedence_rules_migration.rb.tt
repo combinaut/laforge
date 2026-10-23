@@ -19,7 +19,7 @@ class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version
       t.references :source, null: false, index: false, foreign_key: { to_table: :laforge_data_sources, on_delete: :cascade }
       t.integer :precedence, null: false
       t.virtual :global_precedence, type: :integer, as: "CASE WHEN record_type = '' THEN precedence END", stored: true
-      t.timestamps null: false
+      t.timestamps precision: 6, null: false
       t.index %i[record_type record_id attribute_name source_id], unique: true, name: :index_laforge_precedence_rules_on_scope_and_source
       t.index :global_precedence, unique: true
     end

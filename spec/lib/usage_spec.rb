@@ -790,7 +790,7 @@ describe 'Usage' do
       record.remove_data_entries(sources: cadastre)
       record.save!
 
-      expected = { record_type: 'ActiveRecordMock', record_id: record.id, attribute_name: 'name', source_id: cadastre.id }
+      expected = { record_type: 'ActiveRecordMock', record_id: record.id, attribute_name: 'name', source_id: cadastre.id, expires_at: nil, expires_on_source_id: nil }
       expect(events).to eq([
         expected.merge(value_was: nil, value: 'From Cadastre', destroyed: false),
         expected.merge(value_was: 'From Cadastre', value: 'Renamed', destroyed: false),
@@ -913,6 +913,191 @@ describe 'Usage' do
       record.save!
 
       expect(LaForge::PrecedenceRule.for_records(ActiveRecordMock).pluck(:record_id, :attribute_name)).to eq([[record.id, 'name']])
+    end
+  end
+
+  # An editor's change that should hold for a while, or until a source's next import, after which the record goes back
+  # to what its sources say without it
+  describe 'expiring a change' do
+    include ActiveSupport::Testing::TimeHelpers
+
+    before do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.record_data_entries({ name: 'From Business Directory', count: 7 }, business_directory)
+      record.forge!
+    end
+
+    it 'falls back to the next source once a value expires, from the next forge, and keeps the expired entry' do
+      record.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor, expires_at: 1.week.from_now)
+      record.forge!
+      expect(record.reload.name).to eq('Renamed in the Map Editor')
+
+      travel 8.days do
+        expect(record.reload.name).to eq('Renamed in the Map Editor') # nothing changes until the next forge
+        record.forge!
+        expect(record.reload.name).to eq('From Business Directory')
+        expect(record.data_entries.with_source(map_editor).sole).to have_attributes(value: 'Renamed in the Map Editor', expired?: true)
+      end
+    end
+
+    it 'expires a value the next time the source it expires on records the attribute, whatever that source reports' do
+      record.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor, expires_on: cadastre)
+      record.forge!
+      record.reload.record_data_entries({ count: 6 }, cadastre) # another attribute
+      record.forge!
+      expect(record.reload.name).to eq('Renamed in the Map Editor')
+
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre) # the same value
+      record.forge!
+
+      expect(record.reload.name).to eq('From Business Directory')
+      expect(record.data_entries.with_source(map_editor).sole).to have_attributes(expires_at: be_within(1.minute).of(Time.current), expires_on_source: cadastre)
+    end
+
+    it 'counts a change not saved yet as made now, so only a later recording ends it' do
+      travel_to(Time.current.change(usec: 0)) do # one instant for the whole save
+        record.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor, expires_on: cadastre)
+        record.record_data_entries({ name: 'From Cadastre' }, cadastre)
+        record.forge!
+      end
+      expect(record.reload.name).to eq('Renamed in the Map Editor')
+
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre)
+      record.forge!
+      expect(record.reload.name).to eq('From Business Directory')
+    end
+
+    it "expires a record's precedence order, so the next level's order applies again" do
+      record.update_precedence_order(:name, [cadastre], expires_at: 1.week.from_now)
+      record.update_precedence_order(:count, [cadastre], expires_on: business_directory)
+      record.forge!
+      expect(record.reload).to have_attributes(name: 'From Cadastre', count: 5)
+
+      record.record_data_entries({ count: 7 }, business_directory)
+      record.forge!
+      expect(record.reload).to have_attributes(name: 'From Cadastre', count: 7)
+
+      travel 8.days do
+        record.reload.forge!
+        expect(record.reload.name).to eq('From Business Directory')
+        expect(record.precedence_order(:name).first).to eq(source: map_editor, level: :global)
+        expect(record.source_precedences).to eq({})
+        expect(record.precedence_rules.size).to eq(2) # both expired rules are kept
+      end
+    end
+
+    it 'expires a value and the precedence that keeps it on top together, set in one save' do
+      record.record_data_entries({ name: 'Pinned by Cadastre' }, cadastre, precedence: 100, expires_on: business_directory)
+      record.save!
+      record.forge!
+      expect(record.reload.name).to eq('Pinned by Cadastre')
+
+      record.record_data_entries({ name: 'From Business Directory' }, business_directory)
+      record.forge!
+
+      expect(record.reload.name).to eq('From Business Directory')
+      expect(LaForge::PrecedenceRule.for_records(ActiveRecordMock).expired.pluck(:source_id)).to eq([cadastre.id])
+    end
+
+    it 'replaces the expiry when the value is recorded or the order set again, and clears it when left out' do
+      record.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor, expires_at: 1.week.from_now)
+      record.update_precedence_order(:name, [map_editor], expires_on: cadastre)
+      record.save!
+      record.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor, expires_at: 2.weeks.from_now)
+      record.update_precedence_order(:name, [map_editor])
+      record.save!
+
+      expect(record.data_entries.with_source(map_editor).sole.expires_at).to be_within(1.minute).of(2.weeks.from_now)
+      expect(record.precedence_rules.sole).to have_attributes(expires_at: nil, expires_on_source_id: nil)
+
+      record.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor)
+      record.save!
+      expect(record.data_entries.with_source(map_editor).sole.expires_at).to be_nil
+    end
+
+    it 'lists what expires before a time, so the application can forge those records on time and warn ahead of it' do
+      record.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor, expires_at: 3.days.from_now)
+      record.update_precedence_order(:count, [cadastre], expires_at: 10.days.from_now)
+      record.save!
+
+      expect(LaForge::DataEntry.expiring(before: 1.week.from_now).pluck(:record_id, :attribute_name)).to eq([[record.id, 'name']])
+      expect(LaForge::PrecedenceRule.expiring(before: 1.week.from_now)).to be_empty
+      expect(LaForge::PrecedenceRule.expiring(before: 2.weeks.from_now).pluck(:record_id)).to eq([record.id])
+      travel 4.days do
+        expect(LaForge::DataEntry.expired.count).to eq(1)
+        expect(LaForge::DataEntry.unexpired.count).to eq(4)
+      end
+    end
+
+    it 'publishes the expiry with the change it records, and an expiry changed alone, but nothing when it passes' do
+      events = []
+      subscription = ActiveSupport::Notifications.subscribe(LaForge::DataEntry::CHANGED) { |*, payload| events << payload.slice(:source_id, :value, :expires_at, :expires_on_source_id) }
+      expires_at = 1.week.from_now
+      record.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor, expires_at: expires_at)
+      record.forge!
+      record.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor) # the same value, its expiry cleared
+      record.forge!
+      record.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor, expires_at: 1.day.from_now)
+      record.forge!
+
+      travel 2.days do
+        expect { record.reload.forge! }.not_to change(events, :size) # an expiry passing changes no entry
+        expect(record.reload.name).to eq('From Business Directory')
+      end
+
+      renamed = { source_id: map_editor.id, value: 'Renamed in the Map Editor', expires_on_source_id: nil }
+      expect(events).to match([renamed.merge(expires_at: be_within(1.second).of(expires_at)), renamed.merge(expires_at: nil),
+                               renamed.merge(expires_at: be_within(1.minute).of(1.day.from_now))])
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscription)
+    end
+
+    it 'publishes the waiting entry when an expiry on a source fires and the entry is saved' do
+      record.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor, expires_on: cadastre)
+      record.forge!
+      events = []
+      subscription = ActiveSupport::Notifications.subscribe(LaForge::DataEntry::CHANGED) { |*, payload| events << payload.slice(:source_id, :value_was, :value, :expires_at, :expires_on_source_id) }
+
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre) # the same value, so only the waiting entry changes
+      record.forge!
+
+      expect(events).to match([{ source_id: map_editor.id, value_was: 'Renamed in the Map Editor', value: 'Renamed in the Map Editor',
+                                 expires_at: be_within(1.minute).of(Time.current), expires_on_source_id: cadastre.id }])
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscription)
+    end
+
+    it 'expires a belongs_to association recorded as its foreign key' do
+      parent = ActiveRecordMock.create!(name: 'Parent')
+      record.record_data_entries({ parent: parent }, map_editor, expires_at: 1.week.from_now)
+      record.forge!
+
+      expect(record.reload.parent).to eq(parent)
+      expect(record.data_entries.with_attribute(:parent_id).sole.expires_at).to be_within(1.second).of(1.week.from_now)
+    end
+
+    it 'applies an expiry on part of an attribute group to the whole group' do
+      grouped_model = Class.new(ActiveRecordMock) do
+        def self.name = 'ActiveRecordMock'
+
+        laforged attribute_groups: { listing: %i[name count] }
+      end
+      grouped = grouped_model.find(record.id)
+      grouped.record_data_entries({ name: 'From Map Editor', count: 9 }, map_editor)
+      grouped.forge!
+      grouped.data_entries.with_source(map_editor).with_attribute(:count).sole.update!(expires_at: 1.day.ago) # set on one attribute outside LaForge
+
+      expect(grouped.reload.forge_attributes).to eq('name' => 'From Business Directory', 'count' => 7)
+    end
+
+    it 'raises for an expiry it cannot apply, saying what to pass' do
+      expect { record.record_data_entries({ name: 'Renamed' }, map_editor, expires_at: '2030-01-01') }.to raise_error(ArgumentError, /expires_at: must be a time, such as 2.weeks.from_now, not "2030-01-01"/)
+      expect { record.record_data_entries({ name: 'Renamed' }, map_editor, expires_on: map_editor) }.to raise_error(ArgumentError, /expires_on: names the source recording.*Pass the source whose next report should end the change/)
+      expect { record.update_precedence_order(:name, [], expires_at: 1.week.from_now) }.to raise_error(ArgumentError, /update_precedence_order\(:name\) with no sources removes it, so there is nothing to expire/)
+      expect { record.update_attribute_source_precedence(:name, cadastre, nil, expires_on: map_editor) }.to raise_error(ArgumentError, /with a nil precedence removes it/)
+      expect { LaForge::PrecedenceRule.create!(record_type: 'ActiveRecordMock', attribute_name: 'name', source: cadastre, precedence: 1, expires_at: 1.week.from_now) }
+        .to raise_error(ArgumentError, /Only a precedence rule on one record can expire, and this is a model-wide rule on ActiveRecordMock/)
+      expect { LaForge::PrecedenceRule.global.find_by!(source: cadastre).update!(expires_on_source: map_editor) }.to raise_error(ArgumentError, /this is a global rule/)
     end
   end
 

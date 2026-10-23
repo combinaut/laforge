@@ -1,4 +1,6 @@
 require 'rails/all'
+require 'laforge/expiring'
+require 'laforge/recording_settings'
 require 'laforge/data_entry'
 require 'laforge/data_source'
 require 'laforge/precedence_cache'
