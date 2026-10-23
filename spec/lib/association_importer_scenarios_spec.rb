@@ -208,9 +208,13 @@ describe 'Association assignment by importers' do
     it "clears the registration number and restores the importer's unit once the business registry stops reporting the business" do
       register(t1, 'R-10', unit: '3C')
 
-      # Blank what the business registry supplied, then keep the tenant only if another source still reports it
-      t1.reload.forge! { t1.remove_data_entries(attribute_names: %i[registration_number unit], sources: business_registry) }
-      expect(t1.reload).to have_attributes(registration_number: nil, unit: nil)
+      # Blank the registration number, let the unit fall back to the importer's, then keep the tenant only if another
+      # source still reports it
+      t1.reload.forge! do
+        t1.record_data_entries({ registration_number: nil }, business_registry)
+        t1.remove_data_entries(attribute_names: :unit, sources: business_registry)
+      end
+      expect(t1.reload).to have_attributes(registration_number: nil, unit: '1A')
       expect(t1.data_source_names).to include(business_directory.name)
 
       import(place.reload, business_directory, tenants: [tenant('T-1', unit: '1A'), tenant('T-2', unit: '1A')])
