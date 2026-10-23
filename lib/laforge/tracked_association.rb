@@ -203,10 +203,10 @@ module LaForge
     def forge
       return if reports.empty?
 
-      include_scheduled_members
+      include_removed_members
       recognise_tombstones(save: true)
       discard_created
-      records = included_records + undecided.map { |key| existing.delete(key) } # one an earlier forge scheduled for removal stays scheduled
+      records = included_records + undecided.map { |key| existing.delete(key) } # one an earlier forge removed stays in the owner's pending writes
       write_order(records)
       forge_members(records)
       clear_pending
@@ -301,10 +301,10 @@ module LaForge
       [included, excluded]
     end
 
-    # Adds the members an earlier forge scheduled for removal and the owner has not saved since to `existing`, so this
-    # forge can include them again
-    def include_scheduled_members
-      owner.laforge_scheduled_members(config).each { |record| existing[config.record_key(record)] ||= record }
+    # Adds the members an earlier forge removed in the owner's pending writes to `existing`, so this forge can include
+    # them again
+    def include_removed_members
+      owner.laforge_pending_writes.removed_members(config).each { |record| existing[config.record_key(record)] ||= record }
     end
 
     # Names each new member whose pending item the tombstone matcher matches to a tombstone by that tombstone's key in
@@ -365,7 +365,7 @@ module LaForge
       included.filter_map do |member|
         key = config.key_of(member)
         items = pending.fetch(key, [])
-        record = existing.delete(key)&.tap { |kept| owner.laforge_cancel_removal(config, kept) } || created[key] || add(member, described: items.any?)
+        record = existing.delete(key)&.tap { |kept| owner.laforge_pending_writes.cancel_removal(config, kept) } || created[key] || add(member, described: items.any?)
         next unless record
 
         recorded = items.map { |source_id, attributes, recorded_at, edit, precedence| record.laforge_record_reported(attributes, source_id, recorded_at, edit: edit, precedence: precedence) }
@@ -491,10 +491,10 @@ module LaForge
     # A has_one's target becomes the first of `records`.
     def remove_unclaimed(records)
       if config.collection?
-        existing.each_value { |record| owner.laforge_remove(config, record) }
+        existing.each_value { |record| owner.laforge_pending_writes.remove(config, record) }
       else
         association.target = records.first
-        existing.each_value { |record| owner.laforge_remove_on_save(config, record) }
+        existing.each_value { |record| owner.laforge_pending_writes.remove_on_save(config, record) }
       end
     end
 
@@ -603,7 +603,7 @@ module LaForge
 
     # Returns the new members forges built and the owner has not saved yet, by placeholder key
     def created
-      @created ||= owner.laforge_created_members(config)
+      @created ||= owner.laforge_pending_writes.created_members(config)
     end
 
     # Returns the source's report, or `MemberList.none` when it has none or its entry is marked for destruction

@@ -175,7 +175,6 @@ module LaForge
     include Recording
     include Forging
     include Precedence
-    include ScheduledChanges
 
     # Whether the source has entries on this record
     def data_source?(source)

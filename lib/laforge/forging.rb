@@ -91,7 +91,27 @@ module LaForge
       return forged_attrs
     end
 
+    # @api private
+    # Returns this record's pending writes (see PendingWrites), which forges add to and its next save makes
+    def laforge_pending_writes
+      @laforge_pending_writes ||= PendingWrites.new(self)
+    end
+
+    # Also drops this record's pending writes, and forgets the model-wide and global rules read for the last forge, so
+    # the next ranking reads them again
+    def reload(*)
+      @laforge_pending_writes = nil
+      @laforge_precedence_resolver = nil
+      super
+    end
+
     private
+
+    # Makes this record's pending writes once it is saved, then drops them
+    def laforge_after_save
+      laforge_pending_writes.write!
+      @laforge_pending_writes = nil
+    end
 
     # Returns the association's entries in precedence order, each paired with the members its report includes, none for
     # an entry marked for destruction

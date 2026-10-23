@@ -14,7 +14,7 @@ require 'laforge/payload'
 require 'laforge/recording'
 require 'laforge/forging'
 require 'laforge/precedence'
-require 'laforge/scheduled_changes'
+require 'laforge/pending_writes'
 require 'laforge/activerecord'
 
 ActiveSupport.on_load :active_record do

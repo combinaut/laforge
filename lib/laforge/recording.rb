@@ -100,7 +100,7 @@ module LaForge
           data_entry.value = MemberList.new(data_entry.value).withdrawing_all(config)
         else
           data_entries.target.delete(data_entry)
-          owner.laforge_destroy_on_save(data_entry) if data_entry.persisted?
+          owner.laforge_pending_writes.delete_entry(data_entry) if data_entry.persisted?
         end
       end
       entries.any?
