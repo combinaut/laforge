@@ -23,13 +23,14 @@ module LaForge
     REJECTED = Object.new.freeze
 
     # The payload for `record`, an instance of `model` or nil for a new one, with Rails form shapes translated. Raises for
-    # those shapes unless `edit` is true, since they describe edits.
-    def translate(model, payload, record, edit:)
+    # those shapes unless `edit` is true, since they describe edits. `owner` is the record the form is for, new or not,
+    # which a method-based `reject_if:` is called on.
+    def translate(model, payload, record, edit:, owner: record)
       payload = payload.to_h if payload.respond_to?(:permitted?) # ActionController::Parameters, which must be permitted
       payload.to_h.stringify_keys.each_with_object({}) do |(field, value), result|
         if (name = nested_attributes_name(model, field))
           require_edit!(model, field, edit)
-          edits = nested_attributes(model.laforged_association(name), field, value, record)
+          edits = nested_attributes(model.laforged_association(name), field, value, record, owner)
           result[name] = edits unless edits.equal?(REJECTED)
         elsif (reflection = ids_reflection(model, field))
           require_edit!(model, field, edit)
@@ -69,11 +70,11 @@ module LaForge
       raise ArgumentError, "#{model.name}##{field} describes edits, as a Rails form submits them; record it with mode: :edit" unless edit
     end
 
-    def nested_attributes(config, field, value, owner)
+    def nested_attributes(config, field, value, owner, form_owner)
       options = nested_attributes_options(config, field)
       unless config.collection?
         attributes = value.to_h.stringify_keys
-        return REJECTED if rejected?(config, attributes, owner, options)
+        return REJECTED if rejected?(config, attributes, form_owner, options)
 
         return destroy?(attributes, options) ? nil : member(config, attributes.except(DESTROY), owner)
       end
@@ -82,7 +83,7 @@ module LaForge
       items = items.key?('id') ? [items] : items.values if items.is_a?(Hash) # keyed by index, as Rails forms submit them
       include, exclude = [], []
       Array(items).map { |attributes| attributes.to_h.stringify_keys }.each do |attributes|
-        next if rejected?(config, attributes, owner, options)
+        next if rejected?(config, attributes, form_owner, options)
 
         if !destroy?(attributes, options)
           include << member(config, attributes.except(DESTROY), owner)
@@ -180,7 +181,7 @@ module LaForge
       attributes = attributes.with_indifferent_access
       case (reject_if = options[:reject_if])
       when Symbol
-        target = owner || config.owner_class.new # a new owner's rows are checked on an unsaved one
+        target = owner || config.owner_class.new # a member not created yet, whose own rows are checked on an unsaved one
         target.method(reject_if).arity.zero? ? target.send(reject_if) : target.send(reject_if, attributes)
       when Proc then reject_if.call(attributes) # :all_blank is stored as one
       else false

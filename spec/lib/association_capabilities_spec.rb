@@ -810,7 +810,7 @@ describe 'Association tracking capabilities' do
       expect(form_place.data_entries.map(&:attribute_name)).not_to include('marker')
     end
 
-    it 'checks reject_if: on existing rows too but never on a row being destroyed, and on an unsaved owner for a new one', capability: 'C112' do
+    it 'checks reject_if: on existing rows too but never on a row being destroyed, and on the new owner itself', capability: 'C112' do
       model = form_place_model(reject_if: ->(attributes) { attributes['unit'] == 'skip' }, allow_destroy: true)
       form_place = model.create!(name: 'Harbor Building')
       corner_cafe, harbor_books = ['Corner Café', 'Harbor Books'].map { |name| form_place.tenants.create!(name: name) }
@@ -818,11 +818,11 @@ describe 'Association tracking capabilities' do
       form_place.forge!
       expect(form_place.reload.tenants.pluck(:name)).to eq(['Corner Café'])
 
-      model = form_place_model(reject_if: :closed_tenant?) { def closed_tenant?(attributes) = attributes[:name].start_with?('Closed') }
-      new_place = model.new(name: 'Harbor Building')
+      model = form_place_model(reject_if: :closed_tenant?) { def closed_tenant?(attributes) = attributes[:name].start_with?(name) }
+      new_place = model.new(name: 'Closed')
       new_place.record_data_entries({ tenants_attributes: [{ name: 'Closed Bakery' }, { name: 'Florist' }] }, top, mode: :edit)
       new_place.forge!
-      expect(new_place.reload.tenants.pluck(:name)).to eq(['Florist'])
+      expect(new_place.reload.tenants.pluck(:name)).to eq(['Florist']) # checked on the new place itself, whose name is Closed
     end
 
     it 'raises for accepts_nested_attributes_for options it does not apply, saying what to do', capability: 'C113' do

@@ -291,7 +291,7 @@ module LaForge
       raise ArgumentError, "Unknown mode #{mode.inspect}; pass :complete, :partial or :edit" unless %i[complete partial edit].include?(mode)
 
       edit = mode == :edit
-      payload = Payload.translate(self.class, attributes_hash, (self unless new_record?), edit: edit)
+      payload = Payload.translate(self.class, attributes_hash, (self unless new_record?), edit: edit, owner: self)
       self.class.laforge_assert_whole_groups!(payload.keys.reject { |attribute_name| laforged_associations.key?(attribute_name.to_s) }, where: "Recording #{self.class.name}")
       payload.each do |attribute_name, value|
         if edit && (config = laforged_associations[attribute_name.to_s])
