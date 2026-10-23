@@ -147,7 +147,7 @@ A controller action that updates a record can do the same, which helps when it f
 
   ```ruby
     class PlacesController < ApplicationController
-      around_action(only: :update) { |_controller, action| LaForge.with_precedence_cache { action.call } }
+      around_action(only: :update) { |_controller, action| LaForge.with_precedence_cache(&action) }
     end
   ```
 
