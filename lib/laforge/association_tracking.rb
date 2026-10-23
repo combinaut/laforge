@@ -140,7 +140,7 @@ module LaForge
         described << record if recorded.any?
         record
       end
-      records += undecided.map { |key| existing.delete(key).tap { |kept| owner.laforge_cancel_removal(config, kept) } }
+      records += undecided.map { |key| existing.delete(key) } # one an earlier forge, not saved yet, removed stays removed
       records.each_with_index do |record, index|
         record[config.order_column] = config.order_descending ? records.size - 1 - index : index if config.order_column
       end

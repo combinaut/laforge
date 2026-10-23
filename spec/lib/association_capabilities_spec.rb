@@ -601,6 +601,16 @@ describe 'Association tracking capabilities' do
       expect(detaching_place.parcel_links.map(&:parcel)).to eq([lot_12])
     end
 
+    it 'still removes a member an earlier forge, not saved yet, removed, when a forge of the same report follows', capability: 'C124' do
+      place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
+      place.forge!
+      place.reload.record_data_entries({ place_categories: categories(cafe) }, low)
+      place.forge
+      place.forge!
+
+      expect(categories_of(place)).to eq([cafe])
+    end
+
     it 'keeps a member an earlier forge, not saved yet, removed, once a forge includes it again', capability: 'C121' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
       place.forge!
