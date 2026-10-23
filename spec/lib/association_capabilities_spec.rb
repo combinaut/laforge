@@ -584,6 +584,23 @@ describe 'Association tracking capabilities' do
       expect(deleting_place.tenants.map(&:name)).to eq(['Harbor Books'])
     end
 
+    it 'detaches a removed member without validating it, as assigning the collection would', capability: 'C122' do
+      stub_const('DetachingPlace', Class.new(ActiveRecord::Base))
+      DetachingPlace.table_name = 'places'
+      DetachingPlace.has_many :parcel_links, foreign_key: :place_id # no dependent:, so removal nullifies; a parcel link requires its place
+      DetachingPlace.laforged(associations: { parcel_links: {} })
+      detaching_place = DetachingPlace.create!(name: 'Harbor Building')
+      detaching_place.record_data_entries({ parcel_links: [parcel_link(lot_12, occupies), parcel_link(lot_14, occupies)] }, low)
+      detaching_place.forge!
+      removed = ParcelLink.find_by!(parcel: lot_14)
+
+      detaching_place.reload.record_data_entries({ parcel_links: [parcel_link(lot_12, occupies)] }, low)
+      expect { detaching_place.forge! }.not_to raise_error
+
+      expect(removed.reload.place_id).to be_nil
+      expect(detaching_place.parcel_links.map(&:parcel)).to eq([lot_12])
+    end
+
     it 'keeps a member an earlier forge, not saved yet, removed, once a forge includes it again', capability: 'C121' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
       place.forge!
@@ -593,6 +610,15 @@ describe 'Association tracking capabilities' do
       place.forge!
 
       expect(categories_of(place)).to contain_exactly(cafe, bakery)
+
+      place.reload.record_data_entries({ marker: { label: 'Harbor Building' } }, low)
+      place.forge!
+      marker = place.reload.marker
+      place.record_data_entries({ marker: nil }, low)
+      place.forge # takes the marker out, to be removed on save
+      place.record_data_entries({ marker: { label: 'Harbor Building' } }, low)
+      place.forge!
+      expect(place.reload.marker).to eq(marker) # the same row, not a replacement
     end
 
     it 'creates owned records and updates the same row when a source reports the same key again', capability: 'C20' do

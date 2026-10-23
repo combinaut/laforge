@@ -121,6 +121,7 @@ module LaForge
       return if reports.empty?
 
       existing = config.identified_members_of(owner)
+      owner.laforge_scheduled_members(config).each { |record| existing[config.record_key(record)] ||= record } # removed by an earlier forge, not saved yet
       reports = recognise_tombstones(owner, config, reports, save: true)
       created = owner.laforge_created_members(config)
       included, undecided = resolve(config, reports, existing)
