@@ -2,6 +2,10 @@ module LaForge
   class DataEntry < ActiveRecord::Base
     self.table_name = "laforge_data_entries"
 
+    # The values that survive being stored as JSON and read back, dates and times as strings, alone or in arrays and in
+    # hashes with string or symbol keys
+    STORABLE_TYPES = [NilClass, TrueClass, FalseClass, String, Symbol, Numeric, Date, Time, ActiveSupport::TimeWithZone].freeze
+
     belongs_to :record, polymorphic: true
     belongs_to :source, class_name: 'LaForge::DataSource'
 
@@ -52,11 +56,10 @@ module LaForge
       end.map(&:first)
     end
 
-    # Whether a value survives being stored as JSON and read back: strings, numbers, booleans, dates and times (stored
-    # as strings), nil, and arrays and hashes of those
+    # Whether a value survives being stored as JSON and read back (see STORABLE_TYPES)
     def self.storable?(value)
       case value
-      when nil, true, false, String, Symbol, Numeric, Date, Time, ActiveSupport::TimeWithZone then true
+      when *STORABLE_TYPES then true
       when Array then value.all? { |item| storable?(item) }
       when Hash then value.all? { |key, item| (key.is_a?(String) || key.is_a?(Symbol)) && storable?(item) }
       else false
