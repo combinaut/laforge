@@ -35,6 +35,11 @@ module LaForge
   class MemberList
     attr_reader :include, :exclude, :withdrawn, :pending, :tombstones
 
+    # Returns the report of a source that has none, which is a partial report with no opinion on any member
+    def self.none
+      new(partial)
+    end
+
     def self.partial(include: [], exclude: [], withdrawn: [], pending: [], tombstones: [])
       value(include: include, exclude: exclude, withdrawn: withdrawn, pending: pending, tombstones: tombstones, partial: true)
     end
@@ -105,6 +110,55 @@ module LaForge
       self.class.value(include: unique.(include), exclude: unique.(exclude), withdrawn: unique.(withdrawn), pending: pending, tombstones: tombstones, partial: partial?)
     end
 
+    # Returns the stored value for a report of `include`, and for `partial: true` of `exclude`, replacing this one. It
+    # withdraws each member this report included or withdrew and the new one does not name, except new members and
+    # tombstones. A partial replacement keeps this report's tombstones, and its exclusions of tombstones the new one
+    # does not name.
+    def replaced(config, include:, exclude:, pending:, partial:)
+      reported = (include + exclude).map { |member| config.key_of(member) }
+      withdrawn = (self.include + self.withdrawn).map { |member| config.key_hash(member) }.uniq.reject { |member| reported.include?(config.key_of(member)) || config.unsaved?(member) }
+      return self.class.value(include: include, withdrawn: withdrawn, pending: pending) unless partial
+
+      kept = self.exclude.select { |member| config.tombstone?(member) && !reported.include?(config.key_of(member)) }
+      self.class.partial(include: include, exclude: exclude + kept, withdrawn: withdrawn, pending: pending, tombstones: tombstones)
+    end
+
+    # Returns the stored value for this report including the member named by the key hash `member`, with `item` as its
+    # newest pending item
+    def including(config, member, item)
+      key = config.key_of(member)
+      lists = { include: others(config, include, key) + [member], withdrawn: others(config, withdrawn, key), pending: pending + [item] }
+      return self.class.value(**lists) unless partial?
+
+      self.class.partial(**lists, exclude: others(config, exclude, key), tombstones: tombstones)
+    end
+
+    # Returns the stored value for this report excluding the member named by the key hash `member`, without its pending
+    # items. A complete report leaves the member out, and withdraws it when it included it. A partial report adds it to
+    # its exclusions.
+    def excluding(config, member)
+      key = config.key_of(member)
+      lists = { include: others(config, include, key), pending: items_without(config, pending, key) }
+      return self.class.value(**lists, withdrawn: withdrawn_with(config, member)) unless partial?
+
+      self.class.partial(**lists, exclude: others(config, exclude, key) + [config.key_hash(member)], withdrawn: others(config, withdrawn, key), tombstones: tombstones)
+    end
+
+    # Returns the stored value for this partial report with no opinion on the member named by the key hash `member`. It
+    # drops the member's pending items and its tombstone when the member is one, and withdraws the member when the
+    # report included it.
+    def forgetting(config, member)
+      key = config.key_of(member)
+      self.class.partial(include: others(config, include, key), exclude: others(config, exclude, key), withdrawn: withdrawn_with(config, member),
+                         pending: items_without(config, pending, key), tombstones: items_without(config, tombstones, key))
+    end
+
+    # Returns the stored value for a partial report that withdraws every member this one names, so its source has no
+    # opinion on any. New members and tombstones are left out, and so are the pending items and tombstones.
+    def withdrawing_all(config)
+      self.class.partial(withdrawn: reported_keys(config).reject { |member| config.unsaved?(member) })
+    end
+
     # Returns :include or :exclude for the member with the given key, or nil when this report has no opinion on it. A
     # complete report excludes every member it does not include.
     def decision(config, key)
@@ -120,6 +174,25 @@ module LaForge
 
     def reported_keys(config)
       (include + exclude + withdrawn).map { |member| config.key_hash(member) }.uniq
+    end
+
+    private
+
+    # Returns the withdrawn list without the member named by the key hash `member`, then with it at the end when this
+    # report includes it
+    def withdrawn_with(config, member)
+      key = config.key_of(member)
+      others(config, withdrawn, key) + (decision(config, key) == :include ? [config.key_hash(member)] : [])
+    end
+
+    # Returns `list` without the member with the given key
+    def others(config, list, key)
+      list.reject { |listed| config.key_of(listed) == key }
+    end
+
+    # Returns the pending or tombstone `items` without those of the member with the given key
+    def items_without(config, items, key)
+      items.reject { |item| config.key_of(item['key']) == key }
     end
   end
 end

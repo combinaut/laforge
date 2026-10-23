@@ -47,17 +47,7 @@ module LaForge
       config.assert_references_exist!(owner, keys)
       pending = included.map { |key_hash, attributes| MemberList.pending_item(key_hash, attributes, recorded_at, precedence: precedence) }
 
-      reported = (keys + excluded).map { |member| config.key_of(member) }
-      previous = report(owner, config, source)
-      withdrawn = previous ? (previous.include + previous.withdrawn).map { |member| config.key_hash(member) }.uniq.reject { |member| reported.include?(config.key_of(member)) || config.unsaved?(member) } : []
-      value =
-        if partial
-          kept = previous ? previous.exclude.select { |member| config.tombstone?(member) && !reported.include?(config.key_of(member)) } : []
-          MemberList.partial(include: keys, exclude: excluded + kept, withdrawn: withdrawn, pending: pending, tombstones: previous&.tombstones || [])
-        else
-          MemberList.value(include: keys, withdrawn: withdrawn, pending: pending)
-        end
-
+      value = (report(owner, config, source) || MemberList.none).replaced(config, include: keys, exclude: excluded, pending: pending, partial: partial)
       owner.send(:write_data_entry, config.name, value, source, precedence: precedence, recorded_at: recorded_at)
     end
 
@@ -84,31 +74,18 @@ module LaForge
       member, attributes = config.normalize_members([member], attributes: action == :include, edit: true).first
       config.assert_references_exist!(owner, [member]) if action == :include
       config.assert_excludable!(owner, [member]) if action == :exclude
-      key = config.key_of(member)
-      previous = report(owner, config, source)
-      if action == :forget && previous && !previous.partial?
-        raise ArgumentError, "#{owner.class.name}##{config.name}: the source's report is a complete list, which has an opinion on every member, so forgetting #{config.describe_key(key)} " \
+      previous = report(owner, config, source) || MemberList.none
+      if action == :forget && !previous.partial?
+        raise ArgumentError, "#{owner.class.name}##{config.name}: the source's report is a complete list, which has an opinion on every member, so forgetting #{config.describe_key(config.key_of(member))} " \
                              'would exclude it rather than leave it to other sources. Record the list with mode: :partial first, or exclude the member'
       end
-      others = ->(list) { (list || []).reject { |listed| config.key_of(listed) == key } }
-      pending = previous&.pending || []
-      pending = pending.reject { |item| config.key_of(item['key']) == key } unless action == :include
-      pending += [MemberList.pending_item(member, attributes, recorded_at, edit: true, precedence: precedence)] if action == :include
-      tombstones = (previous&.tombstones || []).reject { |item| action == :forget && config.key_of(item['key']) == key }
 
       value =
-        if previous && !previous.partial?
-          withdrawn = others.(previous.withdrawn)
-          withdrawn << config.key_hash(member) if action != :include && previous.decision(config, key) == :include
-          MemberList.value(include: others.(previous.include) + (action == :include ? [member] : []), withdrawn: withdrawn, pending: pending)
-        else
-          withdrawn = others.(previous&.withdrawn)
-          withdrawn << config.key_hash(member) if action == :forget && previous&.decision(config, key) == :include
-          MemberList.partial(include: others.(previous&.include) + (action == :include ? [member] : []),
-                             exclude: others.(previous&.exclude) + (action == :exclude ? [config.key_hash(member)] : []),
-                             withdrawn: withdrawn, pending: pending, tombstones: tombstones)
+        case action
+        when :include then previous.including(config, member, MemberList.pending_item(member, attributes, recorded_at, edit: true, precedence: precedence))
+        when :exclude then previous.excluding(config, member)
+        when :forget then previous.forgetting(config, member)
         end
-
       owner.send(:write_data_entry, config.name, value, source, recorded_at: recorded_at)
     end
 
@@ -127,7 +104,7 @@ module LaForge
     # Makes the report in `entry` a partial one that withdraws every member it named, so the source has no opinion on
     # any. Its pending items and tombstones are dropped, and so are the new members and tombstones it named.
     def withdraw(config, entry)
-      entry.value = MemberList.partial(withdrawn: MemberList.new(entry.value).reported_keys(config).reject { |member| config.unsaved?(member) })
+      entry.value = MemberList.new(entry.value).withdrawing_all(config)
     end
 
     # Applies membership to the owner's members in memory, for the owner's save to write. Does nothing when no source
