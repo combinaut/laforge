@@ -429,6 +429,35 @@ module LaForge
     end
 
     # @api private
+    # Removes a collection member a forge no longer includes as assigning the collection without it would, per the
+    # association's dependent option: destroyed with the owner's save for :destroy, deleted without callbacks once the
+    # owner is saved for :delete_all, and detached by nullifying its foreign key otherwise
+    def laforge_remove(config, record)
+      case config.reflection.options[:dependent]
+      when :destroy, :destroy_async
+        record.mark_for_destruction
+        (@laforge_marked_members ||= []) << record
+      when :delete_all then laforge_remove_on_save(config, record)
+      else
+        record[config.owner_foreign_key] = nil
+        record[config.owner_type_column] = nil if config.owner_type_column
+        (@laforge_detached_members ||= []) << record
+      end
+    end
+
+    # @api private
+    # Undoes the removal an earlier forge, not saved yet, made of a member a forge includes again. A member the
+    # application marked for destruction itself is left marked.
+    def laforge_cancel_removal(config, record)
+      record.instance_variable_set(:@marked_for_destruction, false) if (@laforge_marked_members || []).reject! { |marked| marked.equal?(record) }
+      (@laforge_replaced_members || []).reject! { |_, replaced| replaced.equal?(record) }
+      return unless (@laforge_detached_members || []).reject! { |detached| detached.equal?(record) }
+
+      record[config.owner_foreign_key] = id
+      record[config.owner_type_column] = self.class.polymorphic_name if config.owner_type_column
+    end
+
+    # @api private
     # Withdraws a source from this member in memory, as its owner's forge does when the source's report there excludes or
     # withdrew it: its attribute entries are dropped, and destroyed when the owner is saved, and its reports for this
     # record's tracked associations become withdrawals. Returns whether the source had anything on this record.
@@ -461,6 +490,8 @@ module LaForge
     # afresh as a forge would
     def reload(*)
       @laforge_replaced_members = nil
+      @laforge_marked_members = nil
+      @laforge_detached_members = nil
       @laforge_created_members = nil
       @laforge_withdrawn_entries = nil
       @laforge_precedence_resolver = nil
@@ -565,10 +596,14 @@ module LaForge
         DataEntry.where(id: @laforge_withdrawn_entries.map(&:id)).delete_all
       end
       @laforge_withdrawn_entries = nil
+      @laforge_marked_members = nil
+      @laforge_detached_members = nil
       (@laforge_replaced_members || []).each do |config, record|
         case config.reflection.options[:dependent]
         when :destroy, :destroy_async then record.destroy!
-        when :delete then record.delete
+        when :delete, :delete_all
+          record.delete
+          association(config.name.to_sym).target.delete(record) if config.collection?
         else
           record[config.owner_foreign_key] = nil
           record[config.owner_type_column] = nil if config.owner_type_column

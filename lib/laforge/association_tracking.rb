@@ -132,14 +132,14 @@ module LaForge
       records = included.filter_map do |member|
         key = config.key_of(member)
         items = pending.fetch(key, [])
-        record = existing.delete(key) || created[key] || add(owner, config, member, created, described: items.any?)
+        record = existing.delete(key)&.tap { |kept| owner.laforge_cancel_removal(config, kept) } || created[key] || add(owner, config, member, created, described: items.any?)
         next unless record
 
         recorded = items.map { |source_id, attributes, recorded_at, edit, precedence| record.laforge_record_reported(attributes, source_id, recorded_at, edit: edit, precedence: precedence) }
         described << record if recorded.any?
         record
       end
-      records += undecided.map { |key| existing.delete(key) }
+      records += undecided.map { |key| existing.delete(key).tap { |kept| owner.laforge_cancel_removal(config, kept) } }
       records.each_with_index do |record, index|
         record[config.order_column] = config.order_descending ? records.size - 1 - index : index if config.order_column
       end
@@ -151,7 +151,7 @@ module LaForge
       entomb(config, reports, owner.send(:laforge_association_reports, config, inactive: true), existing.values) if config.tombstone_matcher
 
       if config.collection?
-        existing.each_value { |record| config.remove(record) }
+        existing.each_value { |record| owner.laforge_remove(config, record) }
       else
         owner.association(config.name.to_sym).target = records.first
         existing.each_value { |record| owner.laforge_remove_on_save(config, record) }

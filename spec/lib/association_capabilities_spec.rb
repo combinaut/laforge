@@ -565,6 +565,36 @@ describe 'Association tracking capabilities' do
   end
 
   describe 'owned records' do
+    it 'deletes a removed member without callbacks for dependent: :delete_all, as assigning the collection would', capability: 'C120' do
+      stub_const('DeletingPlace', Class.new(ActiveRecord::Base))
+      DeletingPlace.table_name = 'places'
+      DeletingPlace.has_many :tenants, as: :occupiable, dependent: :delete_all
+      DeletingPlace.laforged(associations: { tenants: {} })
+      deleting_place = DeletingPlace.create!(name: 'Harbor Building')
+      deleting_place.record_data_entries({ tenants: [{ name: 'Corner Café' }, { name: 'Harbor Books' }] }, low)
+      deleting_place.forge!
+      corner_cafe = Tenant.find_by!(name: 'Corner Café')
+      corner_cafe.opening_hours.create!(day: 1)
+
+      deleting_place.reload.record_data_entries({ tenants: [{ id: Tenant.find_by!(name: 'Harbor Books').id }] }, low)
+      deleting_place.forge!
+
+      expect(Tenant.exists?(corner_cafe.id)).to be(false) # noted: the removed tenant is deleted
+      expect(OpeningHour.where(tenant_id: corner_cafe.id).count).to eq(1) # its own dependents are not destroyed, as delete_all skips callbacks
+      expect(deleting_place.tenants.map(&:name)).to eq(['Harbor Books'])
+    end
+
+    it 'keeps a member an earlier forge, not saved yet, removed, once a forge includes it again', capability: 'C121' do
+      place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
+      place.forge!
+      place.reload.record_data_entries({ place_categories: categories(cafe) }, low)
+      place.forge # marks the bakery's row for destruction, unsaved
+      place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
+      place.forge!
+
+      expect(categories_of(place)).to contain_exactly(cafe, bakery)
+    end
+
     it 'creates owned records and updates the same row when a source reports the same key again', capability: 'C20' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
       place.forge!

@@ -207,16 +207,6 @@ module LaForge
     end
 
     # Remove a former member the way assigning a collection without it would, per the association's dependent option
-    def remove(record)
-      case reflection.options[:dependent]
-      when :destroy, :destroy_async, :delete_all
-        record.mark_for_destruction
-      else
-        record[owner_foreign_key] = nil
-        record[owner_type_column] = nil if owner_type_column
-      end
-    end
-
     private
 
     def normalize_member(member, attributes:, edit:)
