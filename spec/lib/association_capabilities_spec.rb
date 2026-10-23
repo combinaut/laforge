@@ -530,6 +530,15 @@ describe 'Association tracking capabilities' do
       expect(corner_cafe.reload.unit).to eq('1A')
     end
 
+    it "breaks a tie at the most specific level by the sources' own precedence, not by a less specific rule", capability: 'C114' do
+      place.record_data_entries({ name: 'From Low' }, low, precedence: 5)
+      place.record_data_entries({ name: 'From High' }, high, precedence: 5)
+      Place.update_attribute_source_precedence(:name, low, 1) # less specific than the tied rules on the place
+      place.forge!
+
+      expect(place.reload.name).to eq('From High')
+    end
+
     it 'breaks precedence ties deterministically, regardless of the order entries were recorded in', capability: 'C44' do
       first = Place.create!(name: 'First')
       second = Place.create!(name: 'Second')

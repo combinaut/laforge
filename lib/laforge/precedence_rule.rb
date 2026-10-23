@@ -69,13 +69,15 @@ module LaForge
         @global_rules = PrecedenceCache.fetch(:global) { PrecedenceRule.index_for(PrecedenceRule.global) }
       end
 
-      # The source's rank, to compare with other sources' ranks for the same attribute and record: its precedence at each
-      # level, most specific first, with -Infinity where it has no rule
+      # The source's rank, to compare with other sources' ranks for the same attribute and record: the precedence of its
+      # most specific rule at that rule's level, -Infinity at every other level, and its global precedence last, so equal
+      # precedences at one level are broken by the sources' own precedence rather than by a less specific rule
       def rank(record, attribute_name, source_id)
         attribute_name = rule_name(attribute_name)
         attribute_rule = @model_rules[[ANY_ID, attribute_name, source_id]] unless attribute_name == ANY_ATTRIBUTE # every attribute is the model level
         levels = [record_rule(record, attribute_name, source_id), attribute_rule, @model_rules[[ANY_ID, ANY_ATTRIBUTE, source_id]]]
-        levels.map { |precedence| precedence || -Float::INFINITY } + [global_precedence(source_id)]
+        specific = levels.index { |precedence| !precedence.nil? }
+        levels.each_with_index.map { |precedence, index| index == specific ? precedence : -Float::INFINITY } + [global_precedence(source_id)]
       end
 
       # The precedence of the most specific rule for the source, which is the level it ranks at
