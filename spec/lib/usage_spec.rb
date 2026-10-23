@@ -133,7 +133,7 @@ describe 'Usage' do
       expect(record.reload.name).to eq('Changed In Cadastre')
     end
 
-    it 'falls back the same way when the override is removed inside forge!' do
+    it "falls back to the importer's value when the override is removed inside forge!" do
       record.record_data_entry(:name, 'From Map Editor', map_editor)
       record.forge!
 
@@ -199,9 +199,8 @@ describe 'Usage' do
     end
   end
 
-  # Precedence is a set of rules from most to least specific: one record's attribute, a model's attribute, a whole model,
-  # and each source's global precedence. A source can be made authoritative for some attributes regardless of its global
-  # precedence.
+  # A record's own precedence for an attribute and source outranks the model-wide and global rules, so a source can be
+  # authoritative for some attributes of a record regardless of its global precedence
   describe 'per-record precedence' do
     it 'lets an entry outrank a higher-precedence source' do
       record.record_data_entries({ name: 'From Map Editor' }, map_editor)

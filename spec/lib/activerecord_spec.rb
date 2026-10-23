@@ -155,7 +155,7 @@ describe 'ActiveRecordExtensions' do
     let(:preceding_data_entry) { LaForge::DataEntry.new(record: record, source_id: preceding_data_source.id) }
 
     it 'ranks an entry whose source has no global precedence below every source that has one, a negative one included' do
-      # Entries an upgrade kept from a source deleted before the precedence rules migration have no global rule
+      # An entry whose source was deleted has no global rule
       negative_source = LaForge::DataSource.find_or_create_by!(name: "negative") { |source| source.precedence = -5 }
       LaForge::DataEntry.create!(record: record, source_id: negative_source.id, attribute_name: "name", value: "Ranked")
       LaForge::DataEntry.create!(record: record, source_id: data_source.id, attribute_name: "name", value: "Unranked")
@@ -167,7 +167,7 @@ describe 'ActiveRecordExtensions' do
     ensure
       data_source.update!(precedence: 1) # other examples expect every source to have a global precedence
       LaForge::DataEntry.where(source_id: negative_source.id).delete_all
-      negative_source.destroy! # and a precedence of their own choosing free
+      negative_source.destroy! # frees its precedence for other examples
     end
 
     it 'sets the record attributes from the data entries' do
@@ -201,7 +201,7 @@ describe 'ActiveRecordExtensions' do
       expect { record.forge }.to change { record.name }.from("Post").to("Higher Precedence")
     end
 
-    it 'breaks a tie in effective precedence by the higher source precedence' do
+    it 'breaks a tie in effective precedence by the higher global precedence' do
       data_entry.update(attribute_name: "name", value: "From the lower source")
       preceding_data_entry.update(attribute_name: "name", value: "From the higher source")
       record.update_attribute_source_precedence(:name, data_source, 2)

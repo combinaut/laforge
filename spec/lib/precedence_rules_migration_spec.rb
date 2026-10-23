@@ -1,6 +1,5 @@
 require 'spec_helper'
 
-# The upgrade from sources and entries with a priority column, checked before it changes anything
 describe 'The precedence rules migration' do
   let(:migration) do
     migration_class_name = 'MoveLaforgePrioritiesToPrecedenceRules'
@@ -21,7 +20,7 @@ describe 'The precedence rules migration' do
     expect { migration.up }.to raise_error(RuntimeError, /Give these LaForge data sources a priority before migrating, as each becomes the source's global precedence: Cadastre, Map Editor/)
   end
 
-  it 'raises, naming the missing sources, before creating anything when entries with a priority belong to a deleted source' do
+  it 'raises, naming the ids of the missing sources, before creating anything when entries with a priority belong to a deleted source' do
     sources(orphaned: [7, 9])
     expect(migration).not_to receive(:create_table)
 
@@ -32,7 +31,7 @@ describe 'The precedence rules migration' do
     sources(shared: [[5, 'Cadastre'], [5, 'Map Editor'], [7, 'Business Directory'], [7, 'Business Registry']])
     expect(migration).not_to receive(:create_table)
 
-    expect { migration.up }.to raise_error(RuntimeError, /LaForge data sources share priorities 5 \(Cadastre, Map Editor\); 7 \(Business Directory, Business Registry\); give each source a unique priority/)
+    expect { migration.up }.to raise_error(RuntimeError, /LaForge data sources share priorities 5 \(Cadastre, Map Editor\); 7 \(Business Directory, Business Registry\)\. Give each source a unique priority/)
   end
 
   it 'raises, naming them, before creating anything when entries for the same record, attribute and source have different priorities' do
@@ -42,7 +41,7 @@ describe 'The precedence rules migration' do
     expect { migration.up }.to raise_error(RuntimeError, /LaForge data entries for the same record, attribute and source have different priorities \(Place 12 name from source 3\). One precedence rule replaces them/)
   end
 
-  it 'goes on to create the table when every source has its own priority' do
+  it 'goes on to create the table when every check passes' do
     sources
     expect(migration).to receive(:create_table).and_raise('created') # stops before the rest of the migration
 

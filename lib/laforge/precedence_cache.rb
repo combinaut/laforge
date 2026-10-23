@@ -1,9 +1,9 @@
 module LaForge
-  # Caches the global and model-wide precedence rules for the duration of a block, such as an import run, so that each
-  # forge doesn't read them again. A record's own rules are not cached; they load with the record.
+  # Used to cache the global and model-wide precedence rules for the duration of a block, such as an import run, so each
+  # forge in it doesn't read them again. A record's own rules are not cached, as they load with the record.
   #
-  # Rules changed through LaForge inside the block clear the cache, so later forges see them. Changes made outside
-  # LaForge, by SQL or by another process, are not seen until the block ends.
+  # Changing a rule through LaForge inside the block clears the cache, so later forges see the change. A change made
+  # outside LaForge, by SQL or by another process, is not seen until the outermost block ends.
   module PrecedenceCache
     KEY = :laforge_precedence_cache
 
@@ -22,7 +22,7 @@ module LaForge
       ActiveSupport::IsolatedExecutionState.key?(KEY)
     end
 
-    # Returns the cached value for the key, computing it with the block on a miss; computes it every time outside `with`
+    # Returns the cached value for `key`, computing it with the block on a miss. Outside `with`, computes it every time.
     def self.fetch(key)
       store = ActiveSupport::IsolatedExecutionState[KEY]
       return yield unless store

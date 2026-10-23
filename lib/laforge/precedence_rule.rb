@@ -7,9 +7,12 @@ module LaForge
   #   'Tenant'     0          ''              every attribute of every record of a model
   #   ''           0          ''              everything (the source's global precedence)
   #
-  # "Any" is stored as '' or 0 rather than NULL so the unique index on the scope and source covers every level, and so
-  # lookups by record_type, record_id and attribute_name use its prefix. The generated `global_precedence` column holds
-  # the precedence of global rules only, so a unique index on it keeps the global order free of ties.
+  # The middle two levels are a model's model-wide rules, and the first is a record's own rules. A value's effective
+  # precedence is that of the most specific rule for its record, attribute and source.
+  #
+  # "Any" is stored as `ANY_TYPE`, `ANY_ID` or `ANY_ATTRIBUTE` and never as NULL, which a unique index lets repeat, so
+  # the unique index on the scope and source covers every level. The generated `global_precedence` column holds the
+  # precedence of global rules only, so a unique index on it keeps the global order free of ties.
   class PrecedenceRule < ::ActiveRecord::Base
     self.table_name = "laforge_precedence_rules"
 
@@ -26,7 +29,8 @@ module LaForge
     validates :source_id, uniqueness: { scope: %i[record_type record_id attribute_name] }
     validate :scope_is_one_of_the_four_levels
 
-    # Clear as soon as a rule changes, so later forges in the same transaction see it, and again on rollback
+    # A rule change clears the precedence cache at once, so later forges in the same transaction see it, and a rollback
+    # clears it again, so no forge sees the undone change
     after_save { PrecedenceCache.clear }
     after_destroy { PrecedenceCache.clear }
     after_rollback { PrecedenceCache.clear }
@@ -43,13 +47,15 @@ module LaForge
       record_type == ANY_TYPE
     end
 
-    # The rules that can apply to records of a model, indexed for `Resolver`: { [record_id, attribute_name, source_id] => precedence }
+    # Returns the rules in `scope` as `{ [record_id, attribute_name, source_id] => precedence }`, for `Resolver` to
+    # look up
     def self.index_for(scope)
       scope.pluck(:record_id, :attribute_name, :source_id, :precedence).to_h { |record_id, attribute_name, source_id, precedence| [[record_id, attribute_name, source_id], precedence] }
     end
 
-    # Answers the effective precedence of a source's value for one attribute of one record, loading the model-wide and
-    # global rules once and taking the record's own rules from its in-memory association, so unsaved rules count too.
+    # Used to look up the effective precedence of a source's value for one attribute of a record. It reads a model's
+    # model-wide rules and the global rules once, through `PrecedenceCache`, and takes a record's own rules from its
+    # in-memory association, so unsaved rules count and rules marked for destruction do not.
     class Resolver
       def initialize(model)
         @model = model
@@ -63,12 +69,14 @@ module LaForge
         record_rule(record, attribute_name, source_id) || model_precedence(attribute_name, source_id) || global_precedence(source_id)
       end
 
-      # The model-wide rule for an attribute and source, if there is one
+      # Returns the precedence of the most specific model-wide rule for the attribute and source, or nil when there is
+      # none
       def model_precedence(attribute_name, source_id)
         @model_rules[[ANY_ID, attribute_name.to_s, source_id]] || @model_rules[[ANY_ID, ANY_ATTRIBUTE, source_id]]
       end
 
-      # A source without a global rule, such as one deleted before an upgrade left its entries, ranks below every source
+      # Returns the source's global precedence, or `-Float::INFINITY` when it has none, as for the entries of a deleted
+      # source, so that source ranks below every other
       def global_precedence(source_id)
         @global_rules[[ANY_ID, ANY_ATTRIBUTE, source_id]] || -Float::INFINITY
       end

@@ -3,7 +3,7 @@ require "rails/generators/active_record"
 
 module Laforge
   module Generators
-    # Upgrades an existing install: moves source and entry priorities into the precedence rules table
+    # Used to upgrade an existing install with a migration that moves source and entry priorities into precedence rules
     class PrecedenceRulesGenerator < Rails::Generators::Base
       include ActiveRecord::Generators::Migration
       source_root File.join(__dir__, "templates")

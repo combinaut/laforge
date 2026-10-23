@@ -4,21 +4,21 @@ module LaForge
 
     has_many :data_entries, class_name: 'LaForge::DataEntry'
     has_many :precedence_rules, class_name: 'LaForge::PrecedenceRule', foreign_key: :source_id, dependent: :delete_all
-    after_destroy { PrecedenceCache.clear } # its rules are deleted without callbacks
+    after_destroy { PrecedenceCache.clear } # its rules are deleted without the callbacks that clear the cache
     has_one :global_precedence_rule, -> { global }, class_name: 'LaForge::PrecedenceRule', foreign_key: :source_id, autosave: true, inverse_of: :source
 
     validates :name, presence: true, uniqueness: { case_sensitive: false }
     validates :precedence, presence: true, numericality: { only_integer: true, allow_nil: true }
     validate :precedence_is_unique
 
-    # Sources ordered from the highest global precedence to the lowest
+    # Sources from the highest global precedence to the lowest, leaving out any source without one
     scope :by_precedence, -> { joins(:global_precedence_rule).order(PrecedenceRule.arel_table[:precedence].desc) }
 
     def self.maximum_precedence
       PrecedenceRule.global.maximum(:precedence)
     end
 
-    # The source's global precedence, which ranks its values wherever no more specific rule applies
+    # Returns the source's global precedence, or nil when it has none
     def precedence
       global_precedence_rule&.precedence
     end

@@ -1,9 +1,13 @@
 # Moves source and entry priorities into laforge_precedence_rules as precedence rules: each source's priority becomes
 # its global rule, and each entry's custom priority becomes a rule for that record, attribute and source.
 #
-# `up` checks the data first, and changes nothing if a source has no priority or two share one, or if entries for the
-# same record, attribute and source have different priorities: those would be lost, collide in the unique index on
-# global precedences, leaving the migration half done, or change which entry wins once one rule ranks them all.
+# `up` checks the data first, and raises before changing anything when it finds any of these:
+# - a source with no priority, which would have no global rule
+# - two sources sharing a priority, which would collide in the unique index on global precedences and leave the
+#   migration half done
+# - entries for the same record, attribute and source with different priorities, which one rule cannot keep, so which
+#   entry wins would change
+# - entries with a priority whose source no longer exists, which no rule can reference
 class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
   def up
     assert_priorities_migratable!
@@ -51,7 +55,7 @@ class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version
     shared = select_rows("SELECT priority, name FROM laforge_data_sources WHERE priority IN (SELECT priority FROM laforge_data_sources GROUP BY priority HAVING COUNT(*) > 1) ORDER BY priority, name")
     if shared.any?
       described = shared.group_by(&:first).map { |priority, rows| "#{priority} (#{rows.map(&:last).join(', ')})" }
-      raise "LaForge data sources share priorities #{described.join('; ')}; give each source a unique priority before migrating, as global precedences are unique"
+      raise "LaForge data sources share priorities #{described.join('; ')}. Give each source a unique priority before migrating, as global precedences are unique"
     end
 
     conflicting = select_rows(<<~SQL)
