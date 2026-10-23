@@ -4,9 +4,9 @@ module LaForge
 
     has_many :data_entries, class_name: 'LaForge::DataEntry'
     has_many :precedence_rules, class_name: 'LaForge::PrecedenceRule', foreign_key: :source_id, dependent: :delete_all
-    after_destroy { PrecedenceCache.clear } # its rules are deleted without callbacks
+    after_destroy { PrecedenceCache.clear } # its rules are deleted without the callbacks that clear the cache
     after_save { PrecedenceCache.clear if saved_change_to_active? }
-    after_rollback { PrecedenceCache.clear } # a rolled-back change to active must not stay cached
+    after_rollback { PrecedenceCache.clear } # so no forge sees an undone change to `active`
     has_one :global_precedence_rule, -> { global }, class_name: 'LaForge::PrecedenceRule', foreign_key: :source_id, autosave: true, inverse_of: :source
 
     validates :name, presence: true, uniqueness: { case_sensitive: false }
@@ -16,13 +16,14 @@ module LaForge
     scope :active, -> { where(active: true) }
     scope :inactive, -> { where(active: false) }
 
-    # The ids of inactive sources, whose entries forging leaves out as if they had none. Their entries are kept, and
-    # recording still adds to them, so activating the source again and forging restores what it says.
+    # Returns the ids of the inactive sources, through `PrecedenceCache`. Forging leaves out an inactive source's
+    # entries as if it had none. Its entries are kept and recording still writes them, so activating the source again
+    # and forging restores what it says.
     def self.inactive_ids
       PrecedenceCache.fetch(:inactive_sources) { inactive.ids }
     end
 
-    # Sources ordered from the highest global precedence to the lowest
+    # Sources from the highest global precedence to the lowest, leaving out any source without one
     scope :by_precedence, -> { joins(:global_precedence_rule).order(PrecedenceRule.arel_table[:precedence].desc) }
 
     def self.maximum_precedence
@@ -75,8 +76,9 @@ module LaForge
     end
   end
 
-  # Set and save the global order of sources, highest first. Sources not listed rank below the listed ones, in their
-  # current order. Every source's global precedence is renumbered, so the order is all that matters.
+  # Set and save the global precedence order, highest first. Sources not listed rank below the listed ones in their
+  # current order, and sources without a global precedence come last. Every source's global precedence is renumbered,
+  # from the number of sources down to 1.
   def self.update_precedence_order(sources)
     listed = DataSource.normalize_source_ids(sources)
     order = listed + DataSource.by_precedence.ids.reject { |id| listed.include?(id) }
@@ -85,7 +87,7 @@ module LaForge
     DataSource.transaction do
       rules = order.map { |id| PrecedenceRule.global.find_or_initialize_by(source_id: id) }
       clear = [PrecedenceRule.global.maximum(:precedence) || 0, order.size].max + 1
-      rules.each_with_index { |rule, index| rule.update!(precedence: clear + index) } # out of the way of the unique index first
+      rules.each_with_index { |rule, index| rule.update!(precedence: clear + index) } # clear of the unique index first
       rules.each_with_index { |rule, index| rule.update!(precedence: order.size - index) }
     end
   end

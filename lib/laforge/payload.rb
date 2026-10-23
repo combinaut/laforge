@@ -1,30 +1,30 @@
 module LaForge
-  # Translates the shapes a Rails form submits into the edits `record_data_entries(..., mode: :edit)` takes, at every
-  # level, so a controller can record its permitted params as they are:
+  # Used to translate the shapes a Rails form submits into the edits `record_data_entries(..., mode: :edit)` takes, at
+  # every level, so a controller can record its permitted params as they are:
   #
-  # - `tenants_attributes`, an array or a hash keyed by index of member hashes, as `accepts_nested_attributes_for` takes,
-  #   becomes `tenants: { include: [...], exclude: [...] }`: a hash with a truthy `_destroy` excludes the member its `id`
-  #   names, and any other is included. A has_one's becomes its single member, or nil when destroyed.
+  # - `tenants_attributes`, an array or a hash keyed by index of member hashes, as `accepts_nested_attributes_for`
+  #   takes, becomes `tenants: { include: [...], exclude: [...] }`. A hash with a truthy `_destroy` excludes the member
+  #   its `id` names, and any other is included. A has_one's becomes its single member, or nil when destroyed.
   # - `category_ids` becomes edits of the tracked association behind it, such as `place_categories` for
-  #   `has_many :categories, through: :place_categories`: the ids listed are included, and the current members not listed
-  #   are excluded.
+  #   `has_many :categories, through: :place_categories`. The ids listed are included, and the current members not
+  #   listed are excluded.
   #
   # A member of an association keyed by other columns than its primary key is named by those columns, read from the row
-  # its `id` names. A key naming an association that is not tracked raises, rather than being recorded as an attribute.
+  # its `id` names. A `*_attributes` or `*_ids` field for an association LaForge does not track raises.
   #
-  # Where the owner declares `accepts_nested_attributes_for`, its `reject_if:` and `allow_destroy:` apply as they do when
-  # Rails assigns the rows: a rejected row is left out, and `_destroy` counts only if destroying is allowed.
+  # Where the owner declares `accepts_nested_attributes_for`, its `reject_if:` and `allow_destroy:` apply as they do
+  # when Rails assigns the rows. A rejected row is left out, and `_destroy` counts only if destroying is allowed.
   module Payload
     extend self
 
     DESTROY = '_destroy'
 
-    # What a has_one's rejected row translates to: nothing is recorded for the association
+    # REJECTED stands for a has_one's rejected row, for which nothing is recorded
     REJECTED = Object.new.freeze
 
-    # The payload for `record`, an instance of `model` or nil for a new one, with Rails form shapes translated. Raises for
-    # those shapes unless `edit` is true, since they describe edits. `owner` is the record the form is for, new or not,
-    # which a method-based `reject_if:` is called on.
+    # Returns `payload` with its Rails form shapes translated, at every level. `record` is the instance of `model` the
+    # payload is for, or nil for a new one. Raises for those shapes unless `edit` is true, as they describe edits.
+    # `owner` is the record the form is for, new or not, which a method-based `reject_if:` is called on.
     def translate(model, payload, record, edit:, owner: record)
       payload = payload.to_h if payload.respond_to?(:permitted?) # ActionController::Parameters, which must be permitted
       payload.to_h.stringify_keys.each_with_object({}) do |(field, value), result|
@@ -45,7 +45,8 @@ module LaForge
 
     private
 
-    # The tracked association a `*_attributes` field is for. Raises when it is for an association that is not tracked.
+    # Returns the name of the tracked association a `*_attributes` field is for, or nil when it names no association.
+    # Raises when the association is not tracked.
     def nested_attributes_name(model, field)
       return unless field.end_with?('_attributes')
 
@@ -94,7 +95,8 @@ module LaForge
       { 'include' => include, 'exclude' => exclude }
     end
 
-    # Edits of the association a `*_ids` field names, or of the tracked association it goes through
+    # Returns { association name => edits } for a `*_ids` field, editing the association it names or the tracked
+    # association that one goes through. Raises when neither is tracked with a key of the ids it lists.
     def ids(model, field, reflection, value, owner)
       config, column = ids_config(model, reflection)
       raise InvalidAttributeName, "Cannot record #{model.name}##{field}: neither #{reflection.name} nor an association it goes through is tracked with a key of the ids it lists" unless config
@@ -105,7 +107,9 @@ module LaForge
       { config.name => { 'include' => ids.map { |id| { column => id } }, 'exclude' => (current - ids).map { |id| { column => id } } } }
     end
 
-    # The tracked association a `*_ids` field edits, and the member column its ids are
+    # Returns [config, column] for the tracked association a `*_ids` field edits and the member column its ids fill, or
+    # nil when there is none. That is the association itself when keyed by primary key, or the tracked association it
+    # goes through when keyed by the foreign key the ids fill.
     def ids_config(model, reflection)
       if tracked?(model, reflection.name.to_s)
         config = model.laforged_association(reflection.name)
@@ -117,8 +121,9 @@ module LaForge
       end
     end
 
-    # Members given directly, which may hold Rails form shapes for their own associations. Values of any other shape are
-    # left for recording to reject.
+    # Returns members given directly, a has_one's single member or a collection's list or { include: [...] } hash, with
+    # the Rails form shapes in them translated. Values of any other shape are returned as they are, for recording to
+    # reject.
     def members(config, value, owner, edit:)
       return member(config, value, owner, edit: edit) unless config.collection?
 
@@ -131,8 +136,9 @@ module LaForge
       end
     end
 
-    # A member hash, its own Rails form shapes translated. Where the association is keyed by other columns than the
-    # primary key, an `id` is replaced by the key of the row it names.
+    # Returns a member hash with its own Rails form shapes translated, or anything else as it is. Where the association
+    # is keyed by other columns than the primary key, an `id` is replaced by the key of the owner's row it names, or
+    # dropped when it names none.
     def member(config, attributes, owner, edit: true)
       return attributes unless hash?(attributes)
 
@@ -174,22 +180,22 @@ module LaForge
                            'or check the rows in the controller before recording them'
     end
 
-    # Whether the owner's `reject_if:` leaves the row out, as Rails does: never for a row being destroyed
+    # Whether the owner's `reject_if:` leaves the row out. As in Rails, a row being destroyed is never rejected.
     def rejected?(config, attributes, owner, options)
       return false if options.nil? || destroy?(attributes, options)
 
       attributes = attributes.with_indifferent_access
       case (reject_if = options[:reject_if])
       when Symbol
-        target = owner || config.owner_class.new # a member not created yet, whose own rows are checked on an unsaved one
+        target = owner || config.owner_class.new # an unsaved instance stands in for a member not created yet
         target.method(reject_if).arity.zero? ? target.send(reject_if) : target.send(reject_if, attributes)
       when Proc then reject_if.call(attributes) # :all_blank is stored as one
       else false
       end
     end
 
-    # Whether the row asks for its member to be destroyed: `_destroy` is truthy, and the owner allows it where it declares
-    # nested attributes
+    # Whether the row asks for its member to be destroyed, which takes a truthy `_destroy` and, where the owner declares
+    # nested attributes for the association, `allow_destroy: true`
     def destroy?(attributes, options)
       (options.nil? || options[:allow_destroy]) && ::ActiveModel::Type::Boolean.new.cast(attributes[DESTROY]) == true
     end

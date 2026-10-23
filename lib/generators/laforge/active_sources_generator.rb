@@ -3,7 +3,7 @@ require "rails/generators/active_record"
 
 module Laforge
   module Generators
-    # Upgrades an existing install: adds active to data sources, every existing source active
+    # Used to upgrade an existing install by adding `active` to `laforge_data_sources`, every existing source active
     class ActiveSourcesGenerator < Rails::Generators::Base
       include ActiveRecord::Generators::Migration
       source_root File.join(__dir__, "templates")

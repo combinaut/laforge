@@ -1,5 +1,5 @@
-# Adds recorded_at, when a source said an entry's value, to laforge_data_entries. Existing entries get their updated_at,
-# the closest time they have.
+# Adds `recorded_at` to `laforge_data_entries`, the time a source said an entry's value. Existing entries get their
+# `updated_at`, the closest time they have.
 class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
   def up
     add_column :laforge_data_entries, :recorded_at, :datetime, precision: 6

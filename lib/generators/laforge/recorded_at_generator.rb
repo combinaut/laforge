@@ -3,7 +3,7 @@ require "rails/generators/active_record"
 
 module Laforge
   module Generators
-    # Upgrades an existing install: adds recorded_at to data entries, filled from updated_at
+    # Used to upgrade an existing install by adding `recorded_at` to `laforge_data_entries`, filled from `updated_at`
     class RecordedAtGenerator < Rails::Generators::Base
       include ActiveRecord::Generators::Migration
       source_root File.join(__dir__, "templates")

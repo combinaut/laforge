@@ -1,18 +1,18 @@
 module LaForge
-  # Merges what LaForge holds for two records of the same model into the survivor, as when a duplicate record is found:
+  # Used to merge what LaForge holds for two records of the same model into the survivor, as when a duplicate record is
+  # found:
   #
   # - The duplicate's attribute entries and per-record precedence rules move to the survivor. When both records have one
   #   for the same attribute and source, the winner's is kept and the other's destroyed.
   # - In each tracked association, the duplicate's members move to the survivor, keeping their ids and everything
   #   recorded on them. Where both records have a member with the same key, as join rows naming the same record do, the
-  #   survivor's row is kept: the duplicate's row is merged into it the same way, then destroyed. Where both have a
-  #   has_one member and their keys differ, the merge raises before anything moves.
-  # - Each source's reports on the two records are combined, so the survivor's report names every member either named.
-  #   Where the reports disagree on a member, the winner's opinion is kept.
+  #   survivor's row is kept. The duplicate's row is merged into it the same way, then destroyed. Where both have a
+  #   has_one member and their keys differ, the merge raises and nothing moves.
+  # - Where a source has a report on both records, the two are combined into the survivor's (see `combined_report`).
   #
-  # The survivor is not forged; forge it afterwards. A member merged into one of the survivor's is forged and saved by the
-  # merge, since no forge of the survivor reaches it. The duplicate is left for the application to archive or destroy,
-  # with no LaForge data, and associations LaForge does not track are not touched. Saved immediately.
+  # The survivor is not forged, so forge it afterwards. A member merged into one of the survivor's is forged and saved
+  # by the merge. The duplicate is left for the application to archive or destroy, with no LaForge data, and
+  # associations LaForge does not track are not touched. Saved immediately.
   module Merge
     extend self
 
@@ -34,7 +34,8 @@ module LaForge
       survivor.class.laforged_associations.each_value { |config| merge_members(survivor, duplicate, config, winner, report) }
     end
 
-    # Attribute entries and association reports, by attribute and source
+    # Moves the duplicate's entries to the survivor. Where both have one for the same attribute and source, keeps the
+    # winner's attribute entry, or combines the two reports into the survivor's entry.
     def merge_entries(survivor, duplicate, winner, report)
       kept = DataEntry.where(record: survivor).index_by { |entry| [entry.attribute_name, entry.source_id] }
 
@@ -82,8 +83,8 @@ module LaForge
       PrecedenceCache.clear
     end
 
-    # Raises when both records have a member in a tracked has_one and their keys differ, since moving the duplicate's
-    # would give the survivor two rows behind a reader that shows one. Called before anything moves.
+    # Raises when both records have a member in a tracked has_one and their keys differ, as the survivor can hold only
+    # one. Members keyed by primary key always differ.
     def assert_has_ones_mergeable!(survivor, duplicate)
       survivor.class.laforged_associations.each_value do |config|
         next if config.collection?
@@ -99,7 +100,8 @@ module LaForge
       end
     end
 
-    # Moves the duplicate's members to the survivor, merging a member the survivor already has by key into the survivor's
+    # Moves the duplicate's members of the association to the survivor. A member with the same key as one of the
+    # survivor's is merged into it, then destroyed. Members keyed by primary key always move.
     def merge_members(survivor, duplicate, config, winner, report)
       existing = config.primary_keyed? ? {} : config.identified_members_of(survivor)
 
@@ -119,8 +121,11 @@ module LaForge
       end
     end
 
-    # One source's two reports for an association as one: every member either includes, in the winner's order first,
-    # and the winner's opinion where they disagree. The result is complete if the winner's report is.
+    # Returns one source's two reports for an association combined into one stored value, which is complete when the
+    # winner's report is. It includes every member either report includes, the winner's first, except a member the
+    # winner's partial report excludes. A partial result also excludes every member either report excludes that it does
+    # not include. Withdrawn members, pending items and tombstones come from both reports, and a member the result
+    # includes is not withdrawn.
     def combined_report(config, winning, losing)
       by_key = ->(list) { list.uniq { |member| config.key_of(member) } }
       included = by_key.(winning.include + losing.include.reject { |member| winning.partial? && winning.decision(config, config.key_of(member)) == :exclude })
@@ -152,15 +157,21 @@ module LaForge
     end
   end
 
-  # Merges the duplicate's LaForge data into the survivor (see Merge). Where both have an entry or rule for the same
-  # attribute and source, the duplicate's wins, as the argument does in Hash#merge. Returns a report of what moved and
-  # what conflicted.
+  # Merges the duplicate's LaForge data into the survivor (see Merge). The duplicate is the winner, so where both have
+  # an attribute entry or rule for the same attribute and source, the duplicate's wins, as the argument does in
+  # `Hash#merge`. Returns a report of what moved and what conflicted, a merged member's own entries, rules and members
+  # included:
+  # - entries_moved: how many entries moved to the survivor
+  # - entries_conflicting: [{ attribute:, source:, kept: }] for each attribute entry both had with different values
+  # - precedence_rules_moved, precedence_rules_conflicting: the same for per-record precedence rules
+  # - members_moved: { association name => [member ids] } moved to the survivor
+  # - members_merged: { association name => [{ kept:, removed: }] } merged into one of the survivor's members
   def self.merge(survivor, duplicate)
     Merge.run(survivor, duplicate, winner: :duplicate)
   end
 
-  # As merge, but where both have an entry or rule for the same attribute and source, the survivor's wins, as the
-  # receiver does in Hash#reverse_merge
+  # As `merge`, but the survivor is the winner, so where both have an attribute entry or rule for the same attribute and
+  # source, the survivor's wins, as the receiver does in `Hash#reverse_merge`
   def self.reverse_merge(survivor, duplicate)
     Merge.run(survivor, duplicate, winner: :survivor)
   end

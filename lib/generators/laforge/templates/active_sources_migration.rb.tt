@@ -1,4 +1,5 @@
-# Adds active to laforge_data_sources. Forging leaves out the entries of an inactive source, and keeps them.
+# Adds `active` to `laforge_data_sources`, every existing source active. Forging leaves out an inactive source's
+# entries without deleting them.
 class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
   def change
     add_column :laforge_data_sources, :active, :boolean, null: false, default: true

@@ -2,8 +2,8 @@ module LaForge
   class DataEntry < ActiveRecord::Base
     self.table_name = "laforge_data_entries"
 
-    # The values that survive being stored as JSON and read back, dates and times as strings, alone or in arrays and in
-    # hashes with string or symbol keys
+    # STORABLE_TYPES are the classes of value an entry can store. Values are stored as JSON, so symbols, dates and times
+    # read back as strings. `storable?` also accepts arrays and hashes of them.
     STORABLE_TYPES = [NilClass, TrueClass, FalseClass, String, Symbol, Numeric, Date, Time, ActiveSupport::TimeWithZone].freeze
 
     belongs_to :record, polymorphic: true
@@ -16,47 +16,50 @@ module LaForge
 
     delegate :precedence, to: :source, prefix: true, allow_nil: true
 
-    # recorded_at is when a source said the value, which an older report pending on an owner is compared with. Recording
-    # through LaForge sets it; an entry created any other way gets the time it is saved.
+    # `recorded_at` is when a source said the entry's value, which recording the same value again leaves as it is.
+    # Recording through LaForge sets it, and an entry saved without one gets the time of the save.
     before_save { self.recorded_at ||= Time.current }
 
-    # Publishes CHANGED when an entry's value is saved changed, or the entry is destroyed, so a host can follow what
-    # sources say without reading every entry. It is published once the write is committed, and not at all if it rolls
-    # back, so a subscriber only hears of changes that happened. Writes that skip callbacks, such as `LaForge.merge`
-    # moving entries between records and database cascades, publish nothing.
+    # CHANGED is the `ActiveSupport::Notifications` event published when an entry is created, its value changes, or it
+    # is destroyed, so a host can follow what sources say without reading every entry (see `publish_change`). It is
+    # published once the transaction commits, and not at all if it rolls back. `LaForge.merge` moves and combines
+    # entries without publishing, and entries deleted with their record publish nothing.
     CHANGED = 'data_entry_changed.laforge'.freeze
 
     after_save { DataEntry.publish_change(self, value_was: value_before_last_save, value: value) if previously_new_record? || saved_change_to_value? }
     after_destroy { DataEntry.publish_change(self, value_was: value, value: nil, destroyed: true) }
 
-    # Publishes the change once the current transaction commits, with the payload as it is now: the entry, its
-    # record_type, record_id, attribute_name and source_id, its value before and after, and whether it was destroyed.
-    # Taking the payload, values copied, when the write is made keeps it right when one transaction saves an entry more
-    # than once or changes its value in place after saving it.
+    # Publishes CHANGED for the entry once the current transaction commits. The payload is taken now, its values deep
+    # copied, so a later save or in-place change in the same transaction does not alter it. It holds:
+    # - entry: the DataEntry
+    # - record_type, record_id, attribute_name, source_id: the entry's
+    # - value_was, value: its value before and after the write
+    # - destroyed: whether the write destroyed it
     def self.publish_change(entry, value_was:, value:, destroyed: false)
       payload = { entry: entry, record_type: entry.record_type, record_id: entry.record_id, attribute_name: entry.attribute_name,
                   source_id: entry.source_id, value_was: value_was.deep_dup, value: value.deep_dup, destroyed: destroyed }
       ::ActiveRecord::Base.current_transaction.after_commit { ActiveSupport::Notifications.instrument(CHANGED, payload) }
     end
 
-    # The precedence of the most specific precedence rule for its record, attribute and source, falling back to the
-    # source's global precedence. Entries rank by level first (see PrecedenceRule::Resolver), so compare entries with
-    # `in_precedence_order` rather than by this number.
+    # Returns this entry's effective precedence on its record. Entries rank by level first (see PrecedenceRule), so this
+    # number alone does not order two entries. `in_precedence_order` does.
     def effective_precedence
       record.laforge_precedence_of(self)
     end
 
-    # Returns one record's `entries` highest-ranked first, so the first entry for each attribute is the one `forge`
-    # applies. Entries rank by their sources' rules, most specific level first, then by the sources' global precedence
-    # (see PrecedenceRule::Resolver), then by recency. Recency is the id for saved entries; an unsaved entry is newer than
-    # every saved one, and among unsaved entries a later position in `entries` is newer.
+    # Returns one record's `entries` in the order `forge` ranks them, highest first. `record` defaults to the first
+    # entry's record. The order is by:
+    #   - the rank of the entry's source for its attribute on `record` (see PrecedenceRule)
+    #   - recency, which is the id for saved entries. An unsaved entry is newer than every saved one, and among unsaved
+    #     entries a later position in `entries` is newer.
     def self.in_precedence_order(entries, record: entries.first&.record)
       entries.each_with_index.sort_by do |entry, position|
         record.laforge_rank_of(entry).map(&:-@) + [-(entry.id || Float::INFINITY), -position]
       end.map(&:first)
     end
 
-    # Whether a value survives being stored as JSON and read back (see STORABLE_TYPES)
+    # Returns whether `value` can be stored, which takes an instance of one of `STORABLE_TYPES`, or an array or hash of
+    # storable values whose keys are strings or symbols
     def self.storable?(value)
       case value
       when *STORABLE_TYPES then true

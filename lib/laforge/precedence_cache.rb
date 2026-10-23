@@ -1,9 +1,11 @@
 module LaForge
-  # Caches the global and model-wide precedence rules, and which sources are inactive, for the duration of a block, such
-  # as an import run, so that each forge doesn't read them again. A record's own rules are not cached; they load with the record.
+  # Used to cache the global and model-wide precedence rules, and which sources are inactive, for the duration of a
+  # block, such as an import run, so each forge doesn't read them again. A record's own rules are not cached, as they
+  # load with the record.
   #
-  # Rules and sources changed through LaForge inside the block clear the cache, so later forges see them. Changes made outside
-  # LaForge, by SQL or by another process, are not seen until the block ends.
+  # Changing a rule, or whether a source is active, through LaForge inside the block clears the cache, so later forges
+  # see the change. A change made outside LaForge, by SQL or by another process, is not seen until the outermost block
+  # ends.
   module PrecedenceCache
     KEY = :laforge_precedence_cache
 
@@ -35,7 +37,8 @@ module LaForge
     end
   end
 
-  # Caches the global and model-wide precedence rules while the block runs. Nested calls share the outer cache.
+  # Caches the global and model-wide precedence rules, and which sources are inactive, while the block runs (see
+  # PrecedenceCache). Nested calls share the outer cache.
   def self.with_precedence_cache(&block)
     PrecedenceCache.with(&block)
   end
