@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    laforge (0.0.1.alpha)
+    laforge (1.0.0)
       rails (>= 7.0)
 
 GEM
