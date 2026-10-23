@@ -20,6 +20,7 @@ module AssociationCapabilities
     ActiveRecord::Schema.define do
       create_table :places, force: true do |t|
         t.string :name
+        t.string :region # selects a place's ruleset in the ruleset specs
         t.timestamps null: false
       end
 
