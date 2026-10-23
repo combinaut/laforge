@@ -134,8 +134,7 @@ module LaForge
       withdrawn = by_key.(winning.withdrawn + losing.withdrawn).reject { |member| included_keys.include?(config.key_of(member)) }
       tombstones = (winning.tombstones + losing.tombstones).uniq { |item| config.key_of(item['key']) }
 
-      MemberList.value(include: included, exclude: winning.partial? ? excluded : [], withdrawn: withdrawn, pending: winning.pending + losing.pending,
-                       tombstones: tombstones, partial: winning.partial?)
+      winning.with(include: included, exclude: excluded, withdrawn: withdrawn, pending: winning.pending + losing.pending, tombstones: tombstones)
     end
 
     def assert_mergeable!(survivor, duplicate)

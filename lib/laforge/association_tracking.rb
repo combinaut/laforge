@@ -47,7 +47,8 @@ module LaForge
       config.assert_references_exist!(owner, keys)
       pending = included.map { |key_hash, attributes| MemberList.pending_item(key_hash, attributes, recorded_at, precedence: precedence) }
 
-      value = (report(owner, config, source) || MemberList.none).replaced(config, include: keys, exclude: excluded, pending: pending, partial: partial)
+      previous = report(owner, config, source) || MemberList.none
+      value = partial ? MemberList::Partial.replacing(previous, config, include: keys, exclude: excluded, pending: pending) : MemberList::Complete.replacing(previous, config, include: keys, pending: pending)
       owner.send(:write_data_entry, config.name, value, source, precedence: precedence, recorded_at: recorded_at)
     end
 
@@ -340,7 +341,7 @@ module LaForge
     def entomb(config, reports, all_reports, removed)
       removed.each do |record|
         key = config.record_key(record)
-        excluding = reports.reject { |entry, _| entry.marked_for_destruction? }.select { |entry, _| MemberList.new(entry.value).then { |report| report.partial? && report.exclude.any? { |member| config.key_of(member) == key } } }
+        excluding = reports.reject { |entry, _| entry.marked_for_destruction? }.select { |entry, _| MemberList.new(entry.value).exclude.any? { |member| config.key_of(member) == key } }
         next if excluding.empty?
 
         tombstone = { AssociationConfig::TOMBSTONE => SecureRandom.hex(8) }
@@ -350,7 +351,7 @@ module LaForge
 
           report = MemberList.new(MemberList.new(entry.value).renamed(config, { key => tombstone }))
           tombstones = excluding.any? { |excluder, _| excluder.equal?(entry) } ? report.tombstones + [item] : report.tombstones
-          value = MemberList.value(include: report.include, exclude: report.exclude, withdrawn: report.withdrawn, pending: report.pending, tombstones: tombstones, partial: report.partial?)
+          value = report.with(tombstones: tombstones)
           entry.value = value unless value == entry.value
         end
       end
@@ -455,7 +456,7 @@ module LaForge
         remaining = report.pending.reject { |item| keys.include?(config.key_of(item['key'])) }
         next if remaining.size == report.pending.size
 
-        entry.value = report.with_pending(remaining)
+        entry.value = report.with(pending: remaining)
       end
     end
 
@@ -468,12 +469,10 @@ module LaForge
         report = MemberList.new(entry.value)
         next unless report.withdrawn.any?
 
-        if !report.partial?
-          entry.value = MemberList.value(include: report.include, pending: report.pending) # an empty complete report still excludes every member
-        elsif report.include.empty? && report.exclude.empty? && report.pending.empty?
+        if report.vacant?
           entry.mark_for_destruction
         else
-          entry.value = MemberList.partial(include: report.include, exclude: report.exclude, pending: report.pending, tombstones: report.tombstones)
+          entry.value = report.with(withdrawn: [])
         end
       end
     end
