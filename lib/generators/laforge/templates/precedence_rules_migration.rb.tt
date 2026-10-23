@@ -36,11 +36,17 @@ class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version
     remove_column :laforge_data_sources, :priority
   end
 
-  # Raises, naming the sources or entries, unless every source has a priority, no two share one, and entries for the same
-  # record, attribute and source agree on theirs
+  # Raises, naming the sources or entries, unless every source has a priority, no two share one, entries with a priority
+  # belong to sources that exist, and entries for the same record, attribute and source agree on theirs
   def assert_priorities_migratable!
     missing = select_values("SELECT name FROM laforge_data_sources WHERE priority IS NULL ORDER BY name")
     raise "Give these LaForge data sources a priority before migrating, as each becomes the source's global precedence: #{missing.join(', ')}" if missing.any?
+
+    orphaned = select_values("SELECT DISTINCT source_id FROM laforge_data_entries WHERE priority IS NOT NULL AND source_id NOT IN (SELECT id FROM laforge_data_sources) ORDER BY source_id")
+    if orphaned.any?
+      raise "LaForge data entries with a priority belong to sources that no longer exist (source ids #{orphaned.join(', ')}). Each would become a precedence rule " \
+            'referencing its source, so delete those entries, or set their priority to NULL, before migrating'
+    end
 
     shared = select_rows("SELECT priority, name FROM laforge_data_sources WHERE priority IN (SELECT priority FROM laforge_data_sources GROUP BY priority HAVING COUNT(*) > 1) ORDER BY priority, name")
     if shared.any?

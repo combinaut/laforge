@@ -9,8 +9,8 @@ describe 'The precedence rules migration' do
     Module.new.tap { |namespace| namespace.module_eval(ERB.new(template).result(binding)) }.const_get(migration_class_name).new
   end
 
-  def sources(missing: [], shared: [], conflicting: [])
-    allow(migration).to receive(:select_values).and_return(missing)
+  def sources(missing: [], orphaned: [], shared: [], conflicting: [])
+    allow(migration).to receive(:select_values).and_return(missing, orphaned)
     allow(migration).to receive(:select_rows).and_return(shared, conflicting)
   end
 
@@ -19,6 +19,13 @@ describe 'The precedence rules migration' do
     expect(migration).not_to receive(:create_table)
 
     expect { migration.up }.to raise_error(RuntimeError, /Give these LaForge data sources a priority before migrating, as each becomes the source's global precedence: Cadastre, Map Editor/)
+  end
+
+  it 'raises, naming the missing sources, before creating anything when entries with a priority belong to a deleted source' do
+    sources(orphaned: [7, 9])
+    expect(migration).not_to receive(:create_table)
+
+    expect { migration.up }.to raise_error(RuntimeError, /LaForge data entries with a priority belong to sources that no longer exist \(source ids 7, 9\)/)
   end
 
   it 'raises, naming the shared values and their sources, before creating anything when sources share a priority' do
