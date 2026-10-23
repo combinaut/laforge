@@ -221,7 +221,8 @@ module LaForge
         diff[key] = [value, forge_attrs[key]] if forge_attrs[key] != value
       end
 
-      laforged_associations.each do |name, config|
+      names = forge_options[:attributes] ? Array.wrap(forge_options[:attributes]).map(&:to_s) : laforged_associations.keys # as forge limits them
+      laforged_associations.slice(*names).each do |name, config|
         association_diff = AssociationTracking.diff(self, config)
         diff[name] = association_diff if association_diff
       end

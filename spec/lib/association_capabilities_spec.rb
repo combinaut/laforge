@@ -1272,6 +1272,13 @@ describe 'Association tracking capabilities' do
       expect(Tenant.sole.unit).to eq('2B')
     end
 
+    it 'previews only the associations forge_diff is given, as forge forges only those', capability: 'C115' do
+      place.record_data_entries({ name: 'Harbor Hall', place_categories: categories(cafe) }, low)
+
+      expect(place.forge_diff(attributes: :name).keys).to eq(['name'])
+      expect(place.forge_diff(attributes: :place_categories).keys).to eq(['place_categories'])
+    end
+
     it 'forges attributes and associations in one transaction, rolling back everything if a member is invalid', capability: 'C36' do
       place.record_data_entries({ name: 'Renamed', tenants: [tenant('T-1', name: nil)] }, low)
 
