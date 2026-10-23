@@ -1246,6 +1246,22 @@ describe 'Association tracking capabilities' do
       expect(Marker.count).to eq(0) # noted: destroyed per `dependent: :destroy`
     end
 
+    it 'discards a member a forge built, not saved yet, when a later forge before the save removes it', capability: 'C127' do
+      stub_const('DetachingPlace', Class.new(ActiveRecord::Base))
+      DetachingPlace.table_name = 'places'
+      DetachingPlace.has_one :marker, as: :markable # no dependent:, so removal nullifies
+      DetachingPlace.laforged(associations: { marker: {} })
+      detaching_place = DetachingPlace.create!(name: 'Harbor Building')
+
+      detaching_place.record_data_entries({ marker: { label: 'Harbor' } }, low)
+      detaching_place.forge # builds the marker, unsaved
+      detaching_place.record_data_entries({ marker: nil }, low)
+      detaching_place.forge!
+
+      expect(Marker.count).to eq(0)
+      expect(detaching_place.reload.marker).to be_nil
+    end
+
     it 'rejects more than one member and partial reports', capability: 'C59' do
       expect { place.record_data_entries({ marker: [{}, {}] }, low) }.to raise_error(ArgumentError)
       expect { place.record_data_entries({ marker: { label: 'A' } }, low, mode: :partial) }.to raise_error(ArgumentError)

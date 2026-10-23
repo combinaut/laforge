@@ -588,7 +588,8 @@ module LaForge
     end
 
     # Names the members a forge created by their new ids in the reports, destroys the entries it withdrew from members, and
-    # removes the has_one members it replaced
+    # removes the has_one members it replaced. A member that was never saved, such as a has_one member an earlier forge
+    # built and a later one dropped, is discarded, since saving it to detach it would leave an orphan row.
     def laforge_after_save
       (@laforge_created_members || {}).each { |name, created| AssociationTracking.name_created(self, laforged_associations.fetch(name), created) }
       @laforge_created_members = nil
@@ -599,6 +600,8 @@ module LaForge
       @laforge_withdrawn_entries = nil
       @laforge_marked_members = nil
       (@laforge_replaced_members || []).each do |config, record|
+        next if record.new_record?
+
         case config.reflection.options[:dependent]
         when :destroy, :destroy_async then record.destroy!
         when :delete, :delete_all
