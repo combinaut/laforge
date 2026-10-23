@@ -1,6 +1,7 @@
 module LaForge
   class DataEntry < ActiveRecord::Base
     self.table_name = "laforge_data_entries"
+    include Expiring
 
     # STORABLE_TYPES are the classes of value an entry can store. Values are stored as JSON, so symbols, dates and times
     # read back as strings. `storable?` also accepts arrays and hashes of them.
@@ -16,17 +17,19 @@ module LaForge
 
     delegate :precedence, to: :source, prefix: true, allow_nil: true
 
-    # `recorded_at` is when a source said the entry's value, which recording the same value again leaves as it is.
-    # Recording through LaForge sets it, and an entry saved without one gets the time of the save.
-    before_save { self.recorded_at ||= Time.current }
-
-    # CHANGED is the `ActiveSupport::Notifications` event published when an entry is created, its value changes, or it
-    # is destroyed, so a host can follow what sources say without reading every entry (see `publish_change`). It is
-    # published once the transaction commits, and not at all if it rolls back. `LaForge.merge` moves and combines
-    # entries without publishing, and entries deleted with their record publish nothing.
+    # CHANGED is the `ActiveSupport::Notifications` event published when an entry is created, its value or expiry
+    # changes, or it is destroyed, so a host can follow what sources say without reading every entry (see
+    # `publish_change`). It is published once the transaction commits, and not at all if it rolls back. An expiry on a
+    # source that fires sets `expires_at`, which is published when the entry is saved, and an entry expiring at its time
+    # publishes nothing. `LaForge.merge` moves and combines entries without publishing, and entries deleted with their
+    # record publish nothing.
     CHANGED = 'data_entry_changed.laforge'.freeze
 
-    after_save { DataEntry.publish_change(self, value_was: value_before_last_save, value: value) if previously_new_record? || saved_change_to_value? }
+    after_save do
+      if previously_new_record? || saved_change_to_value? || saved_change_to_expires_at? || saved_change_to_expires_on_source_id?
+        DataEntry.publish_change(self, value_was: value_before_last_save, value: value)
+      end
+    end
     after_destroy { DataEntry.publish_change(self, value_was: value, value: nil, destroyed: true) }
 
     # Publishes CHANGED for the entry once the current transaction commits. The payload is taken now, its values deep
@@ -35,9 +38,11 @@ module LaForge
     # - record_type, record_id, attribute_name, source_id: the entry's
     # - value_was, value: its value before and after the write
     # - destroyed: whether the write destroyed it
+    # - expires_at, expires_on_source_id: its expiry after the write
     def self.publish_change(entry, value_was:, value:, destroyed: false)
       payload = { entry: entry, record_type: entry.record_type, record_id: entry.record_id, attribute_name: entry.attribute_name,
-                  source_id: entry.source_id, value_was: value_was.deep_dup, value: value.deep_dup, destroyed: destroyed }
+                  source_id: entry.source_id, value_was: value_was.deep_dup, value: value.deep_dup, destroyed: destroyed,
+                  expires_at: entry.expires_at, expires_on_source_id: entry.expires_on_source_id }
       ::ActiveRecord::Base.current_transaction.after_commit { ActiveSupport::Notifications.instrument(CHANGED, payload) }
     end
 

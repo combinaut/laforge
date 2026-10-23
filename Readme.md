@@ -52,10 +52,12 @@ Key features:
 2. Add the columns 1.0 adds to LaForge's tables. Each generator creates one migration.
   - `laforge:recorded_at` adds `recorded_at` to data entries, filled from `updated_at`.
   - `laforge:active_sources` adds `active` to data sources, with every existing source active (see [Deactivating a source](#deactivating-a-source)).
+  - `laforge:expiry` adds `expires_at` and `expires_on_source_id` to data entries and precedence rules, and `recorded_at` to precedence rules, filled from `updated_at`. Nothing expires until a change is made with an expiry (see [Expiring a change](#expiring-a-change)). It also gives `created_at` and `updated_at` on LaForge's three tables sub-second precision, matching `recorded_at`, which an expiry on a source compares between a recording and the change it ends; this rewrites the columns, which can take a while on a large `laforge_data_entries` table.
 
   ```bash
     rails generate laforge:recorded_at
     rails generate laforge:active_sources
+    rails generate laforge:expiry
     rails db:migrate
   ```
 
@@ -130,7 +132,7 @@ A source's precedence ranks its values everywhere, unless a more specific rule a
 
 | Level | Set with |
 |---|---|
-| One attribute of one record | `record.update_precedence_order(:height, [source2, source1])`, `record.update_attribute_source_precedence(:height, source2, 3)`, or `precedence:` when recording |
+| One attribute of one record | `record.update_precedence_order(:height, [source2, source1])`, `record.update_attribute_source_precedence(:height, source2, 3)`, or `precedence:` when recording; each also takes `expires_at:` and `expires_on:` (see [Expiring a change](#expiring-a-change)) |
 | One attribute of every record of a model | `MyModel.update_precedence_order([source2, source1], attribute: :height)` or `MyModel.update_attribute_source_precedence(:height, source2, 3)` |
 | Every attribute of every record of a model | `MyModel.update_precedence_order([source2, source1])` or `MyModel.update_source_precedence(source2, 3)` |
 | Everything (the source's own precedence) | `LaForge.update_precedence_order([source2, source1])` or `source2.update!(precedence: 3)` |
@@ -379,17 +381,82 @@ A source that is no longer used can be deactivated. From each record's next forg
 
 In a tracked association, an inactive source's reports are left out too. Members only it listed become rows no report has named, which are left alone, and its exclusions and tombstones stop applying until it is active again. A tenant it excluded that another source reported as new meanwhile is removed, per `dependent:`, by the first forge after it is activated again. A tenant the application created itself meanwhile, after `LaForge.tombstone_blocking` allowed it, keeps its id and is not matched against the tombstone, so the exclusion does not apply to it.
 
+### Expiring a change
+
+A change to one record can be made to expire, so the record goes back to what its sources say without it and no one has to remember to undo it. A recorded value, a record's precedence order, a single precedence, or several of them in one save, take `expires_at:` (a time) or `expires_on:` (a source, so the change expires the next time that source records the same attribute or association for the record, whatever it reports, which sets `expires_at` to when it was recorded). Only a recording made after the change counts, so a report the source made earlier, kept pending on an owner until the owner is forged, does not end it.
+
+  ```ruby
+    # Rename the place until the next cadastre import
+    place.record_data_entries({ name: 'Harbor Building (temporary)' }, map_editor, expires_on: cadastre)
+
+    # Rank the business registry first for the name for a month
+    place.update_precedence_order(:name, [business_registry], expires_at: 1.month.from_now)
+    place.forge!
+  ```
+
+- **Recording the value again, or setting the order again, replaces its expiry**; leaving the options out clears it. A precedence passed with `precedence:` while recording takes the same expiry. A value can't expire on the source recording it, since that source's next recording replaces it anyway.
+- **An expired row is left out of forging, and kept.** Like an inactive source's entries, an expired value no longer counts, so the attribute falls back to the next source, or keeps its value where no other source has one; an expired order no longer ranks, so the next level's order applies. The rows stay readable, so a settings screen can show when a change expired, and removing them is up to the application. `source_precedences` lists only the rules that still count.
+- **An expired association report counts as if it did not exist**, exactly as an inactive source's report, and nothing is removed because of the expiry itself. A report recorded whole, as a complete or partial list, expires as a whole with the call's expiry. A member only it named becomes a row no report names, which is left alone; a member another report excludes, such as a higher-ranked complete list that leaves it out, is removed once the expired report no longer keeps it in. An expired exclusion or tombstone stops keeping its member out, so a source can bring the member back. What the report says about members is recorded on them with the same expiry, so their attributes fall back with it.
+- **An expiry on part of an attribute group applies to the whole group.**
+- **Only changes to one record expire.** Model-wide and global rules are configuration; giving one an expiry raises.
+
+**Timing is the application's job.** Like any precedence change, an expiry takes effect at the record's next forge; nothing changes in between. An expiry on a source takes effect at the forge that follows that source's recording, which an import does anyway. For expiries at a time, list what expires and forge those records on schedule, or warn ahead of time.
+
+  ```ruby
+    LaForge::DataEntry.expiring(before: 1.week.from_now)       # expired already, or expiring within the week
+    LaForge::PrecedenceRule.expiring(before: Time.current)     # rules that have expired, whose records need a forge
+    LaForge::DataEntry.expired                                 # and .unexpired; both take a time, now by default
+  ```
+
+LaForge publishes nothing when a change expires by time, and the forge writes nothing because of an expiry, since an expiry is not new data. The event that recorded the change carries its expiry, so the application's change tracking can note when it will expire and decide what to do (see [Following changes](#following-changes)). An expiry on a source that fires sets `expires_at` on the waiting entry, which is published when the entry is saved.
+
+#### Expiring one member
+
+In an edit (`mode: :edit`), the expiry is given to each member the edit includes or excludes, not to the source's report, so editing one member leaves the expiries earlier edits gave the others as they are. Editing the same member again replaces its expiry, and leaving the options out makes it permanent.
+
+  ```ruby
+    # Close the corner café until March; a later edit of another tenant leaves that alone
+    place.record_data_entries({ tenants: { exclude: [corner_cafe] } }, map_editor, mode: :edit, expires_at: Date.new(2026, 3, 1).beginning_of_day)
+    place.record_data_entries({ tenants: [{ id: harbor_books.id, unit: '2B' }] }, map_editor, mode: :edit)
+  ```
+
+- **An expired inclusion or exclusion is no opinion on that member**, as an expired report is no opinion on any. An expired inclusion no longer keeps the member in, so a complete list from another source that leaves it out removes it, and an expired exclusion or its tombstone stops keeping the member out. A complete list's own inclusion that has expired excludes the member, as the list no longer lists it. What an expired inclusion said about the member is not recorded on it.
+- **An expiry on a source** fires the next time that source records the association for the record, under the same rule as for a row, so only a recording made after the edit counts.
+- **A complete list can't exclude a member with an expiry**: excluding from it drops the member from the list. Record the source's list with `mode: :partial`, or exclude from another source.
+- **Edits don't change the report's own expiry**: a report recorded whole with an expiry expires as a whole, edits since included. An edit over a report whose expiry has passed starts a new report, which does not expire. A `precedence:` passed with an edit takes its expiry, as everything else it sets does.
+- **The `expiring` scopes can't see these expiries**, which are kept in the report's value. `place.data_entries.membership_expiries(:tenants)` lists them, as `[{ source_id:, key:, expires_at:, expires_on_source_id: }]`.
+
+#### Settings for part of a payload
+
+`LaForge.with_settings(value, precedence:, expires_at:, expires_on:)` wraps any part of a payload with settings of its own, which replace the call's for everything recorded from it: an attribute's value, a belongs_to, a member (its attributes, nested lists and its inclusion), an exclusion, or a nested list. Options left out are not given, so a wrapper without an expiry makes what it wraps permanent. One call then records what would otherwise take one call per setting.
+
+  ```ruby
+    place.record_data_entries({
+      name: LaForge.with_settings('Harbor Building (temporary)', expires_on: cadastre),
+      tenants: {
+        include: [{ id: harbor_books.id, unit: '2B' }, LaForge.with_settings({ name: 'Bakery Pop-up' }, expires_at: 1.month.from_now)],
+        exclude: [LaForge.with_settings(corner_cafe, expires_at: 3.months.from_now)]
+      }
+    }, map_editor, mode: :edit)
+  ```
+
+- **Precedence ranks a source for a whole association**, so a wrapper's precedence on a member applies to the member's own attributes, and the association's precedence comes from the call, or from a wrapper around the association's whole value. A wrapper with a precedence of its own around a member with no attributes, such as an exclusion or a saved record, raises.
+- **An attribute group takes one set of settings**: wrapping some of its attributes but not the others, or wrapping them differently, raises.
+- **Settings go where something can carry them**: wrapping part of an attribute's value, part of a member's key, a list of members rather than each member, or a member to forget raises, saying where. `record_data_entry` takes a wrapped value too.
+
 ### Following changes
 
-Each data entry saved with a new or changed value, and each one destroyed, publishes `LaForge::DataEntry::CHANGED` (`'data_entry_changed.laforge'`), so an application can follow what sources say without reading every entry, such as to notice that an import changed the value an editor's entry replaced.
+Each data entry saved new, or with its value or its expiry changed, and each one destroyed, publishes `LaForge::DataEntry::CHANGED` (`'data_entry_changed.laforge'`), so an application can follow what sources say without reading every entry, such as to notice that an import changed the value an editor's entry replaced.
 
   ```ruby
     ActiveSupport::Notifications.subscribe(LaForge::DataEntry::CHANGED) do |*, payload|
-      payload # => { entry:, record_type:, record_id:, attribute_name:, source_id:, value_was:, value:, destroyed: }
+      payload # => { entry:, record_type:, record_id:, attribute_name:, source_id:, value_was:, value:, destroyed:, expires_at:, expires_on_source_id: }
     end
   ```
 
-The event fires once the write is committed, and not at all if the transaction rolls back, so a subscriber can enqueue a job, notify someone, or update another store without acting on a change that never happened. A write outside an explicit transaction is committed, and published, as it is saved. Each payload is taken when its write is made, so `value_was` is right when one transaction saves an entry more than once.
+The event fires once the write is committed, and not at all if the transaction rolls back, so a subscriber can enqueue a job, notify someone, or update another store without acting on a change that never happened. A write outside an explicit transaction is committed, and published, as it is saved. Each payload is taken when its write is made, so `value_was` and the expiry are right when one transaction saves an entry more than once.
+
+The payload carries the entry's expiry, so recording the same value again with a new or cleared expiry publishes too. Nothing is published when a change expires by time; the event that recorded it already said when it would (see [Expiring a change](#expiring-a-change)).
 
 Writes that skip callbacks publish nothing. These are `LaForge.merge` moving entries between records, and rows removed by database cascades, such as when a source is deleted.
 
@@ -414,7 +481,7 @@ When two records turn out to be the same, merge what LaForge holds for the dupli
     duplicate.archive!                                   # the duplicate is left to the application
   ```
 
-- **Attribute entries and per-record precedence rules** move to the survivor. Where both records have one for the same attribute and source, that's a conflict, and the function decides which is kept. The other is destroyed.
+- **Attribute entries and per-record precedence rules** move to the survivor. Where both records have one for the same attribute and source, that's a conflict, and the function decides which is kept, unless only one of them has expired, in which case the one that still counts is kept. The other is destroyed.
 - **Members of tracked associations** move to the survivor with their ids and everything recorded on them. Where both records have a member with the same key, as two join rows naming the same category do, the survivor's row is kept, and the duplicate's row is merged into it the same way, forged, and destroyed. Where both have a has_one member with different keys, such as markers with different labels, the merge raises `ArgumentError` before anything moves, since the survivor can hold only one. Remove one of them, or give them the same key, then merge again. The same goes for one source's has_one reports on both records that name members with different keys, as before either record is forged.
 - **Each source's reports** on the two records are combined, so the survivor's report names every member either named, and keeps both records' tombstones. Where the reports disagree about a member, the winner's opinion is kept.
 - **Not touched:** associations LaForge doesn't track, and the duplicate itself, which is left with no LaForge data for the application to archive or destroy.

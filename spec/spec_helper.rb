@@ -30,12 +30,14 @@ ActiveRecord::Schema.define(version: 0) do
     t.timestamps null: false
   end
 
-  drop_table :laforge_precedence_rules, if_exists: true # references laforge_data_sources, so it goes first
+  # Both reference laforge_data_sources, so they go first
+  drop_table :laforge_precedence_rules, if_exists: true
+  drop_table :laforge_data_entries, if_exists: true
 
   create_table :laforge_data_sources, force: true do |t|
     t.text :name
     t.boolean :active, null: false, default: true
-    t.timestamps null: false
+    t.timestamps precision: 6, null: false
   end
 
   create_table :laforge_data_entries, force: true do |t|
@@ -44,7 +46,9 @@ ActiveRecord::Schema.define(version: 0) do
     t.belongs_to :source, null: false, index: false
     t.json :value
     t.datetime :recorded_at, precision: 6, null: false
-    t.timestamps null: false
+    t.datetime :expires_at, precision: 6, index: true
+    t.references :expires_on_source, foreign_key: { to_table: :laforge_data_sources, on_delete: :nullify }
+    t.timestamps precision: 6, null: false
   end
 
   create_table :laforge_precedence_rules, force: true do |t|
@@ -53,8 +57,11 @@ ActiveRecord::Schema.define(version: 0) do
     t.string :attribute_name, null: false, default: ''
     t.references :source, null: false, index: false, foreign_key: { to_table: :laforge_data_sources, on_delete: :cascade }
     t.integer :precedence, null: false
+    t.datetime :expires_at, precision: 6, index: true
+    t.references :expires_on_source, foreign_key: { to_table: :laforge_data_sources, on_delete: :nullify }
+    t.datetime :recorded_at, precision: 6, null: false
     t.virtual :global_precedence, type: :integer, as: "CASE WHEN record_type = '' THEN precedence END", stored: true
-    t.timestamps null: false
+    t.timestamps precision: 6, null: false
     t.index %i[record_type record_id attribute_name source_id], unique: true, name: :index_laforge_precedence_rules_on_scope_and_source
     t.index :global_precedence, unique: true
   end

@@ -194,6 +194,7 @@ module LaForge
       raise ArgumentError, "#{owner_class.name}##{name} edits are a list of members, or { include:, exclude:, forget: }, not #{unknown.join(', ')}" if unknown.any?
 
       lists.flat_map do |action, members|
+        raise ArgumentError, "#{owner_class.name}##{name}: LaForge.with_settings can wrap each member, or the association's whole value, not the #{action} list" if RecordingSettings.wrapped?(members)
         raise ArgumentError, "#{owner_class.name}##{name} edits must list members as an array for #{action}" unless members.is_a?(Array)
 
         members.map { |member| [action.to_sym, member] }
@@ -226,6 +227,7 @@ module LaForge
 
     def normalize_member(member, attributes:, edit:)
       member = member_hash(member)
+      assert_key_unwrapped!(member)
       return named_tombstone(member, attributes: attributes) if tombstone?(member)
 
       member = keyed_member(member, attributes: attributes)
@@ -246,6 +248,16 @@ module LaForge
       end
       member = member.to_h if member.is_a?(Tombstone)
       member.to_h.stringify_keys
+    end
+
+    # Raises for a wrapper (see RecordingSettings) around a member's key column, placeholder key or tombstone token,
+    # which cannot carry settings
+    def assert_key_unwrapped!(member)
+      (key + [NEW_MEMBER, TOMBSTONE]).each do |column|
+        next unless RecordingSettings.wrapped?(member[column])
+
+        raise ArgumentError, "#{owner_class.name}##{name}: LaForge.with_settings around #{column}, part of a member's key, which cannot carry settings; wrap the whole member instead"
+      end
     end
 
     # Returns [key hash, no attributes] for a tombstone, which can only be named. Raises when `attributes` is true.
@@ -272,6 +284,7 @@ module LaForge
     def assert_attribute!(field, value, attributes:, edit:)
       return if (field == NEW_MEMBER && primary_keyed?) || key.include?(field)
 
+      value = unwrapped_value(field, value)
       if !attributes
         raise ArgumentError, "#{owner_class.name}##{name} members are named here by key only (#{key.join(', ')}), not #{field}"
       elsif (nested = nested_config(field)) # validated now, recorded on the member when a forge of the owner includes it
@@ -285,23 +298,37 @@ module LaForge
       end
     end
 
+    # Returns a member's `value` for `field` without the wrapper around all of it (see RecordingSettings), as a nested
+    # list or an attribute's whole value may be wrapped. Raises for a wrapper around part of an attribute's value. A
+    # nested list's members keep theirs, for `assert_nested_list!` to check where they are.
+    def unwrapped_value(field, value)
+      value = RecordingSettings::DEFAULT.for(value).first
+      return value if nested_config(field)
+
+      RecordingSettings.assert_none_in!(value, where: "#{klass.name}##{field} on members of #{owner_class.name}##{name}")
+      value
+    end
+
     # Raises when `value`, a member's list for the nested tracked association `nested`, is invalid. A collection's list
-    # in an edit is validated as edits.
+    # in an edit is validated as edits. Each member is read without its own wrapper, as recording reads it, so a wrapper
+    # anywhere else in the member, such as around its key, raises now rather than when a forge records it.
     def assert_nested_list!(nested, value, edit:)
+      unwrap = ->(member) { RecordingSettings::DEFAULT.for(member).first }
       if edit && nested.collection? && !value.nil?
-        nested.edits(value).each { |action, nested_member| nested.normalize_members([nested_member], attributes: action == :include, edit: true) }
+        nested.edits(value).each { |action, nested_member| nested.normalize_members([unwrap.(nested_member)], attributes: action == :include, edit: true) }
       else
-        nested.normalize_members(value)
+        nested.normalize_members(value.is_a?(Array) ? value.map(&unwrap) : unwrap.(value))
       end
     end
 
     # Raises unless the member's attributes include every attribute of each attribute group of the member model they
-    # touch
+    # touch, all wrapped with the same settings or none
     def assert_whole_groups!(member)
       return unless klass.respond_to?(:laforge)
 
       fields = member.keys.reject { |field| field == NEW_MEMBER || key.include?(field) || nested_config(field) }
       klass.laforge.assert_whole_groups!(fields, where: "#{klass.name} members of #{owner_class.name}##{name}")
+      RecordingSettings.assert_groups_alike!(klass, member.slice(*fields), where: "#{klass.name} members of #{owner_class.name}##{name}")
     end
 
     # Raises unless the member has a value for each key column

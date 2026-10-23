@@ -33,13 +33,15 @@ module LaForge
       payload.to_h.stringify_keys.each_with_object({}) do |(field, value), result|
         if (name = nested_attributes_name(model, field))
           require_edit!(model, field, edit)
-          edits = nested_attributes(model.laforge.association(name), field, value, record, owner)
-          result[name] = edits unless edits.equal?(REJECTED)
+          edits = within_settings(value) { |inner| nested_attributes(model.laforge.association(name), field, inner, record, owner) }
+          result[name] = edits unless RecordingSettings.strip(edits).equal?(REJECTED)
         elsif (reflection = ids_reflection(model, field))
           require_edit!(model, field, edit)
-          result.merge!(ids(model, field, reflection, value, record))
+          ids = value.is_a?(WithSettings) ? value.value : value
+          RecordingSettings.assert_none_in!(ids, where: "Recording #{model.name}##{field}") # each id becomes an edit with the field's settings, so no id can have its own
+          result.merge!(ids(model, field, reflection, ids, record).transform_values { |edits| within_settings(value) { edits } })
         elsif tracked?(model, field)
-          result[field] = members(model.laforge.association(field), value, record, edit: edit)
+          result[field] = within_settings(value) { |inner| members(model.laforge.association(field), inner, record, edit: edit) }
         else
           result[field] = value
         end
@@ -47,6 +49,12 @@ module LaForge
     end
 
     private
+
+    # Yields `value`, or the value it wraps when it is a wrapper (see RecordingSettings), and returns the block's result
+    # in a wrapper with the same settings when it is one
+    def within_settings(value)
+      value.is_a?(WithSettings) ? value.with_value(yield(value.value)) : yield(value)
+    end
 
     # Returns the name of the tracked association a `*_attributes` field is for, or nil when it names no association.
     # Raises when the association is not tracked.
@@ -78,9 +86,9 @@ module LaForge
       options = nested_attributes_options(config, field)
       unless config.collection?
         attributes = value.to_h.stringify_keys
-        return REJECTED if rejected?(config, attributes, form_owner, options)
+        return REJECTED if rejected?(config, RecordingSettings.strip(attributes), form_owner, options)
 
-        return member(config, attributes.except(DESTROY), owner) unless destroy?(attributes, options)
+        return member(config, attributes.except(DESTROY), owner) unless destroy?(RecordingSettings.strip(attributes), options)
         return REJECTED if attributes['id'].blank? # as Rails ignores a new row being destroyed
 
         find_row!(config, attributes['id'], owner) # an id that is not the current member's raises, as in Rails
@@ -90,13 +98,15 @@ module LaForge
       items = hash?(value) ? value.to_h.stringify_keys : value
       items = items.key?('id') ? [items] : items.values if items.is_a?(Hash) # keyed by index, as Rails forms submit them
       include, exclude = [], []
-      Array(items).map { |attributes| attributes.to_h.stringify_keys }.each do |attributes|
-        next if rejected?(config, attributes, form_owner, options)
+      Array(items).each do |row|
+        attributes = (row.is_a?(WithSettings) ? row.value : row).to_h.stringify_keys
+        plain = RecordingSettings.strip(attributes) # the row as `reject_if` and `_destroy` see it, without wrappers
+        next if rejected?(config, plain, form_owner, options)
 
-        if !destroy?(attributes, options)
-          include << member(config, attributes.except(DESTROY), owner)
+        if !destroy?(plain, options)
+          include << within_settings(row) { member(config, attributes.except(DESTROY), owner) }
         elsif attributes['id'].present?
-          exclude << key_of(config, attributes, owner)
+          exclude << within_settings(row) { key_of(config, attributes, owner) }
         end
       end
       { 'include' => include, 'exclude' => exclude }
@@ -143,10 +153,11 @@ module LaForge
       end
     end
 
-    # Returns a member hash with its own Rails form shapes translated, or anything else as it is. Where the association
-    # is keyed by other columns than the primary key, an `id` is replaced by the key of the owner's row it names, and
-    # raises when it names none.
+    # Returns a member hash, or a wrapper around one, with its own Rails form shapes translated, or anything else as it
+    # is. Where the association is keyed by other columns than the primary key, an `id` is replaced by the key of the
+    # owner's row it names, and raises when it names none.
     def member(config, attributes, owner, edit: true)
+      return within_settings(attributes) { |inner| member(config, inner, owner, edit: edit) } if attributes.is_a?(WithSettings)
       return attributes unless hash?(attributes)
 
       attributes = attributes.to_h.stringify_keys

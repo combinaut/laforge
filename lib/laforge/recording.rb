@@ -5,6 +5,9 @@ module LaForge
 
     API = %i[record_data_entry record_data_entries remove_data_entries withdraw_source].freeze
 
+    # RECORDED_COLUMNS are the columns of an entry that a recording makes the change again by changing (see Expiring)
+    RECORDED_COLUMNS = %w[value expires_at expires_on_source_id].freeze
+
     # Record a single piece of information from a source.
     # Optionally pass `precedence` to set this record's precedence for the attribute and source, saved with the record.
     # Omitting it keeps an existing precedence, and passing nil removes it.
@@ -12,10 +15,12 @@ module LaForge
     # polymorphic.
     # A tracked association's value is a complete report, and the shapes a Rails form submits raise, as in the default
     # mode of `record_data_entries`.
+    # `expires_at:` and `expires_on:` expire the entry, and a precedence passed with it, as for `record_data_entries`. A
+    # value wrapped with `LaForge.with_settings` takes the wrapper's settings.
     # Raises for an attribute in an attribute group, whose attributes are recorded together with `record_data_entries`.
-    def record_data_entry(attribute_name, value, source, precedence: NOT_GIVEN)
+    def record_data_entry(attribute_name, value, source, precedence: NOT_GIVEN, expires_at: nil, expires_on: nil)
       self.class.assert_whole_groups!([attribute_name], where: "Recording #{record.class.name}##{attribute_name}")
-      record_data_entries({ attribute_name => value }, source, precedence: precedence)
+      record_data_entries({ attribute_name => value }, source, precedence: precedence, expires_at: expires_at, expires_on: expires_on)
     end
 
     # Record several pieces of information from the same source.
@@ -31,21 +36,29 @@ module LaForge
     # Where members are keyed by primary key, a hash without an id is a new member.
     # `precedence:` covers everything the call records, members' attributes included (see `record_data_entry`).
     # The attributes of an attribute group are recorded together, on the record and on members alike.
-    def record_data_entries(attributes_hash, source, precedence: NOT_GIVEN, mode: :complete)
+    # `expires_at:` and `expires_on:` expire what the call records, and a precedence passed with it (see Expiring).
+    # Recording again replaces the expiry, and leaving them out clears it. A complete or partial report expires as a
+    # whole, and what it says about its members is recorded on them with the same expiry. An edit's expiry goes to each
+    # member it includes or excludes and to a precedence passed with it, and not to the report (see MemberList).
+    # A part of the payload wrapped with `LaForge.with_settings` takes the wrapper's settings in place of the call's.
+    def record_data_entries(attributes_hash, source, precedence: NOT_GIVEN, mode: :complete, expires_at: nil, expires_on: nil)
       raise ArgumentError, "Unknown mode #{mode.inspect}; pass :complete, :partial or :edit" unless %i[complete partial edit].include?(mode)
 
+      where = "Recording #{record.class.name}"
+      settings = RecordingSettings.given(precedence: precedence, expires_at: expires_at, expires_on: expires_on, source: source, where: where)
+      RecordingSettings.assert_wrappers_valid!(attributes_hash.to_h, DataSource.normalize_source_id(source), where: where)
       edit = mode == :edit
       payload = Payload.translate(record.class, attributes_hash, (record unless record.new_record?), edit: edit, owner: record)
-      self.class.assert_whole_groups!(payload.keys.reject { |attribute_name| associations.key?(attribute_name.to_s) }, where: "Recording #{record.class.name}")
+      self.class.assert_whole_groups!(payload.keys.reject { |attribute_name| associations.key?(attribute_name.to_s) }, where: where)
+      RecordingSettings.assert_groups_alike!(record.class, payload, where: where)
       payload.each do |attribute_name, value|
+        value, field_settings = settings.for(value)
         if edit && (config = associations[attribute_name.to_s])
-          TrackedAssociation.new(record, config).edit(value, source, precedence: precedence)
+          TrackedAssociation.new(record, config).edit(value, source, settings: field_settings)
         elsif (config = associations[attribute_name.to_s])
-          options = { precedence: precedence }
-          options[:partial] = true if mode == :partial
-          TrackedAssociation.new(record, config).record(value, source, **options)
+          TrackedAssociation.new(record, config).record(value, source, settings: field_settings, partial: mode == :partial)
         else
-          record_attribute(attribute_name, value, source, precedence: precedence)
+          record_attribute(attribute_name, value, source, settings: field_settings)
         end
       end
     end
@@ -79,40 +92,46 @@ module LaForge
 
     # @api private
     # Records one attribute, without checking its group. A `belongs_to` is recorded as its reference columns (see
-    # `reference_columns`). Raises for any other association LaForge does not track, an attribute with no setter, and a
-    # value JSON cannot store.
-    def record_attribute(attribute_name, value, source, precedence: NOT_GIVEN)
+    # `reference_columns`). Raises for any other association LaForge does not track, an attribute with no setter, a
+    # value wrapped with settings, and a value JSON cannot store.
+    def record_attribute(attribute_name, value, source, settings: RecordingSettings::DEFAULT)
       reflection = record.class.reflect_on_association(attribute_name)
       if reflection&.belongs_to?
-        return reference_columns(reflection, value).each { |column, column_value| write_data_entry(column, column_value, source, precedence: precedence) }
+        return reference_columns(reflection, value).each { |column, column_value| write_data_entry(column, column_value, source, settings: settings) }
       end
 
       raise InvalidAttributeName, "#{record.class.name}##{attribute_name} is not a tracked association" if reflection
       raise InvalidAttributeName, "Cannot set #{attribute_name} on #{record.class.name}" unless record.respond_to?("#{attribute_name}=")
+      RecordingSettings.assert_none_in!(value, where: "Recording #{record.class.name}##{attribute_name}")
       raise InvalidValue, "Cannot record #{value.class} for #{record.class.name}##{attribute_name}; values are stored as JSON, so record a string, number, boolean, date, nil, or an array or hash of those" unless DataEntry.storable?(value)
 
-      write_data_entry(attribute_name, value, source, precedence: precedence)
+      write_data_entry(attribute_name, value, source, settings: settings)
     end
 
     # @api private
     # Records what the source's report on the record's owner said about it at `recorded_at`, which the owner validated
     # when recording the report. An attribute the record has a newer entry for from the same source is left out, so an
-    # older report does not undo it. With `edit`, nested lists are recorded as edits. `precedence` covers everything
-    # recorded, nested lists included. Returns whether anything was recorded.
-    def record_reported(attributes, source, recorded_at, edit: false, precedence: NOT_GIVEN)
+    # older report does not undo it. With `edit`, nested lists are recorded as edits. `settings` cover everything
+    # recorded, nested lists included, except a part wrapped with settings of its own. What this records is made at
+    # `recorded_at` (see Expiring). Returns whether anything was recorded.
+    def record_reported(attributes, source, recorded_at, edit: false, settings: RecordingSettings::DEFAULT)
       newer = filter_data_entries_in_memory(sources: source).select { |entry| entry.recorded_at && entry.recorded_at > recorded_at }.map(&:attribute_name)
       attributes = attributes.except(*newer)
 
+      @replaying = true
       attributes.each do |attribute_name, value|
+        value, field_settings = settings.for(value)
         if (config = associations[attribute_name]) && edit && config.collection?
-          TrackedAssociation.new(record, config).edit(value, source, precedence: precedence, recorded_at: recorded_at)
+          TrackedAssociation.new(record, config).edit(value, source, settings: field_settings, recorded_at: recorded_at)
         elsif config
-          TrackedAssociation.new(record, config).record(value, source, precedence: precedence, recorded_at: recorded_at)
+          TrackedAssociation.new(record, config).record(value, source, settings: field_settings, recorded_at: recorded_at)
         else
-          write_data_entry(attribute_name, value, source, precedence: precedence, recorded_at: recorded_at)
+          write_data_entry(attribute_name, value, source, settings: field_settings, recorded_at: recorded_at)
         end
       end
       attributes.any?
+    ensure
+      @replaying = false
     end
 
     # @api private
@@ -134,15 +153,36 @@ module LaForge
     end
 
     # @api private
-    # Writes the source's entry for the attribute in memory, and the precedence rule for the attribute, or its attribute
-    # group, when `precedence` is given. Recording onto an entry marked for destruction undoes the unsaved removal.
-    def write_data_entry(attribute_name, value, source, precedence: NOT_GIVEN, recorded_at: Time.current)
-      data_entry = filter_data_entries_in_memory(attributes: attribute_name, sources: source).first
-      data_entry ||= record.data_entries.build(attribute_name: attribute_name, source_id: DataSource.normalize_source_id(source))
+    # Writes the source's entry for the attribute in memory, with the settings' entry expiry, and the precedence rule
+    # for the attribute, or its attribute group, when the settings give a precedence. Then expires the record's changes
+    # for the attribute that expire on the source (see `expire_on_recording`). Recording onto an entry marked for
+    # destruction undoes the unsaved removal.
+    def write_data_entry(attribute_name, value, source, settings: RecordingSettings::DEFAULT, recorded_at: Time.current)
+      source_id = DataSource.normalize_source_id(source)
+      data_entry = filter_data_entries_in_memory(attributes: attribute_name, sources: source_id).first
+      data_entry ||= record.data_entries.build(attribute_name: attribute_name, source_id: source_id)
       LaForge::ActiveRecord.set_marked_for_destruction(data_entry, false)
+      before = data_entry.attributes.slice(*RECORDED_COLUMNS)
       data_entry.value = value
-      data_entry.recorded_at = recorded_at if data_entry.new_record? || data_entry.will_save_change_to_value?
-      write_precedence_rule(self.class.group_of(attribute_name) || attribute_name, source, precedence) unless precedence.equal?(NOT_GIVEN)
+      settings.apply_to_entry(data_entry)
+      note_recorded(data_entry, recorded_at, before)
+      rule_name = self.class.group_of(attribute_name) || attribute_name.to_s
+      rule = write_precedence_rule(rule_name, source_id, settings, made_at: (recorded_at if @replaying)) if settings.precedence_given?
+      expire_on_recording(rule_name, source_id, recorded_at)
+      expire_replayed(rule_name, recorded_at, [data_entry, rule]) if @replaying
+    end
+
+    # @api private
+    # Expires `rows`, an entry and a rule a replay of a report made at `recorded_at` has just written, on a recording
+    # their expiry's source made between the report and the replay. That recording found nothing waiting, since the
+    # rows did not exist yet. The source's entries for the attribute, attribute group or association show when it last
+    # recorded them, and the earliest after `recorded_at` counts. A recording that changed nothing leaves no trace.
+    def expire_replayed(rule_name, recorded_at, rows)
+      attribute_names = attribute_groups.fetch(rule_name) { [rule_name] }
+      rows.compact.filter_map(&:expires_on_source_id).uniq.each do |trigger_id|
+        later = filter_data_entries_in_memory(attributes: attribute_names, sources: trigger_id).filter_map(&:recorded_at).select { |time| time > recorded_at }.min
+        expire_on_recording(rule_name, trigger_id, later) if later
+      end
     end
 
     # @api private
@@ -165,6 +205,34 @@ module LaForge
     end
 
     private
+
+    # Sets the entry's `recorded_at` and notes the change made again (see Expiring#remade) when this recording creates
+    # the entry or changes its value or expiry, from what is saved or from `before`, the columns as they were in memory.
+    # An expiry on a source that fired in memory and is set back as saved is a change too. A recording replayed from a
+    # pending report makes it at `recorded_at`.
+    def note_recorded(data_entry, recorded_at, before)
+      changed = before != data_entry.attributes.slice(*RECORDED_COLUMNS) || RECORDED_COLUMNS.any? { |column| data_entry.will_save_change_to_attribute?(column) }
+      return unless data_entry.new_record? || changed
+
+      data_entry.recorded_at = recorded_at
+      data_entry.remade((recorded_at if @replaying))
+    end
+
+    # Expires at `recorded_at` each change for the attribute, attribute group or association `rule_name` that expires on
+    # the source and was made before `recorded_at`, among:
+    # - the record's entries for it
+    # - the record's own rules for it
+    # - for a tracked association, the inclusions and exclusions in other sources' reports
+    # Any recording counts, whether or not it changes a value. One from a report kept pending counts at the time it was
+    # reported.
+    def expire_on_recording(rule_name, source_id, recorded_at)
+      attribute_names = attribute_groups.fetch(rule_name) { [rule_name] }
+      waiting = filter_data_entries_in_memory(attributes: attribute_names) + record.precedence_rules.select { |rule| rule.attribute_name == rule_name }
+      waiting.each do |row|
+        row.expire(recorded_at) if row.expires_on_source_id == source_id && recorded_at > row.changed_at
+      end
+      TrackedAssociation.new(record, associations[rule_name]).expire_members_on(source_id, recorded_at) if associations.key?(rule_name)
+    end
 
     # Returns { foreign_key => key, foreign_type => class name } for `target`, a record or nil, assigned to the
     # belongs_to `reflection`, foreign_type only when it is polymorphic. The key is the column `primary_key:` names, or

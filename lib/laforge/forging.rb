@@ -49,8 +49,9 @@ module LaForge
     # Optionally pass `sources` to limit data entries used in the calculation to only those from the given sources
     # Optionally pass `except_sources` to leave out the entries of the given sources, as when asking what would be
     # forged without one source's values
-    # An attribute in `attributes` brings in the rest of its group. Tracked associations and the entries of inactive
-    # sources are left out.
+    # An attribute in `attributes` brings in the rest of its group. Tracked associations, the entries of inactive
+    # sources and expired entries are left out. An expired entry for one attribute of a group leaves out its source's
+    # entries for the whole group.
     # Entries marked for destruction are left out, so each of their attributes takes the value of the next entry, and an
     # attribute with no other entry is left out of the hash.
     # An attribute of a group is nil when the source that supplies the group has no entry for it.
@@ -80,19 +81,19 @@ module LaForge
     # @api private
     # Returns `forge_diff` as it would be once `reported` is recorded on the record, then restores the record's entries
     # and rules. `reported` is what its owner's reports say about it, as
-    # [[source id, attributes, recorded_at, edit, precedence], ...].
+    # [[source id, attributes, recorded_at, edit, settings], ...].
     def forge_diff_with(reported)
       entries = record.data_entries.to_a
-      values = entries.to_h { |entry| [entry, [entry.value, entry.recorded_at, entry.marked_for_destruction?]] }
-      rules = record.precedence_rules.to_a # recording with a precedence builds or changes rules, which the owner's next save writes
-      precedences = rules.to_h { |rule| [rule, [rule.precedence, rule.marked_for_destruction?]] }
-      reported.each { |source_id, attributes, recorded_at, edit, precedence| record_reported(attributes, source_id, recorded_at, edit: edit, precedence: precedence) }
+      values = entries.to_h { |entry| [entry, [entry.attributes.slice('value', 'recorded_at', 'expires_at', 'expires_on_source_id'), entry.remade_state, entry.marked_for_destruction?]] }
+      rules = record.precedence_rules.to_a # recording builds, changes and expires rules, which the owner's next save writes
+      settings = rules.to_h { |rule| [rule, [rule.attributes.slice('precedence', 'recorded_at', 'expires_at', 'expires_on_source_id'), rule.remade_state, rule.marked_for_destruction?]] }
+      reported.each { |source_id, attributes, recorded_at, edit, item_settings| record_reported(attributes, source_id, recorded_at, edit: edit, settings: item_settings) }
       forge_diff
     ensure
       record.data_entries.target.replace(entries)
-      values.each { |entry, (value, recorded_at, marked)| entry.value = value; entry.recorded_at = recorded_at; LaForge::ActiveRecord.set_marked_for_destruction(entry, marked) }
+      values.each { |entry, (attributes, remade, marked)| entry.assign_attributes(attributes); entry.remade_state = remade; LaForge::ActiveRecord.set_marked_for_destruction(entry, marked) }
       record.precedence_rules.target.replace(rules)
-      precedences.each { |rule, (precedence, marked)| rule.precedence = precedence; LaForge::ActiveRecord.set_marked_for_destruction(rule, marked) }
+      settings.each { |rule, (attributes, remade, marked)| rule.assign_attributes(attributes); rule.remade_state = remade; LaForge::ActiveRecord.set_marked_for_destruction(rule, marked) }
     end
 
     # @api private
@@ -110,7 +111,7 @@ module LaForge
 
     # @api private
     # Returns the association's entries in precedence order, each paired with its report (see MemberList). Inactive
-    # sources' entries are left out unless `inactive` is true.
+    # sources' entries and expired entries are left out unless `inactive` is true.
     def association_reports(config, inactive: false)
       entries = inactive ? filter_data_entries_in_memory(attributes: config.name) : forging_entries(attributes: config.name)
       by_precedence(entries).map { |data_entry| [data_entry, MemberList.new(data_entry.value, marked: data_entry.marked_for_destruction?)] }
@@ -136,13 +137,22 @@ module LaForge
 
     # @api private
     # Returns the entries matching the filters that forging reads, leaving out those of inactive sources and of
-    # `except_sources`
+    # `except_sources`, and expired ones (see `expired?`)
     def forging_entries(attributes: nil, sources: nil, except_sources: nil)
       left_out = DataSource.inactive_ids + DataSource.normalize_source_ids(except_sources)
-      filter_data_entries_in_memory(attributes: attributes, sources: sources).reject { |data_entry| left_out.include?(data_entry.source_id) }
+      filter_data_entries_in_memory(attributes: attributes, sources: sources).reject { |data_entry| left_out.include?(data_entry.source_id) || expired?(data_entry) }
     end
 
     private
+
+    # Whether the entry has expired, or, for an attribute of a group, whether any of its source's entries for the group
+    # has, so a group expires as a whole
+    def expired?(data_entry)
+      group = self.class.group_of(data_entry.attribute_name)
+      return data_entry.expired? unless group
+
+      filter_data_entries_in_memory(attributes: attribute_groups.fetch(group), sources: data_entry.source_id).any?(&:expired?)
+    end
 
     def by_precedence(entries)
       DataEntry.in_precedence_order(entries, record: record)

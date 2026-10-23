@@ -3,13 +3,16 @@ module LaForge
   # found:
   #
   # - The duplicate's attribute entries and per-record precedence rules move to the survivor. When both records have one
-  #   for the same attribute and source, the winner's is kept and the other's destroyed.
+  #   for the same attribute and source, the winner's is kept and the other's destroyed, unless the winner's has expired
+  #   and the other's has not.
   # - In each tracked association, the duplicate's members move to the survivor, keeping their ids and everything
   #   recorded on them. Where both records have a member with the same key, as join rows naming the same record do, the
   #   survivor's row is kept. The duplicate's row is merged into it the same way, then destroyed. Where both have a
   #   has_one member and their keys differ, or a source's has_one reports on both name members whose keys differ, the
   #   merge raises and nothing moves.
-  # - Where a source has a report on both records, the two are combined into the survivor's (see `combined_report`).
+  # - Where a source has a report on both records, the two are combined into the survivor's (see `combined_report`),
+  #   with the expiry of the report that would be kept as an attribute entry is. An expired report adds nothing to one
+  #   that has not expired.
   #
   # The survivor is not forged, so forge it afterwards. A member merged into one of the survivor's is forged and saved
   # by the merge. The duplicate is left for the application to archive or destroy, with no LaForge data, and
@@ -46,15 +49,19 @@ module LaForge
           entry.update_columns(record_id: survivor.id)
           report[:entries_moved] += 1
         elsif (config = survivor.class.laforge.associations[entry.attribute_name])
-          winning, losing = winner == :survivor ? [other, entry] : [entry, other]
-          combined = combined_report(config, MemberList.new(winning.value), MemberList.new(losing.value))
+          winning = kept_row(other, entry, winner)
+          losing = winning.equal?(other) ? entry : other
+          losing_report = losing.expired? && !winning.expired? ? MemberList.new([]) : MemberList.new(losing.value)
+          combined = combined_report(config, MemberList.new(winning.value), losing_report)
           assert_one_member!(survivor, duplicate, config, entry.source, combined) unless config.collection?
-          other.update_columns(value: combined, recorded_at: [other.recorded_at, entry.recorded_at].max)
+          other.update_columns(value: combined, recorded_at: [other.recorded_at, entry.recorded_at].max,
+                               expires_at: winning.expires_at, expires_on_source_id: winning.expires_on_source_id)
           entry.destroy!
         else
-          conflict = { attribute: entry.attribute_name, source: entry.source, kept: winner }
+          keep_survivors = kept_row(other, entry, winner).equal?(other)
+          conflict = { attribute: entry.attribute_name, source: entry.source, kept: keep_survivors ? :survivor : :duplicate }
           report[:entries_conflicting] << conflict unless other.value == entry.value
-          if winner == :survivor
+          if keep_survivors
             entry.destroy!
           else
             other.destroy!
@@ -74,8 +81,9 @@ module LaForge
           rule.update_columns(record_id: survivor.id)
           report[:precedence_rules_moved] += 1
         else
-          report[:precedence_rules_conflicting] << { attribute: rule.attribute_name, source: rule.source, kept: winner } unless other.precedence == rule.precedence
-          if winner == :survivor
+          keep_survivors = kept_row(other, rule, winner).equal?(other)
+          report[:precedence_rules_conflicting] << { attribute: rule.attribute_name, source: rule.source, kept: keep_survivors ? :survivor : :duplicate } unless other.precedence == rule.precedence
+          if keep_survivors
             rule.destroy!
           else
             other.destroy!
@@ -115,6 +123,13 @@ module LaForge
                            'Remove one of the reports, or give the members the same key so the merge combines them, then merge again'
     end
 
+    # Returns the one of the survivor's and the duplicate's rows for the same attribute and source that the merge keeps,
+    # which is the winner's unless it has expired and the other has not
+    def kept_row(survivors, duplicates, winner)
+      kept, other = winner == :survivor ? [survivors, duplicates] : [duplicates, survivors]
+      kept.expired? && !other.expired? ? other : kept
+    end
+
     # Moves the duplicate's members of the association to the survivor. A member with the same key as one of the
     # survivor's is merged into it, then destroyed. Members keyed by primary key always move.
     def merge_members(survivor, duplicate, config, winner, report)
@@ -139,8 +154,8 @@ module LaForge
     # Returns one source's two reports for an association combined into one stored value, which is complete when the
     # winner's report is. It includes every member either report includes, the winner's first, except a member the
     # winner's partial report excludes. A partial result also excludes every member either report excludes that it does
-    # not include. Withdrawn members, pending items and tombstones come from both reports, and a member the result
-    # includes is not withdrawn.
+    # not include. Withdrawn members, pending items, tombstones and expiries come from both reports, and a member the
+    # result includes is not withdrawn. A member the winner's report names takes only the winner's expiries item.
     def combined_report(config, winning, losing)
       by_key = ->(list) { list.uniq { |member| config.key_of(member) } }
       included = by_key.(winning.include + losing.include.reject { |member| winning.partial? && winning.decision(config, config.key_of(member)) == :exclude })
@@ -148,8 +163,11 @@ module LaForge
       excluded = by_key.(winning.exclude + losing.exclude).reject { |member| included_keys.include?(config.key_of(member)) }
       withdrawn = by_key.(winning.withdrawn + losing.withdrawn).reject { |member| included_keys.include?(config.key_of(member)) }
       tombstones = (winning.tombstones + losing.tombstones).uniq { |item| config.key_of(item['key']) }
+      winners = (winning.include + winning.exclude).map { |member| config.key_of(member) }
+      expiries = winning.expiries + losing.expiries.reject { |item| winners.include?(config.key_of(item['key'])) }
 
-      winning.with(include: included, exclude: excluded, withdrawn: withdrawn, pending: winning.pending + losing.pending, tombstones: tombstones)
+      winning.with(include: included, exclude: excluded, withdrawn: withdrawn, pending: winning.pending + losing.pending, tombstones: tombstones,
+                   expiries: expiries)
     end
 
     def assert_mergeable!(survivor, duplicate)
