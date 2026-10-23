@@ -57,13 +57,14 @@ ActiveRecord::Schema.define(version: 0) do
     t.string :attribute_name, null: false, default: ''
     t.references :source, null: false, index: false, foreign_key: { to_table: :laforge_data_sources, on_delete: :cascade }
     t.integer :precedence, null: false
+    t.string :ruleset, limit: 100, null: false, default: '', charset: 'utf8mb4', collation: 'utf8mb4_bin' # '' for the base rules, and names case-sensitive as in Ruby; see LaForge.fork_ruleset
     t.datetime :expires_at, precision: 6, index: true
     t.references :expires_on_source, foreign_key: { to_table: :laforge_data_sources, on_delete: :nullify }
     t.datetime :recorded_at, precision: 6, null: false
     t.virtual :global_precedence, type: :integer, as: "CASE WHEN record_type = '' THEN precedence END", stored: true
     t.timestamps precision: 6, null: false
-    t.index %i[record_type record_id attribute_name source_id], unique: true, name: :index_laforge_precedence_rules_on_scope_and_source
-    t.index :global_precedence, unique: true
+    t.index %i[record_type record_id attribute_name source_id ruleset], unique: true, name: :index_laforge_precedence_rules_on_scope_and_source
+    t.index %i[ruleset global_precedence], unique: true, name: :index_laforge_precedence_rules_on_ruleset_and_global_precedence
   end
 end
 

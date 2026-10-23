@@ -15,9 +15,13 @@ module LaForge
   # precedence order is the order of sources at one level, highest first, as `update_precedence_order` sets it. The
   # sources it lists rank above the rest, which keep the order of the next level down.
   #
+  # Model-wide and global rules are base rules or belong to a ruleset (see `lib/laforge/rulesets.rb`), and a record's
+  # own rules are stored as base rules but apply whatever its ruleset. `ruleset` holds the ruleset's name, or `BASE`.
+  #
   # "Any" is stored as `ANY_TYPE`, `ANY_ID` or `ANY_ATTRIBUTE` and never as NULL, which a unique index lets repeat, so
-  # the unique index on the scope and source covers every level. The generated `global_precedence` column holds the
-  # precedence of global rules only, so a unique index on it keeps the global order free of ties.
+  # the unique index on the scope, source and ruleset covers every level. The generated `global_precedence` column holds
+  # the precedence of global rules only, so a unique index on it and `ruleset` keeps the global order of the base rules,
+  # and of each ruleset, free of ties.
   #
   # Only a record's own rules can expire (see Expiring), so the model-wide and global rules `PrecedenceCache` holds do
   # not depend on the time.
@@ -28,17 +32,28 @@ module LaForge
     ANY_TYPE = ''.freeze
     ANY_ID = 0
     ANY_ATTRIBUTE = ''.freeze
+    BASE = ''.freeze
+    # RULESET_LENGTH bounds a ruleset's name so the unique index on the scope, source and ruleset stays within MySQL's
+    # 3072-byte index limit under utf8mb4, alongside the two 255-character strings
+    RULESET_LENGTH = 100
 
     belongs_to :source, class_name: 'LaForge::DataSource'
 
-    scope :global, -> { where(record_type: ANY_TYPE, record_id: ANY_ID, attribute_name: ANY_ATTRIBUTE) }
-    scope :for_model, ->(model) { where(record_type: model_type(model), record_id: ANY_ID) }
+    # `global` and `for_model` return base rules only. Chain `in_ruleset` to return a ruleset's, as in
+    # `global.in_ruleset('north')`.
+    scope :global, -> { where(record_type: ANY_TYPE, record_id: ANY_ID, attribute_name: ANY_ATTRIBUTE, ruleset: BASE) }
+    scope :for_model, ->(model) { where(record_type: model_type(model), record_id: ANY_ID, ruleset: BASE) }
     scope :for_records, ->(model) { where(record_type: model_type(model)).where.not(record_id: ANY_ID) }
+    scope :in_ruleset, ->(ruleset) { rewhere(ruleset: ruleset) }
 
     validates :precedence, presence: true, numericality: { only_integer: true }
-    validates :source_id, uniqueness: { scope: %i[record_type record_id attribute_name] }
+    validates :source_id, uniqueness: { scope: %i[record_type record_id attribute_name ruleset] }
+    validates :precedence, uniqueness: { scope: :ruleset, conditions: -> { where(record_type: ANY_TYPE) } }, if: -> { global? && ruleset != BASE }
     validate :scope_is_one_of_the_four_levels
     validate :expires_only_on_one_record
+    # Checked on update too, as `update!(ruleset:)` or `update!(record_id:)` could otherwise move a rule where LaForge
+    # would never write it
+    validate :ruleset_written_through_laforge, if: -> { will_save_change_to_ruleset? || will_save_change_to_record_id? }
 
     # A rule change clears the precedence cache at once, so later forges in the same transaction see it, and a rollback
     # clears it again, so no forge sees the undone change
@@ -49,9 +64,31 @@ module LaForge
     attribute :record_type, default: ANY_TYPE
     attribute :record_id, default: ANY_ID
     attribute :attribute_name, default: ANY_ATTRIBUTE
+    attribute :ruleset, default: BASE
 
     def self.model_type(model)
       model.base_class.polymorphic_name
+    end
+
+    # Returns the stored name for a `ruleset:` argument, as a String stripped of surrounding whitespace, and `BASE` for
+    # nil or a blank name. Raises, naming `where`, for anything but a String, Symbol or nil, and for a name longer than
+    # `RULESET_LENGTH`.
+    def self.ruleset_name(ruleset, where:)
+      unless ruleset.nil? || ruleset.is_a?(String) || ruleset.is_a?(Symbol)
+        raise ArgumentError, "#{where}: ruleset: must be a String or Symbol naming the ruleset, or nil for the base rules, not #{ruleset.class} #{ruleset.inspect}"
+      end
+
+      name = ruleset.to_s.strip
+      raise ArgumentError, "#{where}: ruleset: #{name.inspect} is longer than #{RULESET_LENGTH} characters; pass a shorter name" if name.length > RULESET_LENGTH
+
+      name
+    end
+
+    # Returns whether the ruleset is in use, and false for `BASE`
+    def self.ruleset_in_use?(ruleset)
+      return false if ruleset == BASE
+
+      PrecedenceCache.fetch([:ruleset, ruleset]) { where(ruleset: ruleset).exists? }
     end
 
     def global?
@@ -66,14 +103,20 @@ module LaForge
 
     # Used to rank a source's value for one attribute of a record. It reads a model's model-wide rules and the global
     # rules once, through `PrecedenceCache`, and takes a record's own rules from its in-memory association, so unsaved
-    # rules count, and rules marked for destruction or expired do not.
+    # rules count, and rules marked for destruction or expired do not. The model-wide and global rules are those of the
+    # ruleset given when it is in use, and the base rules otherwise.
     class Resolver
-      def initialize(model)
+      # The ruleset it ranks by, or nil when it ranks by the base rules
+      attr_reader :ruleset
+
+      def initialize(model, ruleset: nil)
         @model = model
         @groups = model.respond_to?(:laforge) ? model.laforge : nil
+        @ruleset = ruleset if ruleset.present? && PrecedenceRule.ruleset_in_use?(ruleset)
+        stored = @ruleset || BASE
         type = PrecedenceRule.model_type(model)
-        @model_rules = PrecedenceCache.fetch([:model, type]) { PrecedenceRule.index_for(PrecedenceRule.for_model(model)) }
-        @global_rules = PrecedenceCache.fetch(:global) { PrecedenceRule.index_for(PrecedenceRule.global) }
+        @model_rules = PrecedenceCache.fetch([:model, type, stored]) { PrecedenceRule.index_for(PrecedenceRule.for_model(model).in_ruleset(stored)) }
+        @global_rules = PrecedenceCache.fetch([:global, stored]) { PrecedenceRule.index_for(PrecedenceRule.global.in_ruleset(stored)) }
       end
 
       # Returns the source's rank for the attribute on `record`, which compares with `<=>` to other sources' ranks for
@@ -130,6 +173,20 @@ module LaForge
       elsif record_id != ANY_ID && attribute_name == ANY_ATTRIBUTE
         errors.add(:attribute_name, 'is required for a rule on one record')
       end
+    end
+
+    # Raises for a rule on one record given a ruleset, and for a rule in a ruleset not yet in use, which LaForge forks
+    # before writing its first rule
+    def ruleset_written_through_laforge
+      return if ruleset == BASE
+
+      if record_id != ANY_ID
+        raise ArgumentError, "A precedence rule on one record belongs to the base rules, not ruleset #{ruleset.inspect}: a record's own rules apply whatever its ruleset. Leave out ruleset:"
+      end
+      return if PrecedenceRule.where(ruleset: ruleset).exists?
+
+      raise ArgumentError, "Ruleset #{ruleset.inspect} has no rules yet, and its first rule copies the base rules into it. Write it with Model.update_precedence_order(..., ruleset:) " \
+                           'or LaForge.update_precedence_order(..., ruleset:), or call LaForge.fork_ruleset first'
     end
 
     def expires_only_on_one_record

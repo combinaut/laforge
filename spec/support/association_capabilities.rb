@@ -21,6 +21,7 @@ module AssociationCapabilities
       create_table :places, force: true do |t|
         t.string :name
         t.bigint :number # an owner key other than id, for associations declared with `primary_key:`
+        t.string :region # selects a place's ruleset in the ruleset specs
         t.timestamps null: false
       end
 

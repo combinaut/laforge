@@ -320,6 +320,7 @@ module LaForge
       key = config.key_of(member)
       record = config.members_of(owner).find { |candidate| config.record_key(candidate) == key }
       candidates = record ? record.laforge.forging_entries.reject { |entry| entry.marked_for_destruction? || config.nested_config(entry.attribute_name) } : []
+      record&.laforge&.reset_resolver_unless_held # a loaded member's selector value may have changed since it last ranked
 
       deciding = reports.find { |_, report| report.decision(config, key) }
 

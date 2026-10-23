@@ -14,34 +14,28 @@ module LaForge
       end
     end
 
-    # Assign attributes and tracked associations based on the data entries
+    # Assign attributes and tracked associations based on the data entries. The record's ruleset is selected once,
+    # before any attribute is assigned, so attributes and associations rank alike even when forging changes what the
+    # selector reads. Associations are forged before the attributes are assigned, so each member selects its ruleset
+    # from the record as the forge found it, as `forge_diff` does.
     def forge(attributes: nil, sources: nil)
-      record.attributes = forge_attributes(attributes: attributes, sources: sources)
-      forge_associations(associations: attributes)
+      with_one_ruleset do
+        forged = forge_attributes(attributes: attributes, sources: sources)
+        forge_associations(associations: attributes)
+        record.attributes = forged
+      end
     end
 
     def forge_associations(associations: nil)
+      reset_resolver_unless_held # selects the ruleset and reads the rules again
       names = associations ? Array.wrap(associations).map(&:to_s) : self.associations.keys
       self.associations.slice(*names).each_value { |config| TrackedAssociation.new(record, config).forge }
     end
 
-    # Returns a hash of the attribute changes between the saved record and the data entries
+    # Returns a hash of the attribute changes between the saved record and the data entries, selecting the ruleset once
+    # as `forge` does
     def forge_diff(**forge_options)
-      diff = {}
-      forge_attrs = forge_attributes(**forge_options)
-      record_attrs = record.slice(*forge_attrs.keys)
-
-      record_attrs.each do |key, value|
-        diff[key] = [value, forge_attrs[key]] if forge_attrs[key] != value
-      end
-
-      names = forge_options[:attributes] ? Array.wrap(forge_options[:attributes]).map(&:to_s) : associations.keys # limited as `forge` limits them
-      associations.slice(*names).each do |name, config|
-        association_diff = TrackedAssociation.new(record, config).diff
-        diff[name] = association_diff if association_diff
-      end
-
-      return diff
+      with_one_ruleset { diff_in_ruleset(**forge_options) }
     end
 
     # Returns a hash of the attributes generated from the record's the data entries
@@ -56,7 +50,8 @@ module LaForge
     # attribute with no other entry is left out of the hash.
     # An attribute of a group is nil when the source that supplies the group has no entry for it.
     def forge_attributes(attributes: nil, sources: nil, except_sources: nil)
-      reset_resolver # each forge reads the model-wide and global rules again (see PrecedenceCache)
+      # Each forge selects the ruleset and reads the model-wide and global rules again (see PrecedenceCache)
+      reset_resolver_unless_held
       forged_attrs = {}
       attributes = self.class.with_groups(attributes) unless attributes.nil?
       data_entries = forging_entries(attributes: attributes, sources: sources, except_sources: except_sources).reject { |data_entry| data_entry.marked_for_destruction? || associations.key?(data_entry.attribute_name) }
@@ -144,6 +139,25 @@ module LaForge
     end
 
     private
+
+    # Returns `forge_diff` within the ruleset already selected
+    def diff_in_ruleset(**forge_options)
+      diff = {}
+      forge_attrs = forge_attributes(**forge_options)
+      record_attrs = record.slice(*forge_attrs.keys)
+
+      record_attrs.each do |key, value|
+        diff[key] = [value, forge_attrs[key]] if forge_attrs[key] != value
+      end
+
+      names = forge_options[:attributes] ? Array.wrap(forge_options[:attributes]).map(&:to_s) : associations.keys # limited as `forge` limits them
+      associations.slice(*names).each do |name, config|
+        association_diff = TrackedAssociation.new(record, config).diff
+        diff[name] = association_diff if association_diff
+      end
+
+      return diff
+    end
 
     # Whether the entry has expired, or, for an attribute of a group, whether any of its source's entries for the group
     # has, so a group expires as a whole

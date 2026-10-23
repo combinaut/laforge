@@ -14,7 +14,8 @@ module LaForge
     # - model: the laforged model
     # - associations: { name => AssociationConfig } for its tracked associations
     # - attribute_groups: { group name => [attribute names] }
-    class_attribute :model, :associations, :attribute_groups, instance_writer: false, instance_predicate: false
+    # - ruleset_selector: its own ruleset selector (see Rulesets)
+    class_attribute :model, :associations, :attribute_groups, :ruleset_selector, instance_writer: false, instance_predicate: false
     self.associations = {}
     self.attribute_groups = {}
 

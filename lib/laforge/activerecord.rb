@@ -6,8 +6,11 @@ module LaForge
     # - associations: { name => options }, the has_many and has_one associations to track (see TrackedAssociation),
     #   each with the options AssociationConfig takes
     # - attribute_groups: { name => [attributes] }, the model's attribute groups (see AttributeGroups)
-    def laforged(associations: {}, attribute_groups: {})
+    # - ruleset_selector: the model's own ruleset selector, in place of `LaForge.ruleset_selector`. It is a method name
+    #   (Symbol), a Proc given the record, or false for the base rules.
+    def laforged(associations: {}, attribute_groups: {}, ruleset_selector: nil)
       LaForge::ActiveRecord.assert_no_collisions!(self)
+      LaForge.assert_ruleset_selector!(ruleset_selector, where: "#{name} laforged ruleset_selector:", model: true)
       groups = LaForge::ActiveRecord.attribute_groups(self, attribute_groups, associations)
       include Model
 
@@ -15,6 +18,7 @@ module LaForge
       LaForge::ActiveRecord.declare_scopes(self)
 
       laforge.attribute_groups = groups
+      laforge.ruleset_selector = ruleset_selector
 
       configs = associations.to_h { |name, options| [name.to_s, AssociationConfig.new(self, name, **options)] }
       configs.each_value { |config| TrackedAssociation.declare(self, config) }
@@ -96,15 +100,18 @@ module LaForge
       record.instance_variable_set(:@marked_for_destruction, marked)
     end
 
-    # Returns `sources` highest-ranked first, as [{ source:, level: }], given each source's rank from the block (see
-    # `PrecedenceRule::Resolver#rank`). `levels` names the rank's positions, and a source's level is the first one it
-    # has a rule at. Sources that rank equally come in id order. A source with no rule at any level, such as one without
-    # a global precedence, comes last with a nil level.
-    def self.order_by_rank(sources, levels)
-      ranked = sources.map { |source| [source, yield(source)] }.sort_by { |source, rank| rank.map(&:-@) + [source.id] }
+    # Returns the active sources highest-ranked first by `resolver` for the attribute on `record`, or on a record with
+    # no rules of its own when `record` is nil, as [{ source:, level:, ruleset: }]. A source's level is the most
+    # specific one it has a rule at, and its ruleset is `resolver.ruleset` below the record level, else nil. Sources
+    # that rank equally come in id order. A source with no rule at any level, such as one without a global precedence,
+    # comes last with a nil level.
+    def self.order_by_rank(resolver, record, attribute)
+      levels = %i[record attribute model global]
+      ranked = DataSource.active.to_a.map { |source| [source, resolver.rank(record, attribute.to_s, source.id)] }.sort_by { |source, rank| rank.map(&:-@) + [source.id] }
       ranked.map do |source, rank|
-        level = rank.index { |precedence| precedence != -Float::INFINITY }
-        { source: source, level: level && levels[level] }
+        index = rank.index { |precedence| precedence != -Float::INFINITY }
+        level = index && levels[index]
+        { source: source, level: level, ruleset: (resolver.ruleset if level && level != :record) }
       end
     end
 
