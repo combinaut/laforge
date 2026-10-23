@@ -11,6 +11,10 @@ require 'laforge/tombstone'
 require 'laforge/merge'
 require 'laforge/tracked_association'
 require 'laforge/payload'
+require 'laforge/recording'
+require 'laforge/forging'
+require 'laforge/precedence'
+require 'laforge/scheduled_changes'
 require 'laforge/activerecord'
 
 ActiveSupport.on_load :active_record do
