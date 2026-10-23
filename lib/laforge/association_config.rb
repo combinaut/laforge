@@ -18,7 +18,7 @@ module LaForge
     # The field of a tombstone's key, which names an excluded member whose row is gone
     TOMBSTONE = 'tombstone'
 
-    attr_reader :owner_class, :name, :reflection, :key, :order_column, :tombstone_matcher
+    attr_reader :owner_class, :name, :reflection, :key, :order_column, :order_descending, :tombstone_matcher
 
     def initialize(owner_class, name, key: nil, order_column: nil, tombstone_matcher: nil)
       @owner_class = owner_class
@@ -32,7 +32,7 @@ module LaForge
       @tombstone_matcher = tombstone_matcher
       assert_tombstone_matcher_usable! if tombstone_matcher
 
-      @order_column = order_column.nil? ? derived_order_column : given_order_column(order_column)
+      @order_column, @order_descending = order_column.nil? ? derived_order_column : [given_order_column(order_column), false]
     end
 
     def klass
@@ -328,8 +328,9 @@ module LaForge
       column
     end
 
-    # An integer column the association scope orders by is where member order is written, unless it identifies the
-    # member or its owner. A scope ordering by an expression, such as Arel.sql, names no column; declare order_column:.
+    # [column, descending] for the integer column the association scope orders by, which is where member order is
+    # written, in the scope's direction, unless it identifies the member or its owner. A scope ordering by an expression,
+    # such as Arel.sql, names no column; declare order_column:.
     def derived_order_column
       scope = reflection.scope
       return unless scope&.arity&.zero?
@@ -337,12 +338,12 @@ module LaForge
       relation = klass.unscoped.instance_exec(&scope)
       columns = relation.order_values.filter_map do |value|
         case value
-        when Symbol, String then value.to_s
-        when Arel::Nodes::Ordering then value.expr.respond_to?(:name) ? value.expr.name.to_s : nil
+        when Symbol, String then [value.to_s, false]
+        when Arel::Nodes::Ordering then [value.expr.name.to_s, value.descending?] if value.expr.respond_to?(:name)
         end
       end
 
-      columns.find { |column| identifying_columns.exclude?(column) && klass.columns_hash[column]&.type == :integer }
+      columns.find { |column, _| identifying_columns.exclude?(column) && klass.columns_hash[column]&.type == :integer }
     end
 
     # The member's primary key, key columns, and the columns pointing back at its owner

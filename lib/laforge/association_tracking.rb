@@ -141,7 +141,7 @@ module LaForge
       end
       records += undecided.map { |key| existing.delete(key) }
       records.each_with_index do |record, index|
-        record[config.order_column] = index if config.order_column
+        record[config.order_column] = config.order_descending ? records.size - 1 - index : index if config.order_column
       end
 
       described += withdraw_from_members(owner, config, reports, records)

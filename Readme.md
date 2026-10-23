@@ -434,7 +434,7 @@ Tracking a `has_many` or `has_one` association is about membership: which record
 - Other records, such as tenants, are identified by their primary key. A source names an existing member by its `id`, and a new member by its attributes alone (see [Naming members](#naming-members)).
 - `key:` names other columns instead, for a natural key such as a weekday, or an identifier every source shares. It also overrides a derived key, as `key: :id` does for an owned model that happens to belong to another record.
 - A `has_one` with no key has a single member, which every source reports.
-- Member order is written to the integer column the association's scope orders by, such as `position` for `-> { order(:position) }`, unless that column identifies the member or its owner. `order_column:` names the column instead, which a scope ordering by an expression such as `Arel.sql(...)` needs, and `order_column: false` writes no order.
+- Member order is written to the integer column the association's scope orders by, such as `position` for `-> { order(:position) }`, in the scope's direction, unless that column identifies the member or its owner. `order_column:` names the column instead, written ascending, which a scope ordering by an expression such as `Arel.sql(...)` needs, and `order_column: false` writes no order.
 - `tombstone_matcher:` recognises a member a source excluded when a source reports it again (see [Removed members that sources report again](#removed-members-that-sources-report-again)).
 
   ```ruby

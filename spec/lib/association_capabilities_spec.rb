@@ -475,6 +475,18 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([bookstore, bakery, florist])
       expect(place.place_categories.map(&:position)).to eq([0, 1, 2])
     end
+
+    it 'writes member order in the direction the association scope orders by', capability: 'C117' do
+      stub_const('DescendingPlace', Class.new(ActiveRecord::Base))
+      DescendingPlace.table_name = 'places'
+      DescendingPlace.has_many :place_categories, -> { order(position: :desc) }, foreign_key: :place_id
+      DescendingPlace.laforged(associations: { place_categories: {} })
+      descending_place = DescendingPlace.create!(name: 'Harbor Building')
+      descending_place.record_data_entries({ place_categories: categories(cafe, bakery, bookstore) }, low)
+      descending_place.forge!
+
+      expect(descending_place.reload.place_categories.map(&:category)).to eq([cafe, bakery, bookstore])
+    end
   end
 
   describe 'precedence' do
