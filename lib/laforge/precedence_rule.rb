@@ -68,8 +68,9 @@ module LaForge
         @model_rules[[ANY_ID, attribute_name.to_s, source_id]] || @model_rules[[ANY_ID, ANY_ATTRIBUTE, source_id]]
       end
 
+      # A source without a global rule, such as one deleted before an upgrade left its entries, ranks below every source
       def global_precedence(source_id)
-        @global_rules[[ANY_ID, ANY_ATTRIBUTE, source_id]] || 0
+        @global_rules[[ANY_ID, ANY_ATTRIBUTE, source_id]] || -Float::INFINITY
       end
 
       private
