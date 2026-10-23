@@ -375,7 +375,7 @@ A source that is no longer used can be deactivated. From each record's next forg
     place.forge! # coordinates fall back to the next source, or stay as they are
   ```
 
-In a tracked association, an inactive source's reports are left out too. Members only it listed become rows no report has named, which are left alone, and its exclusions and tombstones stop applying until it is active again. A tenant created meanwhile that it excluded is removed, per `dependent:`, by the first forge after it is activated again.
+In a tracked association, an inactive source's reports are left out too. Members only it listed become rows no report has named, which are left alone, and its exclusions and tombstones stop applying until it is active again. A tenant it excluded that another source reported as new meanwhile is removed, per `dependent:`, by the first forge after it is activated again. A tenant the application created itself meanwhile, after `LaForge.tombstone_blocking` allowed it, keeps its id and is not matched against the tombstone, so the exclusion does not apply to it.
 
 ### Following changes
 
