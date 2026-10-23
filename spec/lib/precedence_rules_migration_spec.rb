@@ -9,9 +9,9 @@ describe 'The precedence rules migration' do
     Module.new.tap { |namespace| namespace.module_eval(ERB.new(template).result(binding)) }.const_get(migration_class_name).new
   end
 
-  def sources(missing: [], shared: [])
+  def sources(missing: [], shared: [], conflicting: [])
     allow(migration).to receive(:select_values).and_return(missing)
-    allow(migration).to receive(:select_rows).and_return(shared)
+    allow(migration).to receive(:select_rows).and_return(shared, conflicting)
   end
 
   it 'raises, naming the sources, before creating anything when a source has no priority' do
@@ -26,6 +26,13 @@ describe 'The precedence rules migration' do
     expect(migration).not_to receive(:create_table)
 
     expect { migration.up }.to raise_error(RuntimeError, /LaForge data sources share priorities 5 \(Cadastre, Map Editor\); 7 \(Business Directory, Business Registry\); give each source a unique priority/)
+  end
+
+  it 'raises, naming them, before creating anything when entries for the same record, attribute and source have different priorities' do
+    sources(conflicting: [['Place', 12, 'name', 3]])
+    expect(migration).not_to receive(:create_table)
+
+    expect { migration.up }.to raise_error(RuntimeError, /LaForge data entries for the same record, attribute and source have different priorities \(Place 12 name from source 3\). One precedence rule replaces them/)
   end
 
   it 'goes on to create the table when every source has its own priority' do
