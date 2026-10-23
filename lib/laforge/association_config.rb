@@ -1,14 +1,20 @@
 module LaForge
-  # Describes a tracked has_many or has_one association, deriving everything it can from the association reflection.
-  # A has_one is tracked as a list of at most one member; with no key, every source reports the same single member.
+  # The configuration of a tracked association, derived from its reflection wherever it can be. A has_one is tracked as
+  # a list of at most one member.
   #
-  # Members are identified by their key: given with `key:`, else derived from the records a join row references, else the
-  # member's primary key. A member keyed by primary key that a source names without one is a new member: its report names
-  # it by a placeholder until the forge that creates it has been saved, which writes the new row's id in its place.
+  # A member is named by its key, which is the first of these that applies:
+  # - the columns given with `key:`
+  # - the foreign keys of the records a join row references, with the type column of a polymorphic one
+  # - the member's primary key, for a has_many
+  # A has_one with none of these has no key, so every source reports the same single member.
   #
-  # A member keyed by primary key that a source explicitly excludes is destroyed like any removed member, and the
-  # exclusion keeps a tombstone in its place: what the member was, so that `tombstone_matcher:` can recognise it when a
-  # source reports it again (see Tombstone).
+  # Where members are keyed by primary key, a member a source names without one is a new member. Reports name it by a
+  # placeholder key, `{ 'new' => token }`, until the owner is saved after the forge that builds it, and by its id after.
+  #
+  # A member keyed by primary key that a partial report excludes is removed like any other, and every report then names
+  # it by a tombstone key, `{ 'tombstone' => token }` (see Tombstone). `tombstone_matcher:` is a callable given a member
+  # a source reports and the tombstones' records, which returns the record that member is, or nil. Only a has_many keyed
+  # by primary key takes one.
   #
   # Member order is written to `order_column:` when given, or else to the integer column the association scope orders
   # by, unless it identifies the member or its owner. `order_column: false` writes none.
@@ -43,15 +49,14 @@ module LaForge
       reflection.collection?
     end
 
-    # The owner's current members, as an array for a has_one too
+    # Returns the owner's members, as an array for a has_one too.
     def members_of(owner)
       reader = owner.association(name.to_sym).reader
       collection? ? reader.to_a : [reader].compact
     end
 
-    # The current members that can be identified across sources, by key. A row missing a key value cannot be, so LaForge
-    # leaves it alone, as it does any row no source has reported. Raises if several rows share a key, since LaForge cannot
-    # tell which of them a source means.
+    # Returns the owner's members by key, without the rows missing a key value, which LaForge leaves alone. Raises
+    # `DuplicateMemberKey` when several rows share a key, since a report naming that key could mean any of them.
     def identified_members_of(owner)
       members = members_of(owner).reject { |record| blank_key?(record_key(record)) }.group_by { |record| record_key(record) }
       duplicated = members.select { |_, records| records.size > 1 }
@@ -63,7 +68,8 @@ module LaForge
       members.transform_values(&:first)
     end
 
-    # "external_id "T-1"" for a key's values, "no key" for a has_one's single member, or "no id" for a new member
+    # Returns a key's values as error messages name them, such as `external_id "T-1"`, or "no key" for a has_one's
+    # single member, or "no id" for a new member.
     def describe_key(values)
       return 'no id' if values.first == NEW_MEMBER
 
@@ -86,6 +92,7 @@ module LaForge
       klass.respond_to?(:laforged_associations) && klass.laforged_associations[field.to_s]
     end
 
+    # Returns the member's key values, or ['new', token] for a new member and ['tombstone', token] for a tombstone
     def key_of(member)
       return [NEW_MEMBER, member[NEW_MEMBER]] if new_member?(member)
       return [TOMBSTONE, member[TOMBSTONE]] if tombstone?(member)
@@ -109,29 +116,29 @@ module LaForge
       key == [klass.primary_key]
     end
 
-    # Whether a member is named by a placeholder because it has no id yet
+    # Whether `member` is named by a placeholder key
     def new_member?(member)
       member.is_a?(Hash) && member.key?(NEW_MEMBER)
     end
 
-    # Whether a member is named by the key of a tombstone, because the excluded member it was is gone
+    # Whether `member` is named by a tombstone key
     def tombstone?(member)
       member.is_a?(Hash) && member.key?(TOMBSTONE)
     end
 
-    # Whether a member has no row to find by its key, and is built from what sources report about it
+    # Whether `member` is a new member or a tombstone, neither of which has a row to find by its key
     def unsaved?(member)
       new_member?(member) || tombstone?(member)
     end
 
-    # The attributes a member that does not exist is built with: its key, or nothing for a new member or a tombstone
+    # Returns the attributes a member that does not exist is built with, which are its key, or none for a new member or
+    # a tombstone.
     def build_attributes(member)
       unsaved?(member) ? {} : key_hash(member)
     end
 
-    # Raise for an explicit exclusion that could not outlast its row: a member keyed by primary key is destroyed when it
-    # is excluded, so without `tombstone_matcher:` a source reporting it again could not be recognised, and it would
-    # come back as a new member
+    # Raises when `members` include a member keyed by primary key and the association has no `tombstone_matcher:`. An
+    # excluded member is removed, and only the matcher can recognise it when a source reports it again.
     def assert_excludable!(owner, members)
       return unless primary_keyed? && !tombstone_matcher
 
@@ -145,12 +152,15 @@ module LaForge
                            "`laforged associations: { #{name}: { tombstone_matcher: ->(#{klass.model_name.element}, tombstones) { tombstones.find { |tombstone| ... } } } }`"
     end
 
-    # Validates members recorded for this association and returns [key hash, attributes] for each, where the attributes
-    # are what the source says about the member besides its key, to be recorded on the member itself. A member is a hash
-    # of its key and attributes (nested tracked associations included), or a saved record, which contributes only its key.
-    # Where members are keyed by primary key, a hash without one is a new member, named by a placeholder. A has_one is
-    # recorded as one member, or nil for none, and stored as a list of at most one. Pass `attributes: false` for members
-    # that can only be named, such as exclusions. Pass `edit: true` for members of edits, whose nested lists are edits too.
+    # Returns [key hash, attributes] for each of `members`, where the attributes are what the source says about the
+    # member besides its key. Raises when a member is invalid or listed twice. A member is one of:
+    # - a hash of its key and attributes, nested tracked associations included. Where members are keyed by primary key,
+    #   a hash without one is a new member, given a placeholder key.
+    # - a saved record, which gives only its key
+    # - a tombstone, or its `to_h`, which gives only its key and can only be named
+    # A has_one takes one member, or nil for none, in place of the list. Options:
+    # - `attributes: false`: for members that can only be named, such as exclusions
+    # - `edit: true`: for members of edits, whose nested lists are validated as edits too
     def normalize_members(members, attributes: true, edit: false)
       unless collection?
         unless members.nil? || members.is_a?(Hash) || members.is_a?(::ActiveRecord::Base) || (members.is_a?(Array) && members.size <= 1)
@@ -168,8 +178,8 @@ module LaForge
       normalized
     end
 
-    # [[action, member], ...] for a source's edits, given as a list of members to include, or as
-    # { include: [...], exclude: [...], forget: [...] }
+    # Returns [[action, member], ...] for a source's edits, given as a list of members to include or as
+    # { include: [...], exclude: [...], forget: [...] }. Raises for a has_one.
     def edits(value)
       raise ArgumentError, "#{owner_class.name}##{name} is a has_one, which takes a complete report" unless collection?
 
@@ -184,8 +194,8 @@ module LaForge
       end
     end
 
-    # Raise if a member references a record that does not exist, or is named by an id that is not one of the owner's
-    # members. LaForge does not move a record from one owner to another; that is done outside it.
+    # Raises when a member references a record that does not exist, or is named by an id that is not one of the owner's
+    # members.
     def assert_references_exist!(owner, members)
       assert_members_of!(owner, members) if primary_keyed?
       reference_reflections.each do |reference|
@@ -196,7 +206,7 @@ module LaForge
       end
     end
 
-    # Drop members whose referenced record has been deleted since they were recorded
+    # Returns `members` without those whose referenced record does not exist
     def drop_dangling(members)
       reference_reflections.inject(members) do |list, reference|
         foreign_key = reference.foreign_key.to_s
@@ -206,7 +216,6 @@ module LaForge
       end
     end
 
-    # Remove a former member the way assigning a collection without it would, per the association's dependent option
     private
 
     def normalize_member(member, attributes:, edit:)
@@ -289,8 +298,8 @@ module LaForge
       raise ArgumentError, "#{owner_class.name}##{name} does not use a tombstone_matcher: #{reason}. Remove tombstone_matcher:"
     end
 
-    # Every belongs_to on the member other than the one pointing back at the owner identifies a join member
-    # A polymorphic reference is identified by its type as well as its id, since records of two models can share an id
+    # Returns the foreign keys of the member's belongs_to associations other than the owner's, which key a join member.
+    # A polymorphic one adds its type column, since records of two models can share an id.
     def derived_key
       references = klass.reflect_on_all_associations(:belongs_to).reject { |reference| reference.foreign_key.to_s == owner_foreign_key }
       references.flat_map { |reference| reference.polymorphic? ? [reference.foreign_key.to_s, reference.foreign_type.to_s] : [reference.foreign_key.to_s] }
@@ -306,8 +315,8 @@ module LaForge
       reference.klass.where(reference.association_primary_key => ids).pluck(reference.association_primary_key)
     end
 
-    # The `order_column:` given, after checking it can hold member order: an integer column of the member that does not
-    # identify the member or its owner. false is none.
+    # Returns the `order_column:` given, or nil for false. Raises unless it is an integer column of the member that does
+    # not identify the member or its owner.
     def given_order_column(column)
       return if column == false
 
@@ -320,9 +329,9 @@ module LaForge
       column
     end
 
-    # [column, descending] for the integer column the association scope orders by, which is where member order is
-    # written, in the scope's direction, unless it identifies the member or its owner. A scope ordering by an expression,
-    # such as Arel.sql, names no column; declare order_column:.
+    # Returns [column, descending] for the first integer column the association scope orders by that does not identify
+    # the member or its owner, or nil. A scope that takes the owner, or orders by an expression such as `Arel.sql`,
+    # gives none.
     def derived_order_column
       scope = reflection.scope
       return unless scope&.arity&.zero?

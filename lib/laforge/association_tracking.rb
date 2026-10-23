@@ -1,24 +1,36 @@
 module LaForge
-  # Tracks has_many and has_one associations declared with `laforged associations:`.
+  # Used to track the has_many and has_one associations declared with `laforged associations:`, each described by an
+  # AssociationConfig, which also defines how members are named by key.
   #
-  # Each source's entry on the owner holds its report of the members by key (see MemberList). Membership is decided per
-  # member by the highest-precedence report with an opinion on it.
+  # Each source's entry for the association on the owner is its report of the members (see MemberList). Membership is
+  # whether a member belongs to the association, decided per member by the highest-precedence report with an opinion on
+  # it. A row no report names is left alone.
   #
-  # What a source says about a member besides its key is kept in its report as pending until a forge of the owner
-  # includes the member, then recorded on the member as that source's entries, like any attributes recorded on the member
-  # directly. So nothing is created for a member that membership excludes, its attributes wait in the report until
-  # membership includes it, and a member's attributes are resolved on the member alone. The owner's forge forges the
-  # members it records on; any other member is forged on its own.
+  # A forge of the owner applies membership. A member it removes goes when the owner is saved, per the association's
+  # `dependent:` option. What a report says about a member besides its key waits there as pending until a forge includes
+  # the member, and is then recorded on the member as the source's entries, like attributes recorded on the member
+  # directly. So nothing is created for a member membership excludes, and a member's attributes are resolved on the
+  # member alone. The owner's forge forges the members it records on, and any other member is forged on its own.
+  #
+  # Withdrawing a source from a member drops the source's entries on the member, and makes each of its reports for the
+  # member's own tracked associations withdraw every member it named. A forge withdraws each source whose report
+  # excludes or withdrew a member the forge keeps.
   module AssociationTracking
     extend self
 
+    # Makes the member model laforged if it is not, and autosaves the association so the owner's save writes what a
+    # forge changes on its members.
     def declare(owner_class, config)
       config.klass.laforged unless config.klass.respond_to?(:laforged_associations)
       config.reflection.autosave = true
     end
 
-    # A report replaces the source's previous one, and withdraws the members the source included before and no longer
-    # names, so the next forge removes them unless another source includes them.
+    # Writes the source's report of `members`, replacing its previous one. `members` is a list of members, or for
+    # `partial: true` either a list to include or { include: [...], exclude: [...] }. A given `precedence:` is set for
+    # the source on the association and given to every attribute the report's pending items record. The members the
+    # previous report included or withdrew and this one does not name are withdrawn, except new members and tombstones.
+    # A partial report keeps the previous one's tombstones, and its exclusions of tombstones this one does not name.
+    # Raises for a partial report of a has_one, and for members AssociationConfig rejects.
     def record(owner, config, members, source, precedence:, partial: false, recorded_at: Time.current)
       raise ArgumentError, "#{owner.class.name}##{config.name} is a has_one, which takes a complete report" if partial && !config.collection?
 
@@ -40,7 +52,6 @@ module LaForge
       withdrawn = previous ? (previous.include + previous.withdrawn).map { |member| config.key_hash(member) }.uniq.reject { |member| reported.include?(config.key_of(member)) || config.unsaved?(member) } : []
       value =
         if partial
-          # An exclusion whose member is gone outlasts the report, as the source could not name it again
           kept = previous ? previous.exclude.select { |member| config.tombstone?(member) && !reported.include?(config.key_of(member)) } : []
           MemberList.partial(include: keys, exclude: excluded + kept, withdrawn: withdrawn, pending: pending, tombstones: previous&.tombstones || [])
         else
@@ -50,8 +61,10 @@ module LaForge
       owner.send(:write_data_entry, config.name, value, source, precedence: precedence, recorded_at: recorded_at)
     end
 
-    # Applies a source's edits: each member named is included, excluded or forgotten as edit_member does, and the rest of
-    # the source's report is left as it is. A has_one's edit is its single member, recorded as a complete report.
+    # Applies a source's edits to its report with `edit_member`, one member at a time, and leaves the rest of the report
+    # as it is. `value` is what `AssociationConfig#edits` takes. A given `precedence:` is set for the source on the
+    # association and given to every attribute the included members' pending items record. A has_one's edit is its
+    # single member, recorded as a complete report.
     def edit(owner, config, value, source, precedence: NOT_GIVEN, recorded_at: Time.current)
       return record(owner, config, value, source, precedence: precedence, recorded_at: recorded_at) unless config.collection?
 
@@ -59,11 +72,14 @@ module LaForge
       owner.send(:write_precedence_rule, config.name, source, precedence) unless precedence.equal?(NOT_GIVEN)
     end
 
-    # Changes one member in the source's report: :include adds it, :exclude removes it even if other sources include
-    # it, :forget drops the source's opinion on it. A source with no report, or a partial one, keeps a partial report.
-    # What an inclusion says about the member is kept beside what earlier edits said, and recorded after it, so each edit
-    # changes only the attributes it names; its nested lists are edits too. An exclusion or forgetting drops it all.
-    # Forgetting a tombstone drops it, so sources can add the member again.
+    # Changes the source's report for one member. A source with no report gets a partial one. `action` is one of:
+    # - :include: includes the member, and adds what the edit says about it as a pending item after the earlier ones, so
+    #   each edit changes only the attributes it names. Its nested lists are edits too.
+    # - :exclude: leaves the member out of a complete report, or adds it to a partial report's exclusions
+    # - :forget: drops the member from a partial report, and the report's tombstone when the member is one. Raises for a
+    #   complete report, which has an opinion on every member.
+    # Excluding or forgetting a member drops its pending items. Excluding a member from a complete report, or forgetting
+    # one, withdraws it when the report included it.
     def edit_member(owner, config, member, source, action, recorded_at: Time.current, precedence: NOT_GIVEN)
       member, attributes = config.normalize_members([member], attributes: action == :include, edit: true).first
       config.assert_references_exist!(owner, [member]) if action == :include
@@ -96,9 +112,8 @@ module LaForge
       owner.send(:write_data_entry, config.name, value, source, recorded_at: recorded_at)
     end
 
-    # Each source whose report excludes or withdrew a member the forge keeps is withdrawn from that member, as the source
-    # no longer says anything about it: its entries on the member go, and its reports there become withdrawals, which the
-    # member's forge applies in turn. Returns the members to forge.
+    # Withdraws each source whose report excludes or withdrew a member from that member, for each saved one of
+    # `records`. Returns the members a withdrawn source had entries on, which need forging.
     def withdraw_from_members(owner, config, reports, records)
       records.select do |record|
         next false if record.new_record?
@@ -109,19 +124,20 @@ module LaForge
       end
     end
 
-    # The source no longer reports anything for the association: every member it reported is withdrawn, and what it said
-    # about members not yet recorded on them is dropped, along with new members it reported that were never created and
-    # its tombstones
+    # Makes the report in `entry` a partial one that withdraws every member it named, so the source has no opinion on
+    # any. Its pending items and tombstones are dropped, and so are the new members and tombstones it named.
     def withdraw(config, entry)
       entry.value = MemberList.partial(withdrawn: MemberList.new(entry.value).reported_keys(config).reject { |member| config.unsaved?(member) })
     end
 
+    # Applies membership to the owner's members in memory, for the owner's save to write. Does nothing when no source
+    # has reported the association.
     def forge(owner, config)
       reports = owner.send(:laforge_association_reports, config)
       return if reports.empty?
 
       existing = config.identified_members_of(owner)
-      owner.laforge_scheduled_members(config).each { |record| existing[config.record_key(record)] ||= record } # removed by an earlier forge, not saved yet
+      owner.laforge_scheduled_members(config).each { |record| existing[config.record_key(record)] ||= record } # scheduled for removal by an earlier forge, not saved yet
       reports = recognise_tombstones(owner, config, reports, save: true)
       created = owner.laforge_created_members(config)
       included, undecided = resolve(config, reports, existing)
@@ -140,7 +156,7 @@ module LaForge
         described << record if recorded.any?
         record
       end
-      records += undecided.map { |key| existing.delete(key) } # one an earlier forge, not saved yet, removed stays removed
+      records += undecided.map { |key| existing.delete(key) } # one an earlier forge scheduled for removal stays scheduled
       records.each_with_index do |record, index|
         record[config.order_column] = config.order_descending ? records.size - 1 - index : index if config.order_column
       end
@@ -159,8 +175,13 @@ module LaForge
       end
     end
 
-    # Members a forge would add, remove and change, and those it would skip because no source described them and they are
-    # invalid with their key alone, without changing anything
+    # Returns what a forge would do to the members, without changing anything, or nil when no source has reported the
+    # association:
+    # - added: each member it would build, as its key, or as what the sources say about it for a new member
+    # - removed: the key of each member it would remove
+    # - changed: the key of each member whose pending items would change it, merged with those changes
+    # - skipped: present only when it has members, the key of each one it would not build, because it is named by an id
+    #   that is not one of the owner's, or because no source described it and it is invalid with its key alone
     def diff(owner, config)
       reports = owner.send(:laforge_association_reports, config)
       return if reports.empty?
@@ -181,7 +202,7 @@ module LaForge
       end
 
       added, skipped = included.reject { |member| existing.key?(config.key_of(member)) }.partition do |member|
-        next false if config.primary_keyed? && !config.unsaved?(member) # no longer one of the owner's members
+        next false if config.primary_keyed? && !config.unsaved?(member) # named by an id that is not one of the owner's
 
         pending.key?(config.key_of(member)) || new_member(owner, config, config.build_attributes(member)).valid?
       end
@@ -193,6 +214,9 @@ module LaForge
       }.tap { |result| result[:skipped] = skipped.map { |member| config.key_hash(member) } if skipped.any? }
     end
 
+    # Returns { owner id => { source => [member hashes] } } for `records`, each member hash as `with_member_attributes`
+    # builds it. A source gives the members its report includes, then the other rows it has entries on. An owner no
+    # source has anything on is left out.
     def source_values(owner_class, config, records)
       owner_ids = records.map(&:id)
       entries = DataEntry.where(record_type: owner_class.base_class.name, record_id: owner_ids, attribute_name: config.name).preload(:source).to_a
@@ -200,7 +224,7 @@ module LaForge
       member_scope = config.klass.where(config.owner_foreign_key => owner_ids)
       member_scope = member_scope.where(config.owner_type_column => owner_class.polymorphic_name) if config.owner_type_column
       scope = config.reflection.scope
-      member_scope = member_scope.merge(config.klass.unscoped.instance_exec(&scope)) if scope&.arity&.zero? # one taking the owner can't be applied to many at once
+      member_scope = member_scope.merge(config.klass.unscoped.instance_exec(&scope)) if scope&.arity&.zero? # a scope taking the owner cannot be applied to several owners at once
       member_records = member_scope.to_a
       member_entries = DataEntry.where(record_type: config.klass.base_class.name, record_id: member_records.map(&:id)).preload(:source).to_a
                                 .reject { |entry| config.nested_config(entry.attribute_name) }
@@ -229,8 +253,8 @@ module LaForge
       end
     end
 
-    # Names the members forges created by their new ids, in place of the placeholders the reports named them by. Called
-    # once the owner, and so the members, have been saved. The reports' recorded_at is kept, since no source said anything.
+    # Names each saved member of `created` by its id in every report of the association, in place of its placeholder
+    # key. Each changed report is saved at once and keeps its recorded_at, since its source said nothing new.
     def name_created(owner, config, created)
       names = created.select { |_, record| record.persisted? }.transform_values { |record| config.key_hash(record) }
       return if names.empty?
@@ -243,16 +267,15 @@ module LaForge
       end
     end
 
-    # The owner's tombstones for an association, as Tombstone objects, the highest-precedence source's first
+    # Returns the tombstones in `reports`, the highest-precedence source's first and each token once. By default those
+    # are the reports a forge reads, so inactive sources' tombstones are left out.
     def tombstones(owner, config, reports = owner.send(:laforge_association_reports, config))
       reports.reject { |entry, _| entry.marked_for_destruction? }
              .flat_map { |entry, report| report.tombstones.map { |item| Tombstone.new(owner, config, entry.source_id, item) } }
              .uniq(&:token)
     end
 
-    # The tombstone that keeps a new member out, if any: one its tombstone matcher matches among the tombstones of every
-    # tracked association the member would join, from a source that outranks `source` there. For code that creates
-    # members itself rather than through a source's report.
+    # See `LaForge.tombstone_blocking`.
     def tombstone_blocking(record, source)
       raise ArgumentError, "#{record.class.name} #{record.id} already exists; tombstone_blocking checks a new member before it is created" if record.persisted?
 
@@ -267,7 +290,8 @@ module LaForge
       nil
     end
 
-    # An unsaved member pointing at the owner, built from the columns among `attributes`, for matchers to compare
+    # Returns an unsaved member pointing at the owner, with the association scope's attributes and the member model's
+    # columns among `attributes`, except its primary key.
     def unsaved_member(owner, config, attributes)
       new_member(owner, config, reported_columns(config, attributes))
     end
@@ -290,9 +314,10 @@ module LaForge
 
     private
 
-    # Names each new member a report names that the association's tombstone matcher recognises as an excluded member by
-    # that member's tombstone, so membership decides it as that member: it stays out unless a source that outranks the
-    # exclusion includes it. With `save: true` the reports' entries are changed to match, to be saved with the owner.
+    # Returns `reports` with each new member whose pending item the tombstone matcher matches to a tombstone named by
+    # that tombstone's key, so membership decides it as the excluded member it was. With `save: true` the entries take
+    # the renamed reports too, to be saved with the owner. Returns `reports` as they are when the association has no
+    # tombstone matcher or no tombstones.
     def recognise_tombstones(owner, config, reports, save:)
       return reports unless config.tombstone_matcher
 
@@ -316,7 +341,8 @@ module LaForge
       end
     end
 
-    # The tombstone the association's tombstone matcher finds for a member among the given tombstones, or nil
+    # Returns the one of `tombstones` the tombstone matcher picks for `member`, or nil. Raises when the matcher returns
+    # a record it was not given.
     def match_tombstone(owner, config, member, tombstones)
       return if tombstones.empty?
 
@@ -330,10 +356,10 @@ module LaForge
       tombstones[index]
     end
 
-    # When a forge removes a member keyed by primary key that a report explicitly excludes, every report names it by a
-    # tombstone key instead of its id, and each excluding report keeps the tombstone: what the member was. Called before
-    # the members are removed. `reports` are the reports the forge read; `all_reports` adds inactive sources' reports,
-    # which are renamed too, so they name the member correctly once their source is active again.
+    # Gives a tombstone to each of the `removed` members that a partial report in `reports` excludes. Every report in
+    # `all_reports` names the member by the tombstone's key in place of its id, and each excluding report keeps the
+    # tombstone. `all_reports` adds inactive sources' reports to `reports`, so they still name the member when their
+    # source is active again.
     def entomb(config, reports, all_reports, removed)
       removed.each do |record|
         key = config.record_key(record)
@@ -353,17 +379,18 @@ module LaForge
       end
     end
 
-    # What a removed member was, as JSON can hold it, without its key and its link to the owner
+    # Returns the removed member's columns as JSON values, without its primary key, its timestamps and its link to the
+    # owner
     def tombstone_attributes(config, record)
       reported_columns(config, record.attributes).except('created_at', 'updated_at').transform_values(&:as_json)
     end
 
-    # The columns of the member model among what was reported about a member, without its key and its link to the owner
+    # Returns the member model's columns among `attributes`, without its primary key and its link to the owner
     def reported_columns(config, attributes)
       attributes.slice(*config.klass.column_names).except(config.klass.primary_key, config.owner_foreign_key, config.owner_type_column)
     end
 
-    # [[owner, config], ...] for each tracked association the record belongs to through one of its belongs_to
+    # Returns [[owner, config], ...] for each tracked association the record belongs to through one of its belongs_to
     # associations. Raises when there is none, naming what it checked.
     def tracked_owners(record)
       checked = []
@@ -380,9 +407,9 @@ module LaForge
                            "Set its owner first, and declare the association with `laforged associations:` on the owner"
     end
 
-    # { key values => [[source id, attributes, recorded at, edit, precedence], ...] } for what the reports say about members
-    # besides their keys and has not yet been recorded on them, oldest first, so the entries are created in the order they
-    # were reported
+    # Returns the reports' pending items by member key, oldest first so they are recorded in the order the sources
+    # reported them, as { key => [[source id, attributes, recorded_at, edit, precedence], ...] }. The precedence of an
+    # item without one is `NOT_GIVEN`.
     def pending_by_key(config, reports)
       items = reports.flat_map do |entry, report|
         report.pending.map do |item|
@@ -393,7 +420,8 @@ module LaForge
       items.sort_by { |_, (_, _, recorded_at)| recorded_at }.group_by(&:first).transform_values { |pairs| pairs.map(&:last) }
     end
 
-    # Removes from the association the members an earlier forge created, not yet saved, that membership no longer includes
+    # Drops from `created` the members an earlier forge built, not saved yet, that membership does not include, and
+    # takes a collection's out of the association
     def discard_created(owner, config, created, included_keys)
       (created.keys - included_keys).each do |key|
         record = created.delete(key)
@@ -401,9 +429,10 @@ module LaForge
       end
     end
 
-    # A member that membership includes but that does not exist. A new member is built and kept by its placeholder, so
-    # a second forge before saving finds it, and saving names it by its id. A member named by an id that is no longer one
-    # of the owner's is skipped, since LaForge does not create a record with a given id. Any other is built from its key.
+    # Returns a member built for an included `member` that does not exist, or nil when it is skipped. A new member is
+    # kept in `created` by its placeholder key, so a later forge before the save finds it. A member named by an id that
+    # is not one of the owner's is skipped with a warning, since LaForge does not create a record with a given id. Any
+    # other is built by `build`, which can skip it too.
     def add(owner, config, member, created, described:)
       if config.primary_keyed? && !config.unsaved?(member)
         owner.logger&.warn("LaForge skipped #{config.klass.name} #{config.key_of(member).first.inspect} in #{owner.class.name} #{owner.id}'s #{config.name}: " \
@@ -416,10 +445,10 @@ module LaForge
       record
     end
 
-    # A new member built as the association's `build` would, with its scope's attributes. A collection member is added to
-    # the association; a has_one member is not, since Rails writes a has_one replacement immediately, and the owner
-    # removes the current one when it is saved. Returns nil, after logging, for a member that no source described and
-    # that is invalid with its key alone.
+    # Returns a new member with the association scope's attributes and `AssociationConfig#build_attributes`, or nil
+    # after logging a warning when `described` is false and the member is invalid with those alone. A collection member
+    # is built in the association. A has_one member is built outside it, because Rails replaces a has_one's current
+    # member as soon as one is built through it, and the forge has the owner's save remove the current one.
     def build(owner, config, member, described:)
       association = owner.association(config.name.to_sym)
       attributes = config.build_attributes(member)
@@ -433,7 +462,8 @@ module LaForge
       nil
     end
 
-    # A new member with the association scope's attributes, pointing at the owner, but not in the association
+    # Returns a new member with the association scope's attributes and those in `key_hash`, pointing at the owner but
+    # not in the association
     def new_member(owner, config, key_hash)
       config.klass.new(owner.association(config.name.to_sym).scope.scope_for_create.merge(key_hash)).tap do |member|
         member[config.owner_foreign_key] = owner.id
@@ -441,8 +471,8 @@ module LaForge
       end
     end
 
-    # Drops from the reports what they say about the included members, which the forge has now recorded on them. The
-    # report's recorded_at is kept, since the source said nothing new.
+    # Drops from the reports the pending items of the members with `keys`, which the forge has recorded on them. Each
+    # report keeps its recorded_at, since its source said nothing new.
     def clear_pending(config, reports, keys)
       reports.each do |entry, report|
         remaining = report.pending.reject { |item| keys.include?(config.key_of(item['key'])) }
@@ -452,8 +482,8 @@ module LaForge
       end
     end
 
-    # Drops the withdrawn keys the forge has now settled. A partial report left with nothing in it is destroyed with the
-    # owner's next save, since the source no longer says anything about the association.
+    # Empties each report's withdrawn list, which the forge has applied. A partial report left with no members and no
+    # pending items is marked for destruction, to go with the owner's save.
     def prune_withdrawn(config, reports)
       reports.each do |entry, _|
         next if entry.marked_for_destruction?
@@ -462,7 +492,7 @@ module LaForge
         next unless report.withdrawn.any?
 
         if !report.partial?
-          entry.value = MemberList.value(include: report.include, pending: report.pending) # an empty complete list still says something
+          entry.value = MemberList.value(include: report.include, pending: report.pending) # an empty complete report still excludes every member
         elsif report.include.empty? && report.exclude.empty? && report.pending.empty?
           entry.mark_for_destruction
         else
@@ -471,15 +501,17 @@ module LaForge
       end
     end
 
-    # The source's own current report on the owner, if it has one
+    # Returns the source's report, or nil when it has none or its entry is marked for destruction
     def report(owner, config, source)
       entry = owner.send(:filter_data_entries_in_memory, attributes: config.name, sources: source).first
       MemberList.new(entry.value) if entry && !entry.marked_for_destruction?
     end
 
-    # The member hashes the reports include, in order (the highest-precedence report's order first), and the keys of
-    # existing rows that are left as they are: rows no report has ever named, such as ones that existed before the
-    # association was tracked or were created outside LaForge, and rows no report has an opinion on and none withdrew
+    # Returns [included, undecided]:
+    # - included: the hashes of the members membership includes, the highest-precedence report's first, without those
+    #   whose referenced record does not exist
+    # - undecided: the keys of the `existing` members a forge leaves as they are, which are those no report names, and
+    #   those no report has an opinion on and none withdrew
     def resolve(config, reports, existing)
       decision = ->(key) { reports.lazy.filter_map { |_, report| report.decision(config, key) }.first }
       named = reports.flat_map { |_, report| report.reported_keys(config) }.map { |member| config.key_of(member) }.to_set
@@ -495,8 +527,10 @@ module LaForge
       [included, undecided]
     end
 
-    # A member's values from a source: its key from the source's list, with the source's entries on the member and what
-    # the source's report says about it that has not been recorded on it yet, unless the member has a newer value
+    # Returns the member's hash as `source` gives it, merging in order:
+    # - its key, or nothing for a new member or a tombstone
+    # - the source's entries on the member
+    # - the source's pending items for it, each without the attributes the member has a newer entry for from the source
     def with_member_attributes(config, member, record, member_entries, source, pending)
       entries = record ? (member_entries[record.id] || []).select { |entry| entry.source == source } : []
       member = config.build_attributes(member)
