@@ -962,6 +962,18 @@ describe 'Association tracking capabilities' do
       expect { place.record_data_entries({ tenants_attributes: [] }, top) }.to raise_error(ArgumentError, /record it with mode: :edit/)
       expect { place.record_data_entries({ tenants: [{ name: 'Florist', opening_hours_attributes: [] }] }, top) }.to raise_error(ArgumentError, /Tenant#opening_hours_attributes describes edits/)
     end
+
+    it 'records a single entry as record_data_entries does, so form payloads need mode: :edit there too', capability: 'C125' do
+      corner_cafe = place.tenants.create!(name: 'Corner Café')
+
+      expect { place.record_data_entry(:tenant_ids, [corner_cafe.id], top) }.to raise_error(ArgumentError, /Place#tenant_ids describes edits, as a Rails form submits them; record it with mode: :edit/)
+      expect { place.record_data_entry(:tenants_attributes, [{ id: corner_cafe.id }], top) }.to raise_error(ArgumentError, /record it with mode: :edit/)
+      expect(place.data_entries).to be_empty
+
+      place.record_data_entry(:tenants, [{ name: 'Harbor Books' }], top) # a tracked association is recorded as a report
+      place.forge!
+      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Corner Café', 'Harbor Books')
+    end
   end
 
   describe 'tombstones' do

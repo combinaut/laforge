@@ -312,9 +312,11 @@ module LaForge
     # record. An existing precedence is kept when none is passed, and removed when nil is passed.
     # A belongs_to association is recorded as its foreign key (and type, when polymorphic): pass the record or nil.
     # An attribute of an attribute group is recorded with the rest of its group, through `record_data_entries`.
+    # Recorded as `record_data_entries` records it in its default mode, so a tracked association's value is a complete
+    # report, and the shapes a Rails form submits raise, since they are recorded with mode: :edit.
     def record_data_entry(attribute_name, value, source, precedence: NOT_GIVEN)
       self.class.laforge_assert_whole_groups!([attribute_name], where: "Recording #{self.class.name}##{attribute_name}")
-      laforge_record_attribute(attribute_name, value, source, precedence: precedence)
+      record_data_entries({ attribute_name => value }, source, precedence: precedence)
     end
 
     # For an orphan sweep: the source no longer reports this record. Destroys its attribute entries and withdraws every
