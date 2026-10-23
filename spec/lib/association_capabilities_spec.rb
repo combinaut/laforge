@@ -1,7 +1,7 @@
 require 'spec_helper'
 
 # What association tracking does, one capability per example. Its vocabulary (report, member, membership, tombstone)
-# is defined on `LaForge::AssociationTracking`, `LaForge::MemberList` and `LaForge::AssociationConfig`.
+# is defined on `LaForge::TrackedAssociation`, `LaForge::MemberList` and `LaForge::AssociationConfig`.
 #
 # The API is experimental. These names can change while the behaviour stays:
 # - `laforged associations:`

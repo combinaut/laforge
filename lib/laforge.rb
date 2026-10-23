@@ -9,7 +9,7 @@ require 'laforge/member_list/complete'
 require 'laforge/member_list/partial'
 require 'laforge/tombstone'
 require 'laforge/merge'
-require 'laforge/association_tracking'
+require 'laforge/tracked_association'
 require 'laforge/payload'
 require 'laforge/activerecord'
 

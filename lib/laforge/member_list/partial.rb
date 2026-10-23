@@ -41,8 +41,8 @@ module LaForge
         nil
       end
 
-      # Whether this report includes, excludes and has pending items for no member, so it says nothing once its withdrawn
-      # list is applied
+      # Whether this report includes, excludes and has pending items for no member, so it says nothing once its
+      # withdrawn list is applied
       def vacant?
         include.empty? && exclude.empty? && pending.empty?
       end

@@ -29,7 +29,7 @@ module LaForge
     end
 
     def record
-      @record ||= AssociationTracking.unsaved_member(owner, config, attributes)
+      @record ||= TrackedAssociation.new(owner, config).unsaved_member(attributes)
     end
 
     def to_h
@@ -42,6 +42,6 @@ module LaForge
   # there. Code that creates members itself, such as an importer that saves a Tenant rather than reporting it on its
   # Place, calls it before saving one. Raises when `record` is saved, or when none of its owners tracks it.
   def self.tombstone_blocking(record, source)
-    AssociationTracking.tombstone_blocking(record, source)
+    TrackedAssociation.tombstone_blocking(record, source)
   end
 end

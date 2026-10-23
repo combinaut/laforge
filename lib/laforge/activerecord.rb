@@ -7,7 +7,7 @@ module LaForge
     extend ActiveSupport::Concern
 
     # Declares the model's data entries, data sources and precedence rules, with these options:
-    # - associations: { name => options }, the has_many and has_one associations to track (see AssociationTracking),
+    # - associations: { name => options }, the has_many and has_one associations to track (see TrackedAssociation),
     #   each with the options AssociationConfig takes
     # - attribute_groups: { name => [attributes] }. An attribute group is a set of attributes that come from one source
     #   together, such as the lines of a postal address. Sources record a group's attributes together, precedence rules
@@ -21,7 +21,7 @@ module LaForge
         # Returns the tombstones of the tracked association `name` (see Tombstone)
         def tombstones(name)
           owner = proxy_association.owner
-          AssociationTracking.tombstones(owner, owner.class.laforged_association(name))
+          TrackedAssociation.new(owner, owner.class.laforged_association(name)).tombstones
         end
       end
       has_many :data_sources, -> { distinct }, through: :data_entries, source: :source, class_name: 'LaForge::DataSource'
@@ -40,7 +40,7 @@ module LaForge
       self.laforged_attribute_groups = groups
 
       configs = associations.to_h { |name, options| [name.to_s, AssociationConfig.new(self, name, **options)] }
-      configs.each_value { |config| AssociationTracking.declare(self, config) }
+      configs.each_value { |config| TrackedAssociation.declare(self, config) }
       self.laforged_associations = configs
       after_save :laforge_after_save
 
@@ -154,7 +154,7 @@ module LaForge
     # Returns what each source says about the members of the tracked association `name` on each of `records`, as
     # { record_id => { source => [member hashes] } }
     def source_values(name, records:)
-      AssociationTracking.source_values(self, laforged_association(name), records)
+      TrackedAssociation.source_values(self, laforged_association(name), records)
     end
 
     # @api private
@@ -221,7 +221,7 @@ module LaForge
 
     def forge_associations(associations: nil)
       names = associations ? Array.wrap(associations).map(&:to_s) : laforged_associations.keys
-      laforged_associations.slice(*names).each_value { |config| AssociationTracking.forge(self, config) }
+      laforged_associations.slice(*names).each_value { |config| TrackedAssociation.new(self, config).forge }
     end
 
     # Returns a hash of the attribute changes between the saved record and the data entries
@@ -236,7 +236,7 @@ module LaForge
 
       names = forge_options[:attributes] ? Array.wrap(forge_options[:attributes]).map(&:to_s) : laforged_associations.keys # limited as `forge` limits them
       laforged_associations.slice(*names).each do |name, config|
-        association_diff = AssociationTracking.diff(self, config)
+        association_diff = TrackedAssociation.new(self, config).diff
         diff[name] = association_diff if association_diff
       end
 
@@ -296,7 +296,7 @@ module LaForge
     #   are edits too. The shapes a Rails form submits, `*_attributes` for a tracked association and `*_ids`, are
     #   accepted (see Payload).
     # A complete or partial report replaces the source's previous one.
-    # A member is a hash of its key and what the source says about it (see AssociationTracking), or a saved record.
+    # A member is a hash of its key and what the source says about it (see TrackedAssociation), or a saved record.
     # Where members are keyed by primary key, a hash without an id is a new member.
     # `precedence:` covers everything the call records, members' attributes included (see `record_data_entry`).
     # The attributes of an attribute group are recorded together, on the record and on members alike.
@@ -308,11 +308,11 @@ module LaForge
       self.class.laforge_assert_whole_groups!(payload.keys.reject { |attribute_name| laforged_associations.key?(attribute_name.to_s) }, where: "Recording #{self.class.name}")
       payload.each do |attribute_name, value|
         if edit && (config = laforged_associations[attribute_name.to_s])
-          AssociationTracking.edit(self, config, value, source, precedence: precedence)
+          TrackedAssociation.new(self, config).edit(value, source, precedence: precedence)
         elsif (config = laforged_associations[attribute_name.to_s])
           options = { precedence: precedence }
           options[:partial] = true if mode == :partial
-          AssociationTracking.record(self, config, value, source, **options)
+          TrackedAssociation.new(self, config).record(value, source, **options)
         else
           laforge_record_attribute(attribute_name, value, source, precedence: precedence)
         end
@@ -339,7 +339,7 @@ module LaForge
       transaction do
         filter_data_entries_in_memory(sources: source).each do |data_entry|
           if (config = laforged_associations[data_entry.attribute_name])
-            AssociationTracking.withdraw(config, data_entry)
+            data_entry.value = MemberList.new(data_entry.value).withdrawing_all(config)
             data_entry.save! if data_entry.persisted?
           else
             data_entries.destroy(data_entry)
@@ -436,7 +436,7 @@ module LaForge
     # Returns { membership: source, listed_by: [sources], excluded_by: [sources], attributes: { attribute => source } }
     # for one member
     def member_sources(name, **member)
-      AssociationTracking.member_sources(self, self.class.laforged_association(name), member.stringify_keys)
+      TrackedAssociation.new(self, self.class.laforged_association(name)).member_sources(member.stringify_keys)
     end
 
     # @api private
@@ -485,7 +485,7 @@ module LaForge
       entries = filter_data_entries_in_memory(sources: source_id).reject(&:marked_for_destruction?)
       entries.each do |data_entry|
         if (config = laforged_associations[data_entry.attribute_name])
-          AssociationTracking.withdraw(config, data_entry)
+          data_entry.value = MemberList.new(data_entry.value).withdrawing_all(config)
         else
           data_entries.target.delete(data_entry)
           owner.laforge_destroy_on_save(data_entry) if data_entry.persisted?
@@ -547,9 +547,9 @@ module LaForge
 
       attributes.each do |attribute_name, value|
         if (config = laforged_associations[attribute_name]) && edit && config.collection?
-          AssociationTracking.edit(self, config, value, source, precedence: precedence, recorded_at: recorded_at)
+          TrackedAssociation.new(self, config).edit(value, source, precedence: precedence, recorded_at: recorded_at)
         elsif config
-          AssociationTracking.record(self, config, value, source, precedence: precedence, recorded_at: recorded_at)
+          TrackedAssociation.new(self, config).record(value, source, precedence: precedence, recorded_at: recorded_at)
         else
           write_data_entry(attribute_name, value, source, precedence: precedence, recorded_at: recorded_at)
         end
@@ -615,7 +615,7 @@ module LaForge
     # - deletes the entries they withdrew from members, publishing `DataEntry::CHANGED` for each
     # - removes the members they replaced or dropped, per the association's dependent option, skipping any never saved
     def laforge_after_save
-      (@laforge_created_members || {}).each { |name, created| AssociationTracking.name_created(self, laforged_associations.fetch(name), created) }
+      (@laforge_created_members || {}).each { |name, created| TrackedAssociation.new(self, laforged_associations.fetch(name)).name_created(created) }
       @laforge_created_members = nil
       if @laforge_withdrawn_entries
         @laforge_withdrawn_entries.each { |entry| DataEntry.publish_change(entry, value_was: entry.value, value: nil, destroyed: true) }
