@@ -2,7 +2,7 @@ PATH
   remote: .
   specs:
     laforge (0.0.1.alpha)
-      rails (> 5.2)
+      rails (>= 7.0)
 
 GEM
   remote: https://rubygems.org/
