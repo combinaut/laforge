@@ -5,13 +5,14 @@ describe 'Usage' do
   # Runs before the sources below are created
   before do
     LaForge::DataEntry.delete_all
+    LaForge::PrecedenceRule.where.not(record_type: LaForge::PrecedenceRule::ANY_TYPE).delete_all
     LaForge::DataSource.where(name: ['Cadastre', 'Business Directory', 'Map Editor', 'Geocoder']).delete_all
   end
 
   # Two importers and a map editor whose edits outrank both
-  let!(:cadastre) { LaForge::DataSource.create!(name: 'Cadastre', priority: 31) }
-  let!(:business_directory) { LaForge::DataSource.create!(name: 'Business Directory', priority: 32) }
-  let!(:map_editor) { LaForge::DataSource.create!(name: 'Map Editor', priority: 33) }
+  let!(:cadastre) { LaForge::DataSource.create!(name: 'Cadastre', precedence: 31) }
+  let!(:business_directory) { LaForge::DataSource.create!(name: 'Business Directory', precedence: 32) }
+  let!(:map_editor) { LaForge::DataSource.create!(name: 'Map Editor', precedence: 33) }
 
   let(:record) { ActiveRecordMock.create!(name: 'Original', active: true, count: 1) }
 
@@ -85,7 +86,7 @@ describe 'Usage' do
     end
   end
 
-  # A map editor's edit is recorded on the highest-priority source so it outranks importers and survives their later runs
+  # A map editor's edit is recorded on the highest-precedence source so it outranks importers and survives their later runs
   describe 'map editor overrides' do
     before do
       record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
@@ -132,11 +133,22 @@ describe 'Usage' do
       expect(record.reload.name).to eq('Changed In Cadastre')
     end
 
-    it 'blanks the attribute instead of falling back when the override is only marked for removal' do
+    it "falls back to the importer's value when the override is removed inside forge!" do
       record.record_data_entry(:name, 'From Map Editor', map_editor)
-      record.forge!(attributes: :name)
+      record.forge!
 
-      record.forge! { record.remove_data_entries(attribute_names: :name, sources: map_editor) }
+      record.forge!(attributes: :name) { record.remove_data_entries(attribute_names: :name, sources: map_editor) }
+
+      expect(record.reload.name).to eq('From Cadastre')
+      expect(record.reload.tap(&:forge).name).to eq('From Cadastre') # and the next forge agrees
+    end
+
+    it 'blanks the attribute when the editor records nil' do
+      record.record_data_entry(:name, 'From Map Editor', map_editor)
+      record.forge!
+
+      record.record_data_entry(:name, nil, map_editor)
+      record.forge!
 
       expect(record.reload.name).to be_nil
     end
@@ -187,19 +199,20 @@ describe 'Usage' do
     end
   end
 
-  # A source can be authoritative for some attributes regardless of its source priority
-  describe 'per-entry priority' do
-    it 'lets an entry outrank a higher-priority source' do
+  # A record's own precedence for an attribute and source outranks the model-wide and global rules, so a source can be
+  # authoritative for some attributes of a record regardless of its global precedence
+  describe 'per-record precedence' do
+    it 'lets an entry outrank a higher-precedence source' do
       record.record_data_entries({ name: 'From Map Editor' }, map_editor)
-      record.record_data_entries({ name: 'From Business Directory' }, business_directory, priority: 100)
+      record.record_data_entries({ name: 'From Business Directory' }, business_directory, precedence: 100)
       record.forge!
 
       expect(record.reload.name).to eq('From Business Directory')
     end
 
-    it 'keeps the custom priority when the same source records the attribute again without one' do
+    it 'keeps the custom precedence when the same source records the attribute again without one' do
       record.record_data_entries({ name: 'From Map Editor' }, map_editor)
-      record.record_data_entries({ name: 'From Business Directory' }, business_directory, priority: 100)
+      record.record_data_entries({ name: 'From Business Directory' }, business_directory, precedence: 100)
       record.forge!
 
       record.reload.record_data_entries({ name: 'From Business Directory Again' }, business_directory)
@@ -208,15 +221,150 @@ describe 'Usage' do
       expect(record.reload.name).to eq('From Business Directory Again')
     end
 
-    it "sets one record's priority for one attribute and source" do
+    it "sets one record's precedence for one attribute and source" do
       record.record_data_entries({ name: 'From Cadastre' }, cadastre)
       record.record_data_entries({ name: 'From Business Directory' }, business_directory)
       record.save!
 
-      record.update_attribute_source_priority(:name, cadastre, 100)
+      record.update_attribute_source_precedence(:name, cadastre, 100)
       record.reload.forge
 
       expect(record.name).to eq('From Cadastre')
+    end
+
+    it 'can be set before the source has recorded the attribute, and applies once it does' do
+      record.update_attribute_source_precedence(:name, cadastre, 100)
+      record.record_data_entries({ name: 'From Map Editor' }, map_editor)
+      record.forge!
+
+      record.reload.record_data_entries({ name: 'From Cadastre' }, cadastre)
+      record.forge!
+
+      expect(record.reload.name).to eq('From Cadastre')
+    end
+
+    it 'is saved with a new record when given while recording' do
+      new_record = ActiveRecordMock.new(name: 'New')
+      new_record.record_data_entries({ name: 'From Cadastre' }, cadastre, precedence: 100)
+      new_record.forge!
+
+      expect(new_record.reload.source_precedences).to eq('name' => { cadastre => 100 })
+    end
+
+    it "survives the source's entries being destroyed by an orphan sweep" do
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre, precedence: 100)
+      record.record_data_entries({ name: 'From Map Editor' }, map_editor)
+      record.forge!
+      record.data_entries.with_source(cadastre).destroy_all
+
+      record.reload.record_data_entries({ name: 'Back In Cadastre' }, cadastre)
+      record.forge!
+
+      expect(record.reload.name).to eq('Back In Cadastre')
+    end
+
+    it 'is removed by recording again with a nil precedence' do
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre, precedence: 100)
+      record.record_data_entries({ name: 'From Map Editor' }, map_editor)
+      record.forge!
+
+      record.reload.record_data_entries({ name: 'From Cadastre' }, cadastre, precedence: nil)
+      record.forge!
+
+      expect(record.reload.name).to eq('From Map Editor')
+      expect(record.source_precedences).to be_empty
+    end
+  end
+
+  # An importer wraps its run in `LaForge.with_precedence_cache` so that forging each row doesn't read the global and
+  # model-wide rules again
+  describe 'caching precedence for an import run' do
+    let(:records) { Array.new(3) { |index| ActiveRecordMock.create!(name: "Row #{index}") } }
+
+    def rule_queries(&block)
+      queries = []
+      counter = ->(*, payload) { queries << payload[:sql] if payload[:sql].include?('laforge_precedence_rules') && !payload[:sql].match?(/\A\s*(INSERT|UPDATE|DELETE)/i) }
+      ActiveSupport::Notifications.subscribed(counter, 'sql.active_record', &block)
+      queries
+    end
+
+    def import(rows)
+      rows.each do |row|
+        label = "Row #{records.index(row)}"
+        row.record_data_entries({ name: "#{label} From Cadastre" }, cadastre)
+        row.record_data_entries({ name: "#{label} From Business Directory" }, business_directory)
+        row.forge!
+      end
+    end
+
+    it 'reads the global and model-wide rules once for the whole run' do
+      records
+      cached = rule_queries { LaForge.with_precedence_cache { import(records) } }
+      uncached = rule_queries { import(records.map(&:reload)) }
+
+      expect(cached.grep(/record_type`? = ''/).size).to eq(1)
+      expect(uncached.grep(/record_type`? = ''/).size).to eq(records.size)
+    end
+
+    it 'sees precedence changed through LaForge during the run' do
+      LaForge.with_precedence_cache do
+        import(records.first(1))
+        ActiveRecordMock.update_attribute_source_precedence(:name, cadastre, 100)
+        import(records.last(1))
+      end
+
+      expect(records.first.reload.name).to eq('Row 0 From Business Directory')
+      expect(records.last.reload.name).to eq('Row 2 From Cadastre')
+    end
+
+    it 'does not see precedence changed outside LaForge until the run ends' do
+      LaForge.with_precedence_cache do
+        import(records.first(1))
+        LaForge::PrecedenceRule.where(source_id: cadastre.id).update_all(precedence: 100) # e.g. by SQL from another process
+        import(records.last(1))
+      end
+      import(records.first(1).map(&:reload))
+
+      expect(records.last.reload.name).to eq('Row 2 From Business Directory')
+      expect(records.first.reload.name).to eq('Row 0 From Cadastre')
+    end
+  end
+
+  describe 'model-wide precedence' do
+    before do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.record_data_entries({ name: 'From Business Directory', count: 7 }, business_directory)
+      record.save!
+    end
+
+    it 'ranks a source for one attribute on every record of the model' do
+      ActiveRecordMock.update_attribute_source_precedence(:count, cadastre, 100)
+      record.reload.forge
+
+      expect(record).to have_attributes(name: 'From Business Directory', count: 5)
+    end
+
+    it 'ranks a source for every attribute on every record of the model' do
+      ActiveRecordMock.update_source_precedence(cadastre, 100)
+      record.reload.forge
+
+      expect(record).to have_attributes(name: 'From Cadastre', count: 5)
+    end
+
+    it "gives way to a record's own precedence" do
+      ActiveRecordMock.update_source_precedence(cadastre, 100)
+      record.update_attribute_source_precedence(:name, business_directory, 200)
+      record.reload.forge
+
+      expect(record).to have_attributes(name: 'From Business Directory', count: 5)
+    end
+
+    it 'lists the rules and removes them with a nil precedence' do
+      ActiveRecordMock.update_attribute_source_precedence(:count, cadastre, 100)
+      expect(ActiveRecordMock.source_precedences).to eq('count' => { cadastre => 100 })
+
+      ActiveRecordMock.update_attribute_source_precedence(:count, cadastre, nil)
+      expect(ActiveRecordMock.source_precedences).to be_empty
     end
   end
 
@@ -227,36 +375,37 @@ describe 'Usage' do
       record.forge!
     end
 
-    it 'blanks the attributes the source was supplying, even where a lower source has a value' do
-      record.forge! { record.remove_data_entries(attribute_names: %i[name count], sources: business_directory) }
+    it 'blanks the attributes the source was supplying by recording nil, even where a lower source has a value' do
+      record.record_data_entries({ name: nil, count: nil }, business_directory)
+      record.forge!
 
       expect(record.reload).to have_attributes(name: nil, count: nil, active: false)
-      expect(record.data_entries.with_source(business_directory).pluck(:attribute_name)).to eq(['active'])
     end
 
     it "keeps a higher source's value while blanking the source's own" do
       record.record_data_entries({ name: 'From Map Editor' }, map_editor)
       record.forge!
 
-      record.forge! { record.remove_data_entries(attribute_names: %i[name count], sources: business_directory) }
+      record.record_data_entries({ name: nil, count: nil }, business_directory)
+      record.forge!
 
       expect(record.reload).to have_attributes(name: 'From Map Editor', count: nil)
     end
 
+    it 'falls back to the lower source when the entries are removed, and keeps the value no other source has' do
+      record.forge! { record.remove_data_entries(attribute_names: %i[name count active], sources: business_directory) }
+
+      expect(record.reload).to have_attributes(name: 'From Cadastre', count: 5, active: false)
+      expect(record.data_entries.with_source(business_directory)).not_to exist
+      expect(record.tap(&:forge)).to have_attributes(name: 'From Cadastre', count: 5, active: false) # and the next forge agrees
+    end
+
     it 'deletes entries without changing the attribute when they are removed outside forge and the record saved' do
-      # For columns that cannot be blank: remove after forging, then save with an explicit value
       record.remove_data_entries(attribute_names: :active, sources: business_directory)
       record.update!(count: 0)
 
       expect(record.reload).to have_attributes(active: false, count: 0)
       expect(record.data_entries.with_source(business_directory).with_attribute(:active)).not_to exist
-    end
-
-    it 'restores the lower source on the next forge once the removed entries are gone' do
-      record.forge! { record.remove_data_entries(attribute_names: :name, sources: business_directory) }
-      record.reload.forge!
-
-      expect(record.reload.name).to eq('From Cadastre')
     end
 
     it 'tells whether any other source still has entries on the record, to decide whether to orphan it' do
@@ -270,7 +419,7 @@ describe 'Usage' do
   # When an import no longer includes a record, drop the importer's entries and orphan the record unless a source other
   # than a neutral one still has entries on it
   describe 'an import orphan sweep' do
-    let!(:geocoder) { LaForge::DataSource.create!(name: 'Geocoder', priority: 34) }
+    let!(:geocoder) { LaForge::DataSource.create!(name: 'Geocoder', precedence: 34) }
 
     before do
       record.record_data_entries({ name: 'From Cadastre' }, cadastre)
@@ -303,14 +452,23 @@ describe 'Usage' do
   describe 'inspecting where values came from' do
     before do
       record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
-      record.record_data_entries({ name: 'From Business Directory' }, business_directory, priority: 100)
+      record.record_data_entries({ name: 'From Business Directory' }, business_directory, precedence: 100)
       record.save!
     end
 
-    it "orders an attribute's entries by the priority that decides them" do
-      entries = record.data_entries.includes(:source).group_by(&:attribute_name)['name'].sort_by(&:priority_with_fallback).reverse
+    it "orders an attribute's entries by the precedence that decides them" do
+      entries = record.data_entries.includes(:source).group_by(&:attribute_name)['name'].sort_by(&:effective_precedence).reverse
 
-      expect(entries.map { |entry| [entry.source.name, entry.priority_with_fallback] }).to eq([['Business Directory', 100], ['Cadastre', 31]])
+      expect(entries.map { |entry| [entry.source.name, entry.effective_precedence] }).to eq([['Business Directory', 100], ['Cadastre', 31]])
+    end
+
+    it 'ranks by precedence rules changed since the last forge once the record is reloaded' do
+      record.forge
+      ActiveRecordMock.update_attribute_source_precedence(:name, cadastre, 200)
+      record.reload
+
+      entries = LaForge::DataEntry.in_precedence_order(record.data_entries.to_a, record: record)
+      expect(entries.find { |entry| entry.attribute_name == 'name' }.source).to eq(cadastre)
     end
 
     it 'lists the sources a record or one attribute has entries from' do
@@ -415,10 +573,25 @@ describe 'Usage' do
   end
 
   describe 'data sources' do
-    it 'requires a unique priority and a case-insensitively unique name' do
-      expect(LaForge::DataSource.new(name: 'Other', priority: business_directory.priority)).not_to be_valid
-      expect(LaForge::DataSource.new(name: 'business directory', priority: 99)).not_to be_valid
+    it 'requires a unique precedence and a case-insensitively unique name' do
+      expect(LaForge::DataSource.new(name: 'Other', precedence: business_directory.precedence)).not_to be_valid
+      expect(LaForge::DataSource.new(name: 'business directory', precedence: 99)).not_to be_valid
       expect(LaForge::DataSource.new(name: 'Other')).not_to be_valid
+    end
+
+    it 'stores the global precedence as a precedence rule, unique among global rules in the database too' do
+      expect(LaForge::PrecedenceRule.global.find_by!(source: cadastre).precedence).to eq(31)
+      expect { LaForge::PrecedenceRule.create!(source: map_editor, record_type: 'ActiveRecordMock', precedence: 31) }.not_to raise_error
+      expect { LaForge::DataSource.new(name: 'Duplicate', precedence: 31).save!(validate: false) }.to raise_error(ActiveRecord::RecordNotUnique)
+      expect(LaForge::DataSource.exists?(name: 'Duplicate')).to be(false)
+    end
+
+    it 'reorders sources by updating their precedence' do
+      expect(LaForge::DataSource.maximum_precedence).to be >= 33
+
+      [cadastre, business_directory, map_editor].each { |source| source.update!(precedence: source.precedence + 1000) }
+
+      expect(LaForge::DataSource.where(id: [cadastre, business_directory, map_editor]).by_precedence.map(&:precedence)).to eq([1033, 1032, 1031])
     end
 
     it 'accepts a source as a record, an id or a name wherever one is expected' do

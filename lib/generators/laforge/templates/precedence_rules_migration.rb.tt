@@ -1,0 +1,93 @@
+# Moves source and entry priorities into laforge_precedence_rules as precedence rules: each source's priority becomes
+# its global rule, and each entry's custom priority becomes a rule for that record, attribute and source.
+#
+# `up` checks the data first, and raises before changing anything when it finds any of these:
+# - a source with no priority, which would have no global rule
+# - two sources sharing a priority, which would collide in the unique index on global precedences and leave the
+#   migration half done
+# - entries for the same record, attribute and source with different priorities, which one rule cannot keep, so which
+#   entry wins would change
+# - entries with a priority whose source no longer exists, which no rule can reference
+class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
+  def up
+    assert_priorities_migratable!
+
+    create_table :laforge_precedence_rules do |t|
+      t.string :record_type, null: false, default: ''
+      t.bigint :record_id, null: false, default: 0
+      t.string :attribute_name, null: false, default: ''
+      t.references :source, null: false, index: false, foreign_key: { to_table: :laforge_data_sources, on_delete: :cascade }
+      t.integer :precedence, null: false
+      t.virtual :global_precedence, type: :integer, as: "CASE WHEN record_type = '' THEN precedence END", stored: true
+      t.timestamps null: false
+      t.index %i[record_type record_id attribute_name source_id], unique: true, name: :index_laforge_precedence_rules_on_scope_and_source
+      t.index :global_precedence, unique: true
+    end
+
+    execute <<~SQL
+      INSERT INTO laforge_precedence_rules (record_type, record_id, attribute_name, source_id, precedence, created_at, updated_at)
+      SELECT '', 0, '', id, priority, NOW(), NOW() FROM laforge_data_sources WHERE priority IS NOT NULL
+    SQL
+
+    execute <<~SQL
+      INSERT INTO laforge_precedence_rules (record_type, record_id, attribute_name, source_id, precedence, created_at, updated_at)
+      SELECT record_type, record_id, attribute_name, source_id, MAX(priority), NOW(), NOW()
+      FROM laforge_data_entries WHERE priority IS NOT NULL
+      GROUP BY record_type, record_id, attribute_name, source_id
+    SQL
+
+    remove_column :laforge_data_entries, :priority
+    remove_column :laforge_data_sources, :priority
+  end
+
+  # Raises, naming the sources or entries, unless every source has a priority, no two share one, entries with a priority
+  # belong to sources that exist, and entries for the same record, attribute and source agree on theirs
+  def assert_priorities_migratable!
+    missing = select_values("SELECT name FROM laforge_data_sources WHERE priority IS NULL ORDER BY name")
+    raise "Give these LaForge data sources a priority before migrating, as each becomes the source's global precedence: #{missing.join(', ')}" if missing.any?
+
+    orphaned = select_values("SELECT DISTINCT source_id FROM laforge_data_entries WHERE priority IS NOT NULL AND source_id NOT IN (SELECT id FROM laforge_data_sources) ORDER BY source_id")
+    if orphaned.any?
+      raise "LaForge data entries with a priority belong to sources that no longer exist (source ids #{orphaned.join(', ')}). Each would become a precedence rule " \
+            'referencing its source, so delete those entries, or set their priority to NULL, before migrating'
+    end
+
+    shared = select_rows("SELECT priority, name FROM laforge_data_sources WHERE priority IN (SELECT priority FROM laforge_data_sources GROUP BY priority HAVING COUNT(*) > 1) ORDER BY priority, name")
+    if shared.any?
+      described = shared.group_by(&:first).map { |priority, rows| "#{priority} (#{rows.map(&:last).join(', ')})" }
+      raise "LaForge data sources share priorities #{described.join('; ')}. Give each source a unique priority before migrating, as global precedences are unique"
+    end
+
+    conflicting = select_rows(<<~SQL)
+      SELECT record_type, record_id, attribute_name, source_id FROM laforge_data_entries
+      GROUP BY record_type, record_id, attribute_name, source_id
+      HAVING COUNT(priority) > 0 AND (COUNT(DISTINCT priority) > 1 OR COUNT(priority) < COUNT(*))
+      ORDER BY record_type, record_id, attribute_name, source_id LIMIT 10
+    SQL
+    return if conflicting.empty?
+
+    described = conflicting.map { |type, id, attribute, source_id| "#{type} #{id} #{attribute} from source #{source_id}" }
+    raise "LaForge data entries for the same record, attribute and source have different priorities (#{described.join('; ')}#{', and maybe more' if conflicting.size == 10}). " \
+          'One precedence rule replaces them, so give them the same priority, or delete the duplicates, before migrating'
+  end
+
+  def down
+    add_column :laforge_data_sources, :priority, :integer
+    add_column :laforge_data_entries, :priority, :integer
+
+    execute <<~SQL
+      UPDATE laforge_data_sources sources
+      JOIN laforge_precedence_rules rules ON rules.source_id = sources.id AND rules.record_type = ''
+      SET sources.priority = rules.precedence
+    SQL
+
+    execute <<~SQL
+      UPDATE laforge_data_entries entries
+      JOIN laforge_precedence_rules rules ON rules.record_type = entries.record_type AND rules.record_id = entries.record_id
+        AND rules.attribute_name = entries.attribute_name AND rules.source_id = entries.source_id
+      SET entries.priority = rules.precedence
+    SQL
+
+    drop_table :laforge_precedence_rules
+  end
+end

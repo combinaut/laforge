@@ -1,9 +1,7 @@
-
 class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
   def change
     create_table :laforge_data_sources do |t|
       t.text :name
-      t.integer :priority
       t.timestamps null: false
     end
 
@@ -12,10 +10,23 @@ class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version
       t.string :attribute_name, null: false
       t.belongs_to :source, null: false, index: false
       t.json :value
-      t.integer :priority
       t.timestamps null: false
     end
 
     add_index :laforge_data_entries, [:record_id, :record_type, :attribute_name, :source_id], name: :index_laforge_data_entries_on_record_and_attribute_and_source
+
+    # See LaForge::PrecedenceRule for the four levels and why "any" is stored as '' or 0. The unique index on
+    # `global_precedence` keeps the global order free of ties.
+    create_table :laforge_precedence_rules do |t|
+      t.string :record_type, null: false, default: ''
+      t.bigint :record_id, null: false, default: 0
+      t.string :attribute_name, null: false, default: ''
+      t.references :source, null: false, index: false, foreign_key: { to_table: :laforge_data_sources, on_delete: :cascade }
+      t.integer :precedence, null: false
+      t.virtual :global_precedence, type: :integer, as: "CASE WHEN record_type = '' THEN precedence END", stored: true
+      t.timestamps null: false
+      t.index %i[record_type record_id attribute_name source_id], unique: true, name: :index_laforge_precedence_rules_on_scope_and_source
+      t.index :global_precedence, unique: true
+    end
   end
 end

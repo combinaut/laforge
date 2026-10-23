@@ -2,7 +2,7 @@ require 'spec_helper'
 
 describe LaForge::DataSource do
   describe '::normalize_source_id' do
-    let!(:data_source) { described_class.find_or_create_by!(name: "Channel 2", priority: 7) }
+    let!(:data_source) { described_class.find_or_create_by!(name: "Channel 2") { |source| source.precedence = 7 } }
 
     it 'resolves a name containing a digit by name' do
       expect(described_class.normalize_source_id("Channel 2")).to eq(data_source.id)
