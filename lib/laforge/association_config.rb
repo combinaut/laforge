@@ -26,7 +26,7 @@ module LaForge
       @reflection = owner_class.reflect_on_association(name)
 
       raise ArgumentError, "#{owner_class.name} has no association named #{name}" unless reflection
-      raise ArgumentError, "#{owner_class.name}##{name} must be a has_many or has_one without :through; track its join association instead" unless (reflection.collection? || reflection.has_one?) && !reflection.through_reflection?
+      raise ArgumentError, "#{owner_class.name}##{name} must be a has_many or has_one without :through; track its join association instead" unless %i[has_many has_one].include?(reflection.macro) && !reflection.through_reflection?
 
       @key = Array.wrap(key || derived_key.presence || (collection? ? klass.primary_key : nil)).map(&:to_s)
       @tombstone_matcher = tombstone_matcher

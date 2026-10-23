@@ -1258,6 +1258,15 @@ describe 'Association tracking capabilities' do
       }.to raise_error(LaForge::InvalidAttributeName)
     end
 
+    it 'rejects a has_and_belongs_to_many at declaration, as its members are linked through a join table', capability: 'C123' do
+      stub_const('ListedPlace', Class.new(ActiveRecord::Base))
+      ListedPlace.table_name = 'places'
+      ListedPlace.has_and_belongs_to_many :categories, join_table: 'place_categories', foreign_key: :place_id
+
+      expect { ListedPlace.laforged(associations: { categories: {} }) }
+        .to raise_error(ArgumentError, /ListedPlace#categories must be a has_many or has_one without :through; track its join association instead/)
+    end
+
     it 'rejects associations that are not declared as tracked', capability: 'C28' do
       expect {
         place.record_data_entries({ parcel_links: [parcel_link(lot_14, computed)] }, low)
