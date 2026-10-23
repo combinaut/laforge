@@ -532,7 +532,7 @@ A source that knows only some of the members records a partial report, with `mod
 
 ### Edits
 
-An editor changes only what it names. `mode: :edit` applies a payload as single-member edits, at every level: each member listed under `include:` is added to the source's report, with the attributes given, each under `exclude:` is removed even if other sources include it, and each under `forget:` drops the source's opinion on it. A plain list includes each member. The rest of the source's report stays as it is.
+An editor changes only what it names. `mode: :edit` applies a payload as single-member edits, at every level: each member listed under `include:` is added to the source's report, with the attributes given, each under `exclude:` is removed even if other sources include it, and each under `forget:` drops the source's opinion on it. A source whose report is a complete list has an opinion on every member, so forgetting one there raises; record its list with `mode: :partial` first. A plain list includes each member. The rest of the source's report stays as it is.
 
   ```ruby
     place.record_data_entries({

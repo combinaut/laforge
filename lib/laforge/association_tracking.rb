@@ -70,6 +70,10 @@ module LaForge
       config.assert_excludable!(owner, [member]) if action == :exclude
       key = config.key_of(member)
       previous = report(owner, config, source)
+      if action == :forget && previous && !previous.partial?
+        raise ArgumentError, "#{owner.class.name}##{config.name}: the source's report is a complete list, which has an opinion on every member, so forgetting #{config.describe_key(key)} " \
+                             'would exclude it rather than leave it to other sources. Record the list with mode: :partial first, or exclude the member'
+      end
       others = ->(list) { (list || []).reject { |listed| config.key_of(listed) == key } }
       pending = previous&.pending || []
       pending = pending.reject { |item| config.key_of(item['key']) == key } unless action == :include

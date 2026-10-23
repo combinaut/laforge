@@ -782,6 +782,16 @@ describe 'Association tracking capabilities' do
       expect { place.record_data_entries({ tenants: { exclude: [place.tenants.create!(name: 'Corner Café').attributes.slice('id', 'name')] } }, top, mode: :edit) }.to raise_error(ArgumentError, /named here by key only \(id\), not name/)
       expect { place.record_data_entries({ tenants: { exclude: [{ name: 'Corner Café' }] } }, top, mode: :edit) }.to raise_error(ArgumentError, /named here by id, which a new member does not have yet/)
     end
+
+    it 'raises for forgetting a member of a complete list, which would exclude it rather than leave it to other sources', capability: 'C116' do
+      place.record_data_entries({ place_categories: categories(cafe) }, low)
+      place.record_data_entries({ place_categories: categories(cafe) }, high)
+      place.forge!
+
+      expect { place.reload.record_data_entries({ place_categories: { forget: categories(cafe) } }, high, mode: :edit) }
+        .to raise_error(ArgumentError, /Place#place_categories: the source's report is a complete list, which has an opinion on every member, so forgetting category_id #{cafe.id} would exclude it rather than leave it to other sources. Record the list with mode: :partial first, or exclude the member/)
+      place.record_data_entries({ place_categories: { forget: categories(cafe) } }, top, mode: :edit) # a source with no report, or a partial one, can
+    end
   end
 
   describe 'Rails form payloads' do
