@@ -990,6 +990,134 @@ describe 'Association tracking capabilities' do
     end
   end
 
+  describe 'Rails form payloads' do
+    # Returns a place model accepting nested attributes for its tenants and marker with the given options
+    def form_place_model(**options, &body)
+      stub_const('FormPlace', Class.new(ActiveRecord::Base))
+      FormPlace.table_name = 'places'
+      FormPlace.has_many :tenants, as: :occupiable
+      FormPlace.has_one :marker, as: :markable
+      FormPlace.accepts_nested_attributes_for :tenants, :marker, **options
+      FormPlace.class_eval(&body) if body
+      FormPlace.laforged(associations: { tenants: { tombstone_matcher: ->(tenant, tombstones) { tombstones.find { |tombstone| tombstone.name == tenant.name } } }, marker: {} })
+      FormPlace
+    end
+
+    it "applies the owner's reject_if: and allow_destroy: to a form's rows, as Rails assigning them would", capability: 'C111' do
+      form_place = form_place_model(reject_if: :all_blank, allow_destroy: false).create!(name: 'Harbor Building')
+      corner_cafe = form_place.tenants.create!(name: 'Corner Café')
+
+      form_place.record_data_entries({ tenants_attributes: { '0' => { 'name' => '', 'unit' => '' }, '1' => { 'id' => corner_cafe.id.to_s, '_destroy' => '1' } } }, top, mode: :edit)
+      form_place.forge!
+
+      expect(form_place.reload.tenants).to eq([corner_cafe]) # the blank template row is left out, and _destroy ignored
+
+      form_place.record_data_entries({ marker_attributes: { 'label' => '', 'icon' => '' } }, top, mode: :edit) # a has_one's blank row
+      expect(form_place.data_entries.map(&:attribute_name)).not_to include('marker')
+    end
+
+    it 'checks reject_if: on existing rows too but never on a row being destroyed, and on the new owner itself', capability: 'C112' do
+      model = form_place_model(reject_if: ->(attributes) { attributes['unit'] == 'skip' }, allow_destroy: true)
+      form_place = model.create!(name: 'Harbor Building')
+      corner_cafe, harbor_books = ['Corner Café', 'Harbor Books'].map { |name| form_place.tenants.create!(name: name) }
+      form_place.record_data_entries({ tenants_attributes: [{ id: corner_cafe.id, name: 'Renamed', unit: 'skip' }, { id: harbor_books.id, unit: 'skip', _destroy: '1' }] }, top, mode: :edit)
+      form_place.forge!
+      expect(form_place.reload.tenants.pluck(:name)).to eq(['Corner Café'])
+
+      model = form_place_model(reject_if: :closed_tenant?) { def closed_tenant?(attributes) = attributes[:name].start_with?(name) }
+      new_place = model.new(name: 'Closed')
+      new_place.record_data_entries({ tenants_attributes: [{ name: 'Closed Bakery' }, { name: 'Florist' }] }, top, mode: :edit)
+      new_place.forge!
+      expect(new_place.reload.tenants.pluck(:name)).to eq(['Florist']) # checked on the new place itself, whose name is Closed
+    end
+
+    it "ignores a has_one's row being destroyed with no id, and raises for one whose id is not the current member's", capability: 'C156' do
+      form_place = form_place_model(allow_destroy: true).create!(name: 'Harbor Building')
+      form_place.record_data_entries({ marker: { label: 'Harbor' } }, low)
+      form_place.forge!
+      marker = form_place.reload.marker
+
+      form_place.record_data_entries({ marker_attributes: { label: 'New', _destroy: '1' } }, top, mode: :edit) # a new row being destroyed, which Rails ignores
+      form_place.forge!
+      expect(form_place.reload.marker).to eq(marker)
+
+      expect { form_place.record_data_entries({ marker_attributes: { id: marker.id + 1, _destroy: '1' } }, top, mode: :edit) }.to raise_error(ActiveRecord::RecordNotFound, /Couldn't find Marker #{marker.id + 1} among FormPlace#marker/)
+
+      form_place.record_data_entries({ marker_attributes: { id: marker.id, _destroy: '1' } }, top, mode: :edit)
+      form_place.forge!
+      expect(form_place.reload.marker).to be_nil
+    end
+
+    it 'raises for a row whose id names no current member, where members are keyed by other columns', capability: 'C157' do
+      place.record_data_entries({ place_categories: categories(cafe) }, low)
+      place.forge!
+
+      expect { place.record_data_entries({ place_categories_attributes: [{ id: 0, category_id: bakery.id }] }, top, mode: :edit) }.to raise_error(ActiveRecord::RecordNotFound, /Couldn't find PlaceCategory 0 among Place#place_categories/)
+    end
+
+    it 'raises for accepts_nested_attributes_for options it does not apply, saying what to do', capability: 'C113' do
+      expect { form_place_model(limit: 5).create!(name: 'Harbor Building').record_data_entries({ tenants_attributes: [{ name: 'Florist' }] }, top, mode: :edit) }
+        .to raise_error(ArgumentError, /FormPlace accepts nested attributes for tenants with limit:, which LaForge does not apply when recording tenants_attributes. Remove it from accepts_nested_attributes_for, or check the rows in the controller/)
+      expect { form_place_model(update_only: true).create!(name: 'Harbor Building').record_data_entries({ tenants_attributes: [{ name: 'Florist' }] }, top, mode: :edit) }
+        .to raise_error(ArgumentError, /with update_only:/)
+    end
+
+    it 'records nested attributes as a form submits them, multiple levels deep, as edits', capability: 'C89' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', opening_hours: week('08:00', days: [1, 2])), tenant('T-2', name: 'Harbor Books')] }, low)
+      place.forge!
+      corner_cafe, harbor_books = place.tenants.order(:external_id).to_a
+      tuesday = corner_cafe.opening_hours.find_by!(day: 2)
+
+      params = ActionController::Parameters.new(
+        'name' => 'Harbor Hall',
+        'tenants_attributes' => {
+          '0' => { 'id' => corner_cafe.id.to_s, 'unit' => '2B', 'opening_hours_attributes' => { '0' => { 'id' => tuesday.id.to_s, '_destroy' => '1' }, '1' => { 'day' => '3', 'opens_at' => '10:00' } } },
+          '1' => { 'id' => harbor_books.id.to_s, '_destroy' => 'true' },
+          '2' => { 'name' => 'Florist', '_destroy' => '0' }
+        }
+      ).permit!
+      place.record_data_entries(params, top, mode: :edit)
+      place.forge!
+
+      expect(place.reload.name).to eq('Harbor Hall')
+      expect(place.tenants.pluck(:name)).to contain_exactly('Corner Café', 'Florist')
+      expect(corner_cafe.reload.unit).to eq('2B')
+      expect(corner_cafe.opening_hours.pluck(:day, :opens_at)).to eq([[1, '08:00'], [3, '10:00']])
+    end
+
+    it 'records *_ids as edits that include the ids checked and exclude the current members left unchecked', capability: 'C90' do
+      place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
+      place.forge!
+
+      place.record_data_entries({ category_ids: ['', cafe.id.to_s, florist.id.to_s] }, top, mode: :edit)
+      place.forge!
+      expect(categories_of(place)).to eq([cafe, florist])
+
+      place.record_data_entries({ place_categories: categories(cafe, bakery, bookstore) }, low) # an import adding a category the form never showed
+      place.forge!
+      expect(categories_of(place)).to eq([cafe, florist, bookstore])
+    end
+
+    it 'raises for form payloads of associations that are not tracked, and for form payloads in another mode', capability: 'C91' do
+      expect { place.record_data_entries({ parcel_links_attributes: [{ parcel_id: lot_12.id }] }, top, mode: :edit) }.to raise_error(LaForge::InvalidAttributeName, /Cannot record Place#parcel_links_attributes: parcel_links is not a tracked association/)
+      expect { place.record_data_entries({ parcel_link_ids: [] }, top, mode: :edit) }.to raise_error(LaForge::InvalidAttributeName, /Cannot record Place#parcel_link_ids/)
+      expect { place.record_data_entries({ tenants_attributes: [] }, top) }.to raise_error(ArgumentError, /record it with mode: :edit/)
+      expect { place.record_data_entries({ tenants: [{ name: 'Florist', opening_hours_attributes: [] }] }, top) }.to raise_error(ArgumentError, /Tenant#opening_hours_attributes describes edits/)
+    end
+
+    it 'records a single entry as record_data_entries does, so form payloads need mode: :edit there too', capability: 'C125' do
+      corner_cafe = place.tenants.create!(name: 'Corner Café')
+
+      expect { place.record_data_entry(:tenant_ids, [corner_cafe.id], top) }.to raise_error(ArgumentError, /Place#tenant_ids describes edits, as a Rails form submits them; record it with mode: :edit/)
+      expect { place.record_data_entry(:tenants_attributes, [{ id: corner_cafe.id }], top) }.to raise_error(ArgumentError, /record it with mode: :edit/)
+      expect(place.data_entries).to be_empty
+
+      place.record_data_entry(:tenants, [{ name: 'Harbor Books' }], top) # a tracked association is recorded as a report
+      place.forge!
+      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Corner Café', 'Harbor Books')
+    end
+  end
+
   describe 'tombstones' do
     def exclude_corner_cafe
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Harbor Books')] }, low)
@@ -1042,6 +1170,7 @@ describe 'Association tracking capabilities' do
       message = /Cannot exclude Tenant #{corner_cafe.id} from UnmatchedPlace #{unmatched_place.id}'s tenants: excluding it removes it per `dependent:`.*Declare tombstone_matcher: on UnmatchedPlace's tenants.*tombstone_matcher: ->\(tenant, tombstones\)/
       expect { unmatched_place.record_data_entries({ tenants: { exclude: [corner_cafe] } }, top, mode: :edit) }.to raise_error(ArgumentError, message)
       expect { unmatched_place.record_data_entries({ tenants: { exclude: [corner_cafe] } }, top, mode: :partial) }.to raise_error(ArgumentError, message)
+      expect { unmatched_place.record_data_entries({ tenants_attributes: [{ id: corner_cafe.id, _destroy: '1' }] }, top, mode: :edit) }.to raise_error(ArgumentError, message)
     end
 
     it 'rejects tombstone_matcher: where it could never run, or is not callable', capability: 'C96' do

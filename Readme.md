@@ -83,6 +83,8 @@ Key features:
 
 6. Record only values JSON can hold. Recording anything other than a string, symbol, number, boolean, date, time, `nil`, or an array or hash of those raises `LaForge::InvalidValue`, rather than storing whatever JSON makes of it. A saved record given for a `belongs_to` association is stored as its foreign key (see [belongs_to](#belongs_to)).
 
+7. Record a form's `*_attributes` and `*_ids` as edits. They used to be recorded as attribute entries, which forging then assigned. They now raise `ArgumentError` unless recorded with `mode: :edit`, and `LaForge::InvalidAttributeName` for an association LaForge does not track (see [Recording a Rails form](#recording-a-rails-form)).
+
 ## Usage
 
 1. Create some sources and rank them, giving higher precedence to sources whose attributes should override those
@@ -573,6 +575,28 @@ Edits made before a forge add up. Each keeps what it said about a member, and th
 - **Forget a member of a complete list.** A complete list has an opinion on every member, so forgetting one raises. Record the source's list with `mode: :partial` first.
 - **Exclude a member keyed by primary key before it exists.** Exclusions name members by key only.
 
+### Recording a Rails form
+
+Edits also accept the shapes a Rails form submits, at every level, so a controller can record its permitted params as they are, whether or not the model declares `accepts_nested_attributes_for`.
+
+  ```ruby
+    # params[:place] => { name: 'Harbor Hall', category_ids: ['', '3', '7'],
+    #                     tenants_attributes: { '0' => { id: '12', unit: '2B', opening_hours_attributes: { '0' => { id: '40', _destroy: '1' } } },
+    #                                           '1' => { name: 'Florist' } } }
+    place.record_data_entries(params.require(:place).permit!, map_editor, mode: :edit)
+    place.forge!
+  ```
+
+- `tenants_attributes`, an array or a hash keyed by index, becomes edits of `tenants`. A member with a truthy `_destroy` is excluded by its `id`, and any other is included. A has_one's becomes its single member, or none when destroyed, and its row being destroyed with no `id` is left out, as Rails ignores it.
+- Where the owner declares `accepts_nested_attributes_for`, its `reject_if:` (a Proc, a method name, or `:all_blank`) leaves out the rows it rejects, new and existing alike but never a row being destroyed, and `_destroy` counts only with `allow_destroy: true`, as when Rails assigns the rows. A new owner's rows are checked on an unsaved instance. `limit:` and `update_only:` are not applied, so recording `*_attributes` for an association that declares them raises.
+- `category_ids` includes the ids listed and excludes the current members left out, so a member another source adds later, which the form never showed, is not excluded. It edits the tracked association it names, or the tracked join association a `has_many :through` goes through, such as `place_categories` for `categories`.
+- Members keyed by other columns than the primary key, such as opening hours keyed by day, are named by the key of the row their `id` names.
+- An `id` that names none of the owner's current members raises `ActiveRecord::RecordNotFound`, as in Rails, where members are keyed by other columns and for a has_one's row being destroyed.
+- Ids may be strings, as forms submit them.
+- `*_attributes` or `*_ids` for an association that is not tracked raise `LaForge::InvalidAttributeName`, rather than being recorded as an attribute LaForge cannot forge. Save such associations outside LaForge. In another mode, these shapes raise `ArgumentError`, since they describe edits.
+
+Anything else in the form, such as an association's own metadata stored outside the member, is up to the controller. A has_one takes a complete report, so it can't be edited.
+
 ### Removed members that sources report again
 
 Excluding a member keyed by primary key destroys it, per `dependent:`, like any removed member. Its exclusion has to outlast the row. Otherwise, when the business directory next reports the tenant, its importer finds nothing, reports it as new, and it comes back. So the exclusion keeps a **tombstone** in the row's place, holding what the member was, and the association declares how to recognise a tombstone in what a source reports.
@@ -590,7 +614,7 @@ Excluding a member keyed by primary key destroys it, per `dependent:`, like any 
 The matcher receives an unsaved member built from what a source reported, and an unsaved member for each tombstone, built from what it was. It returns the tombstone the member is, or nil. It can use a fuzzy matcher, such as one that scores addresses.
 
   ```ruby
-    place.record_data_entries({ tenants: { exclude: [{ id: 12 }] } }, map_editor, mode: :edit)
+    place.record_data_entries({ tenants_attributes: [{ id: 12, _destroy: '1' }] }, map_editor, mode: :edit)
     place.forge!                        # Tenant 12 is destroyed, and the map editor's report keeps its tombstone
     place.data_entries.tombstones(:tenants)  # => [#<LaForge::Tombstone source: map_editor, attributes: { 'name' => 'Corner Café', ... }, excluded_at: ...>]
   ```
