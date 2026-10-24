@@ -391,7 +391,7 @@ Each data entry saved with a new or changed value, and each one destroyed, publi
 
 The event fires once the write is committed, and not at all if the transaction rolls back, so a subscriber can enqueue a job, notify someone, or update another store without acting on a change that never happened. A write outside an explicit transaction is committed, and published, as it is saved. Each payload is taken when its write is made, so `value_was` is right when one transaction saves an entry more than once.
 
-Writes that skip callbacks publish nothing, such as rows removed by database cascades when a source is deleted.
+Writes that skip callbacks publish nothing. These are `LaForge.merge` moving entries between records, and rows removed by database cascades, such as when a source is deleted.
 
 ### Counting across records
 
@@ -402,6 +402,24 @@ Counts across many records, such as how many places have an order of their own f
   ```
 
 It costs every write, so add it only where those counts are needed.
+
+### Merging duplicate records
+
+When two records turn out to be the same, merge what LaForge holds for the duplicate into the survivor, then forge the survivor.
+
+  ```ruby
+    report = LaForge.merge(survivor, duplicate)          # on a conflict, the duplicate's entry wins, as the argument does in Hash#merge
+    report = LaForge.reverse_merge(survivor, duplicate)  # on a conflict, the survivor's entry wins
+    survivor.forge!
+    duplicate.archive!                                   # the duplicate is left to the application
+  ```
+
+- **Attribute entries and per-record precedence rules** move to the survivor. Where both records have one for the same attribute and source, that's a conflict, and the function decides which is kept. The other is destroyed.
+- **Members of tracked associations** move to the survivor with their ids and everything recorded on them. Where both records have a member with the same key, as two join rows naming the same category do, the survivor's row is kept, and the duplicate's row is merged into it the same way, forged, and destroyed. Where both have a has_one member with different keys, such as markers with different labels, the merge raises `ArgumentError` before anything moves, since the survivor can hold only one. Remove one of them, or give them the same key, then merge again. The same goes for one source's has_one reports on both records that name members with different keys, as before either record is forged.
+- **Each source's reports** on the two records are combined, so the survivor's report names every member either named, and keeps both records' tombstones. Where the reports disagree about a member, the winner's opinion is kept.
+- **Not touched:** associations LaForge doesn't track, and the duplicate itself, which is left with no LaForge data for the application to archive or destroy.
+
+The report says what moved and what conflicted, as `{ entries_moved:, entries_conflicting: [{ attribute:, source:, kept: }], precedence_rules_moved:, precedence_rules_conflicting: [...], members_moved: { 'tenants' => [ids] }, members_merged: { 'place_categories' => [{ kept:, removed: }] } }`. Both records must be saved, of the same model, and have no unsaved entries or rules. The merge runs in a transaction and is saved immediately.
 
 ### Pitfalls
 

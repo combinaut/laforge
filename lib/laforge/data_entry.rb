@@ -22,8 +22,8 @@ module LaForge
 
     # CHANGED is the `ActiveSupport::Notifications` event published when an entry is created, its value changes, or it
     # is destroyed, so a host can follow what sources say without reading every entry (see `publish_change`). It is
-    # published once the transaction commits, and not at all if it rolls back. Entries deleted with their record
-    # publish nothing.
+    # published once the transaction commits, and not at all if it rolls back. `LaForge.merge` moves and combines
+    # entries without publishing, and entries deleted with their record publish nothing.
     CHANGED = 'data_entry_changed.laforge'.freeze
 
     after_save { DataEntry.publish_change(self, value_was: value_before_last_save, value: value) if previously_new_record? || saved_change_to_value? }
