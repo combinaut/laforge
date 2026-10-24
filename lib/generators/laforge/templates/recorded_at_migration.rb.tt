@@ -1,0 +1,13 @@
+# Adds `recorded_at` to `laforge_data_entries`, the time a source said an entry's value. Existing entries get their
+# `updated_at`, the closest time they have.
+class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
+  def up
+    add_column :laforge_data_entries, :recorded_at, :datetime, precision: 6
+    execute "UPDATE laforge_data_entries SET recorded_at = updated_at"
+    change_column_null :laforge_data_entries, :recorded_at, false
+  end
+
+  def down
+    remove_column :laforge_data_entries, :recorded_at
+  end
+end

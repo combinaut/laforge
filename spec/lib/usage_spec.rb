@@ -1,6 +1,7 @@
 require 'spec_helper'
 
-# Common ways of using LaForge to merge several data sources into one record, one group per intention.
+# Common ways of using LaForge to merge several data sources into one record, one group per intention. Association
+# assignment by importers is in `association_importer_scenarios_spec.rb`.
 describe 'Usage' do
   # Runs before the sources below are created
   before do
@@ -141,6 +142,18 @@ describe 'Usage' do
 
       expect(record.reload.name).to eq('From Cadastre')
       expect(record.reload.tap(&:forge).name).to eq('From Cadastre') # and the next forge agrees
+    end
+
+    it 'keeps a value recorded again after an unsaved removal of its entry' do
+      record.record_data_entry(:name, 'From Map Editor', map_editor)
+      record.forge!
+
+      record.remove_data_entries(attribute_names: :name, sources: map_editor)
+      record.record_data_entry(:name, 'Renamed In Map Editor', map_editor)
+      record.forge!
+
+      expect(record.reload.name).to eq('Renamed In Map Editor')
+      expect(record.data_entries.with_source(map_editor).with_attribute(:name)).to exist
     end
 
     it 'blanks the attribute when the editor records nil' do
@@ -463,6 +476,7 @@ describe 'Usage' do
     end
 
     it 'ranks by precedence rules changed since the last forge once the record is reloaded' do
+      record.update_attribute_source_precedence(:name, business_directory, nil)
       record.forge
       ActiveRecordMock.update_attribute_source_precedence(:name, cadastre, 200)
       record.reload
@@ -526,29 +540,74 @@ describe 'Usage' do
     end
   end
 
-  # A reference to another record (a foreign key) is recorded like any attribute, and which source wrote it tells an
-  # importer-made link from one an editor set
-  describe 'a link recorded as an attribute' do
-    it 'tells whether the current value was written by an importer rather than an editor' do
-      record.record_data_entries({ count: 42 }, cadastre)
+  # A belongs_to association is recorded by passing the record, or nil. It is stored as the foreign key, and as the
+  # type too when polymorphic, so the link resolves across sources like any attribute and its entries tell which source
+  # set it.
+  describe 'a belongs_to association' do
+    let(:parent) { ActiveRecordMock.create!(name: 'Parent') }
+    let(:other_parent) { ActiveRecordMock.create!(name: 'Other Parent') }
+
+    it 'records the foreign key and forges the association from the winning source' do
+      record.record_data_entries({ parent: parent }, cadastre)
+      record.record_data_entries({ parent: other_parent }, business_directory)
       record.forge!
 
-      importer_wrote_it = record.data_entries.with_attribute('count').where.not(source_id: map_editor.id).any? { |entry| entry.value.to_s == record.count.to_s }
-      expect(importer_wrote_it).to be(true)
+      expect(record.reload.parent).to eq(other_parent)
+      expect(record.data_entries.map(&:attribute_name).uniq).to eq(['parent_id'])
+    end
+
+    it 'records the type of a polymorphic association too' do
+      record.record_data_entries({ subject: parent }, cadastre)
+      record.forge!
+
+      expect(record.reload.subject).to eq(parent)
+      expect(record.data_entries.to_h { |entry| [entry.attribute_name, entry.value] }).to eq('subject_id' => parent.id, 'subject_type' => 'ActiveRecordMock')
+    end
+
+    it 'clears the association when the winning source records nil' do
+      record.record_data_entries({ parent: parent }, cadastre)
+      record.record_data_entries({ parent: nil }, business_directory)
+      record.forge!
+
+      expect(record.reload.parent).to be_nil
+    end
+
+    it 'raises for a record of the wrong class or one that is not saved' do
+      expect { record.record_data_entries({ parent: LaForge::DataSource.first }, cadastre) }.to raise_error(LaForge::InvalidValue)
+      expect { record.record_data_entries({ parent: ActiveRecordMock.new }, cadastre) }.to raise_error(LaForge::InvalidValue)
+    end
+
+    it 'tells whether the current link was set by an importer rather than an editor' do
+      record.record_data_entries({ parent: parent }, cadastre)
+      record.forge!
+
+      importer_set_it = record.data_entries.with_attribute(:parent_id).where.not(source_id: map_editor.id).any? { |entry| entry.value == record.parent_id }
+      expect(importer_set_it).to be(true)
     end
 
     it 'moves the link by replacing every other source entry for it with one from the source taking ownership' do
-      record.record_data_entries({ count: 1 }, cadastre)
-      record.record_data_entries({ count: 2 }, map_editor)
+      record.record_data_entries({ parent: parent }, cadastre)
+      record.record_data_entries({ parent: other_parent }, map_editor)
       record.forge!
 
-      LaForge::DataEntry.where(record: record, attribute_name: 'count').where.not(source_id: business_directory.id).delete_all
-      record.reload.record_data_entry('count', 3, business_directory)
-      record.update!(count: 3)
-      record.reload.forge!
+      LaForge::DataEntry.where(record: record, attribute_name: 'parent_id').where.not(source_id: business_directory.id).delete_all
+      record.reload.record_data_entries({ parent: parent }, business_directory)
+      record.forge!
 
-      expect(record.reload.count).to eq(3)
+      expect(record.reload.parent).to eq(parent)
       expect(record.data_entries.map(&:source)).to eq([business_directory])
+    end
+  end
+
+  describe 'values that cannot be stored' do
+    it 'raises for a value that would not survive being stored as JSON, such as an object' do
+      expect { record.record_data_entries({ name: Object.new }, cadastre) }.to raise_error(LaForge::InvalidValue)
+      expect { record.record_data_entries({ name: { 'nested' => [Object.new] } }, cadastre) }.to raise_error(LaForge::InvalidValue)
+    end
+
+    it 'accepts strings, numbers, booleans, dates, nil, and arrays and hashes of those' do
+      expect { record.record_data_entries({ name: 'Name', count: 1, active: false }, cadastre) }.not_to raise_error
+      expect(LaForge::DataEntry.storable?([1, 'a', nil, { 'at' => Date.new(2026, 1, 1) }])).to be(true)
     end
   end
 
@@ -569,6 +628,291 @@ describe 'Usage' do
 
       expect(record.name).to eq('Original')
       expect(record.data_entries).to be_empty
+    end
+  end
+
+  # Attributes that must come from one source together, such as the lines of an address
+  describe 'attribute groups' do
+    let(:grouped_model) do
+      Class.new(ActiveRecordMock) do
+        def self.name = 'ActiveRecordMock'
+
+        laforged attribute_groups: { listing: %i[name count] }
+      end
+    end
+    let(:grouped) { grouped_model.create!(name: 'Original', count: 1) }
+
+    it 'takes every attribute of the group from the source that ranks highest for any of them' do
+      grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      grouped.record_data_entries({ name: 'From Map Editor', count: nil }, map_editor)
+      grouped.forge!
+
+      expect(grouped.reload).to have_attributes(name: 'From Map Editor', count: nil)
+    end
+
+    it 'blanks an attribute the winning source has no entry for' do
+      grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      LaForge::DataEntry.create!(record: grouped, source: map_editor, attribute_name: 'name', value: 'From Map Editor') # recorded before the group was declared
+      grouped.reload.forge!
+
+      expect(grouped.reload).to have_attributes(name: 'From Map Editor', count: nil)
+    end
+
+    it 'raises when a source records part of a group, naming what is missing' do
+      expect { grouped.record_data_entries({ name: 'From Cadastre' }, cadastre) }
+        .to raise_error(ArgumentError, /name, count are attribute group listing, which a source records together \(missing: count\)/)
+      expect { grouped.record_data_entry(:count, 5, cadastre) }.to raise_error(ArgumentError, /missing: name/)
+    end
+
+    it 'ranks the group by rules set on the group, and raises for a rule on one of its attributes' do
+      grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      grouped.record_data_entries({ name: 'From Map Editor', count: 7 }, map_editor)
+      grouped.update_attribute_source_precedence(:listing, cadastre, 1)
+      grouped.forge!
+
+      expect(grouped.reload).to have_attributes(name: 'From Cadastre', count: 5)
+      expect { grouped.update_attribute_source_precedence(:count, cadastre, 1) }.to raise_error(ArgumentError, /ActiveRecordMock#count is in attribute group listing, which is ranked as a whole; set the precedence on listing/)
+      expect { grouped_model.update_attribute_source_precedence(:name, cadastre, 1) }.to raise_error(ArgumentError, /set the precedence on listing/)
+    end
+
+    it 'gives a precedence passed while recording to the group' do
+      grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre, precedence: 1)
+      grouped.record_data_entries({ name: 'From Map Editor', count: 7 }, map_editor)
+      grouped.forge!
+
+      expect(grouped.reload).to have_attributes(name: 'From Cadastre', count: 5)
+      expect(grouped.source_precedences).to eq('listing' => { cadastre => 1 })
+    end
+
+    it 'removes and forges the whole group when given one of its attributes' do
+      grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      grouped.record_data_entries({ name: 'From Map Editor', count: 7 }, map_editor)
+      grouped.save!
+
+      expect(grouped.forge_attributes(attributes: :name)).to eq('name' => 'From Map Editor', 'count' => 7)
+      grouped.remove_data_entries(attribute_names: :name, sources: map_editor)
+      grouped.save!
+
+      expect(grouped.reload.data_entries.map(&:source)).to all(eq(cadastre))
+    end
+
+    it 'raises for a group it cannot use, saying why' do
+      declare = ->(groups) { Class.new(ActiveRecordMock) { def self.name = 'ActiveRecordMock' }.laforged(attribute_groups: groups) }
+
+      expect { declare.(listing: %i[name]) }.to raise_error(ArgumentError, /attribute group listing names 1 attribute; a group needs at least two/)
+      expect { declare.(listing: %i[name count], tally: %i[count active]) }.to raise_error(ArgumentError, /ActiveRecordMock#count is in attribute groups listing and tally/)
+      expect { declare.(name: %i[name count]) }.to raise_error(ArgumentError, /attribute group name is named like one of its attributes/)
+    end
+  end
+
+  # A source the host stops using. Its values stop counting from each record's next forge, and its entries are kept.
+  describe 'an inactive source' do
+    before do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.record_data_entries({ name: 'From Map Editor', count: 9 }, map_editor)
+      record.forge!
+    end
+
+    it "falls back to the next source, and keeps a value no other source has, once the record is forged again" do
+      record.update!(active: false)
+      record.record_data_entries({ active: true }, map_editor) # an attribute only the map editor reports
+      record.forge!
+      map_editor.update!(active: false)
+
+      expect(record.reload).to have_attributes(name: 'From Map Editor', count: 9, active: true) # nothing changes until the next forge
+      record.forge!
+      expect(record.reload).to have_attributes(name: 'From Cadastre', count: 5, active: true)
+    end
+
+    it 'keeps its entries and still records, so activating it again restores what it says' do
+      map_editor.update!(active: false)
+      record.reload.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor)
+      record.forge!
+      expect(record.reload.name).to eq('From Cadastre')
+
+      map_editor.update!(active: true)
+      record.forge!
+      expect(record.reload.name).to eq('Renamed in the Map Editor')
+    end
+
+    it 'is seen as active again inside a precedence cache once deactivating it rolls back' do
+      LaForge.with_precedence_cache do
+        ActiveRecord::Base.transaction do
+          map_editor.update!(active: false)
+          record.reload.forge
+          raise ActiveRecord::Rollback
+        end
+        record.reload.forge
+        expect(record.name).to eq('From Map Editor')
+      end
+    end
+
+    it 'is seen by a forge inside a precedence cache once it changes there' do
+      LaForge.with_precedence_cache do
+        record.reload.forge!
+        map_editor.update!(active: false)
+        record.reload.forge!
+      end
+
+      expect(record.reload.name).to eq('From Cadastre')
+    end
+  end
+
+  # What would be forged without one source, such as the import value an edit replaced
+  describe 'forging without a source' do
+    it 'leaves out the given sources' do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.record_data_entries({ name: 'From Map Editor' }, map_editor)
+
+      expect(record.forge_attributes(attributes: :name, except_sources: map_editor)).to eq('name' => 'From Cadastre')
+      expect(record.forge_attributes(except_sources: [map_editor, cadastre])).to eq({})
+    end
+  end
+
+  # A host following what sources say, such as to notice that an import changed a value an editor replaced
+  describe 'following changes to entries' do
+    let(:events) { [] }
+
+    around do |example|
+      subscription = ActiveSupport::Notifications.subscribe(LaForge::DataEntry::CHANGED) { |*, payload| events << payload.except(:entry) }
+      example.run
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscription)
+    end
+
+    it 'publishes an entry saved with a new or changed value, and an entry destroyed' do
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre)
+      record.save!
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre) # the same value
+      record.save!
+      record.record_data_entries({ name: 'Renamed' }, cadastre)
+      record.save!
+      record.remove_data_entries(sources: cadastre)
+      record.save!
+
+      expected = { record_type: 'ActiveRecordMock', record_id: record.id, attribute_name: 'name', source_id: cadastre.id }
+      expect(events).to eq([
+        expected.merge(value_was: nil, value: 'From Cadastre', destroyed: false),
+        expected.merge(value_was: 'From Cadastre', value: 'Renamed', destroyed: false),
+        expected.merge(value_was: 'Renamed', value: nil, destroyed: true)
+      ])
+    end
+
+    it 'publishes the values as they were saved, even when one is changed in place before the commit' do
+      ActiveRecord::Base.transaction do
+        record.record_data_entries({ name: ['From Cadastre'] }, cadastre)
+        record.save!
+        record.data_entries.sole.value << 'changed in place'
+      end
+
+      expect(events.map { |event| event[:value] }).to eq([['From Cadastre']])
+    end
+
+    it 'publishes once the write is committed, at once outside a transaction, and nothing for a write that rolls back' do
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre)
+      record.save! # no explicit transaction
+      expect(events.map { |event| event[:value] }).to eq(['From Cadastre'])
+
+      ActiveRecord::Base.transaction do
+        record.record_data_entries({ name: 'Renamed' }, cadastre)
+        record.save!
+        expect(events.size).to eq(1) # not committed yet
+      end
+      expect(events.map { |event| event[:value] }).to eq(['From Cadastre', 'Renamed'])
+
+      ActiveRecord::Base.transaction do
+        record.record_data_entries({ name: 'Renamed again' }, cadastre)
+        record.forge!
+        raise ActiveRecord::Rollback
+      end
+      expect(events.size).to eq(2)
+    end
+  end
+
+  # The order of sources at each level, as a settings screen sets it, with LaForge choosing the numbers
+  describe 'precedence orders' do
+    before do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.record_data_entries({ name: 'From Business Directory', count: 7 }, business_directory)
+      record.record_data_entries({ name: 'From Map Editor', count: 9 }, map_editor)
+      record.save!
+    end
+
+    it "sets one record's order for an attribute, saved with the record, ranking the sources it leaves out below" do
+      record.update_precedence_order(:name, [cadastre])
+      expect(record.precedence_rules.select(&:new_record?).size).to eq(1)
+      record.forge!
+
+      expect(record.reload).to have_attributes(name: 'From Cadastre', count: 9)
+      expect(record.precedence_order(:name).map { |item| [item[:source], item[:level]] }.first(3))
+        .to eq([[cadastre, :record], [map_editor, :global], [business_directory, :global]])
+    end
+
+    it 'replaces the order at that level, and removes it given nil' do
+      record.update_precedence_order(:name, [cadastre, business_directory])
+      record.update_precedence_order(:name, [business_directory])
+      record.forge!
+      expect(record.reload.name).to eq('From Business Directory')
+      expect(record.source_precedences).to eq('name' => { business_directory => 1 })
+
+      record.update_precedence_order(:name, nil)
+      record.forge!
+      expect(record.reload.name).to eq('From Map Editor')
+    end
+
+    it 'ranks a source added later below an order set at a more specific level, whatever its global precedence' do
+      record.update_precedence_order(:name, [business_directory, cadastre])
+      record.forge!
+      geocoder = LaForge::DataSource.create!(name: 'Geocoder', precedence: 1000)
+      record.reload.record_data_entries({ name: 'From Geocoder' }, geocoder)
+      record.forge!
+
+      expect(record.reload.name).to eq('From Business Directory')
+    end
+
+    it 'sets the order for one attribute, or every attribute, on every record of a model' do
+      ActiveRecordMock.update_precedence_order([cadastre], attribute: :count)
+      ActiveRecordMock.update_precedence_order([business_directory, cadastre])
+      record.reload.forge
+
+      expect(record).to have_attributes(name: 'From Business Directory', count: 5)
+      expect(ActiveRecordMock.precedence_order(attribute: :count).map { |item| [item[:source], item[:level]] }.first(3))
+        .to eq([[cadastre, :attribute], [business_directory, :model], [map_editor, :global]])
+    end
+
+    it 'lists the model-wide order as the model level when asked for no attribute' do
+      ActiveRecordMock.update_source_precedence(cadastre, 5)
+
+      expect(ActiveRecordMock.precedence_order.first).to eq(source: cadastre, level: :model)
+      expect(ActiveRecordMock.precedence_order(attribute: :name).first).to eq(source: cadastre, level: :model)
+    end
+
+    it 'lists a source with no global precedence last, with no level' do
+      # As for a source whose rules were deleted with it, while its entries, which have no foreign key, stayed
+      LaForge::PrecedenceRule.global.where(source_id: cadastre.id).delete_all
+
+      expect(ActiveRecordMock.precedence_order.last).to include(source: cadastre, level: nil)
+    ensure
+      cadastre.update!(precedence: 31) # specs in other files expect every source to have a global precedence
+    end
+
+    it 'sets the global order, renumbering every source and keeping those it leaves out below, in their order' do
+      ActiveRecord::Base.transaction do
+        LaForge.update_precedence_order([cadastre, map_editor])
+
+        ranked = LaForge::DataSource.by_precedence.to_a
+        expect(ranked.first(3)).to eq([cadastre, map_editor, business_directory])
+        expect(ranked.map(&:precedence)).to eq((1..ranked.size).to_a.reverse)
+        expect(record.reload.forge_attributes).to include('name' => 'From Cadastre')
+        raise ActiveRecord::Rollback # leave the other specs' sources as they were
+      end
+    end
+
+    it 'lists the records that have an order of their own' do
+      record.update_precedence_order(:name, [cadastre])
+      record.save!
+
+      expect(LaForge::PrecedenceRule.for_records(ActiveRecordMock).pluck(:record_id, :attribute_name)).to eq([[record.id, 'name']])
     end
   end
 

@@ -100,6 +100,40 @@ describe 'ActiveRecordExtensions' do
     end
   end
 
+  describe '#dup' do
+    it 'gives the duplicate its own laforge, bound to the duplicate' do
+      record = ActiveRecordMock.create!(name: "Post")
+      original = record.laforge
+
+      expect(record.dup.laforge).not_to equal(original)
+      expect(record.laforge).to equal(original)
+    end
+  end
+
+  describe '#laforge' do
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
+
+    it "holds the methods the model delegates to it, and the model's laforge holds the class methods" do
+      record = ActiveRecordMock.new
+      record.laforge.record_data_entry(:name, "Post", data_source)
+
+      expect(record.laforge.forge_attributes).to eq("name" => "Post")
+      expect(record.forge_attributes).to eq("name" => "Post")
+      expect(record.laforge).to be_a(ActiveRecordMock.laforge)
+      expect(ActiveRecordMock.laforge.model).to eq(ActiveRecordMock)
+      expect(ActiveRecordMock.laforge.source_precedences).to eq(ActiveRecordMock.source_precedences)
+    end
+
+    it "gives a subclass of a laforged model a subclass of its parent's laforge, keeping what was declared" do
+      stub_const('ActiveRecordMockCopy', Class.new(ActiveRecordMock))
+
+      expect(ActiveRecordMockCopy.laforge.superclass).to equal(ActiveRecordMock.laforge)
+      expect(ActiveRecordMockCopy.laforge.model).to eq(ActiveRecordMockCopy)
+      expect(ActiveRecordMockCopy.laforge.associations).to equal(ActiveRecordMock.laforge.associations)
+      expect(ActiveRecordMockCopy.laforge.inspect).to eq("ActiveRecordMockCopy.laforge")
+    end
+  end
+
   describe '#forge!' do
     let(:record) { ActiveRecordMock.create(name: "Post", active: true) }
     let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
@@ -201,10 +235,19 @@ describe 'ActiveRecordExtensions' do
       expect { record.forge }.to change { record.name }.from("Post").to("Higher Precedence")
     end
 
-    it 'breaks a tie in effective precedence by the higher global precedence' do
+    it 'ranks a source with a rule on the record above one without, whatever the numbers' do
       data_entry.update(attribute_name: "name", value: "From the lower source")
       preceding_data_entry.update(attribute_name: "name", value: "From the higher source")
       record.update_attribute_source_precedence(:name, data_source, 2)
+
+      expect { record.forge }.to change { record.name }.from("Post").to("From the lower source")
+    end
+
+    it 'breaks a tie at one level by the higher global precedence' do
+      data_entry.update(attribute_name: "name", value: "From the lower source")
+      preceding_data_entry.update(attribute_name: "name", value: "From the higher source")
+      record.update_attribute_source_precedence(:name, data_source, 2)
+      record.update_attribute_source_precedence(:name, preceding_data_source, 2)
 
       expect { record.forge }.to change { record.name }.from("Post").to("From the higher source")
     end
@@ -220,6 +263,7 @@ describe 'ActiveRecordExtensions' do
       data_entry.update(attribute_name: "name", value: "From the lower source")
       preceding_data_entry.update(attribute_name: "name", value: "From the higher source")
       record.update_attribute_source_precedence(:name, data_source, 2)
+      record.update_attribute_source_precedence(:name, preceding_data_source, 2)
       entries = record.data_entries.to_a
 
       expect([entries, entries.reverse].map { |list| LaForge::DataEntry.in_precedence_order(list, record: record).first.value })

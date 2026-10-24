@@ -2,6 +2,7 @@ class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version
   def change
     create_table :laforge_data_sources do |t|
       t.text :name
+      t.boolean :active, null: false, default: true
       t.timestamps null: false
     end
 
@@ -10,6 +11,7 @@ class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version
       t.string :attribute_name, null: false
       t.belongs_to :source, null: false, index: false
       t.json :value
+      t.datetime :recorded_at, precision: 6, null: false
       t.timestamps null: false
     end
 

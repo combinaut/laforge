@@ -24,6 +24,9 @@ ActiveRecord::Schema.define(version: 0) do
     t.string :name
     t.boolean :active
     t.integer :count
+    t.bigint :parent_id
+    t.string :subject_type
+    t.bigint :subject_id
     t.timestamps null: false
   end
 
@@ -31,6 +34,7 @@ ActiveRecord::Schema.define(version: 0) do
 
   create_table :laforge_data_sources, force: true do |t|
     t.text :name
+    t.boolean :active, null: false, default: true
     t.timestamps null: false
   end
 
@@ -39,6 +43,7 @@ ActiveRecord::Schema.define(version: 0) do
     t.string :attribute_name, null: false
     t.belongs_to :source, null: false, index: false
     t.json :value
+    t.datetime :recorded_at, precision: 6, null: false
     t.timestamps null: false
   end
 
@@ -56,5 +61,8 @@ ActiveRecord::Schema.define(version: 0) do
 end
 
 class ActiveRecordMock < ActiveRecord::Base
+  belongs_to :parent, class_name: 'ActiveRecordMock', optional: true
+  belongs_to :subject, polymorphic: true, optional: true
+
   laforged
 end
