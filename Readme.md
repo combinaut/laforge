@@ -501,10 +501,13 @@ The report stored on the place lists the members by key, and keeps what the sour
 - A member's attributes are resolved on the member, with every other source's entries on it, under its precedence rules.
 - Nothing is created for a member that membership excludes. What the source said about it waits in the source's report, and is used if membership later includes it, until the source's next report replaces it.
 - The owner can be saved after recording and forged later, and nothing is lost in between.
-- An attribute the member already has a newer value for from the same source, recorded on the member directly, is not overwritten by an older report. An entry's `recorded_at` is when its value was recorded; `updated_at` keeps its usual meaning.
 - A new member is built as the association's own `build` would, with the association scope's attributes.
 - The owner's forge forges only the members it records attributes on. A member edited in some other way is forged on its own.
 - Members appear in the order of the highest precedence list that includes them. If the association's scope orders by an integer column, LaForge writes the order there, so lists cannot set that column.
+
+#### When a source also records on the member directly
+
+An attribute the member already has a newer value for from the same source, recorded on the member directly, is not overwritten by an older report. An entry's `recorded_at` is when its value was recorded, and `updated_at` keeps its usual meaning.
 
 ### Naming members
 
@@ -524,15 +527,17 @@ A saved record suits a member created or edited on its own.
     place.record_data_entries({ tenants: [tenant] }, map_editor, mode: :partial)
   ```
 
-Until a forge creates a new member, its source's report names it by a placeholder. Once the owner is saved, the placeholder is replaced by the new row's `id`. Forging again before saving reuses the member already built, rather than building another.
+Sources rarely know the host application's ids, so an importer finds each record it reported before by its own means, such as the identifier its feed uses, and names it by `id`.
 
-Sources rarely know the host application's ids, so an importer finds each record it reported before by its own means, such as the identifier its feed uses, and names it by `id`. Recording twice before a forge creates the member once, since a source's report replaces its previous one. A new member is created twice only when:
+An `id` must be one of the owner's current members. LaForge does not move a record from one owner to another, nor create a record with a given `id`, so naming a record that belongs to another owner, or that does not exist, raises `LaForge::InvalidValue`. Move it outside LaForge, by saving its foreign key, before an import names it under its new owner.
+
+#### When a new member is created twice
+
+Until a forge creates a new member, its source's report names it by a placeholder. Once the owner is saved, the placeholder is replaced by the new row's `id`. Forging again before saving reuses the member already built, rather than building another. Recording twice before a forge creates the member once, since a source's report replaces its previous one. A new member is created twice only when:
 
 - an importer doesn't find a member it reported before, so it reports it as new again. A complete list then also removes the old row, along with everything else recorded on it;
 - two sources each report the same new member before either has been forged. LaForge cannot know they mean the same record, so the second source should find the member the first created;
 - a source adds the same new member twice in single-member edits before a forge.
-
-An `id` must be one of the owner's current members. LaForge does not move a record from one owner to another, nor create a record with a given `id`, so naming a record that belongs to another owner, or that does not exist, raises `LaForge::InvalidValue`. Move it outside LaForge, by saving its foreign key, before an import names it under its new owner.
 
 ### Partial reports
 
@@ -548,7 +553,7 @@ A source that knows only some of the members records a partial report, with `mod
 
 ### Edits
 
-An editor changes only what it names. `mode: :edit` applies a payload as single-member edits, at every level. Each member listed under `include:` is added to the source's report, with the attributes given, each under `exclude:` is removed even if other sources include it, and each under `forget:` drops the source's opinion on it. A source whose report is a complete list has an opinion on every member, so forgetting one there raises; record its list with `mode: :partial` first. A plain list includes each member. The rest of the source's report stays as it is.
+An editor changes only what it names. `mode: :edit` applies a payload as single-member edits, at every level. Each member listed under `include:` is added to the source's report, with the attributes given, each under `exclude:` is removed even if other sources include it, and each under `forget:` drops the source's opinion on it. A plain list includes each member. The rest of the source's report stays as it is.
 
   ```ruby
     place.record_data_entries({
@@ -564,7 +569,7 @@ An editor changes only what it names. `mode: :edit` applies a payload as single-
     place.forge!
   ```
 
-A member's nested lists in an edit are edits too, so `opening_hours` above changes two days and leaves the others to the sources that report them. Edits made before a forge add up. Each keeps what it said about a member, and the forge records them in order, so a later edit of the same attribute wins and an edit of another attribute keeps the first. Excluding or forgetting a member drops what earlier edits said about it.
+A member's nested lists in an edit are edits too, so `opening_hours` above changes two days and leaves the others to the sources that report them.
 
 One member at a time is the same call with one member in it.
 
@@ -576,6 +581,15 @@ One member at a time is the same call with one member in it.
     # A map editor adding one category without restating the rest
     place.record_data_entries({ place_categories: [{ category_id: landmark.id }] }, map_editor, mode: :edit)
   ```
+
+#### Several edits before a forge
+
+Edits made before a forge add up. Each keeps what it said about a member, and the forge records them in order, so a later edit of the same attribute wins and an edit of another attribute keeps the first. Excluding or forgetting a member drops what earlier edits said about it.
+
+#### What an edit can't do
+
+- **Forget a member of a complete list.** A complete list has an opinion on every member, so forgetting one raises. Record the source's list with `mode: :partial` first.
+- **Exclude a member keyed by primary key before it exists.** Exclusions name members by key only.
 
 ### Recording a Rails form
 
@@ -597,8 +611,6 @@ Edits also accept the shapes a Rails form submits, at every level, so a controll
 - `*_attributes` or `*_ids` for an association that is not tracked raise `LaForge::InvalidAttributeName`, rather than being recorded as an attribute LaForge cannot forge. Save such associations outside LaForge. In another mode, these shapes raise `ArgumentError`, since they describe edits.
 
 Anything else in the form, such as an association's own metadata stored outside the member, is up to the controller. A has_one takes a complete report, so it can't be edited.
-
-Exclusions name members by key only, so a member keyed by primary key can be excluded only once it exists.
 
 ### Removed members that sources report again
 
