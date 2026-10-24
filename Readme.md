@@ -345,6 +345,21 @@ Whether another source still has entries on the record tells whether anything el
 
 `effective_precedence` on an entry is the precedence of its most specific rule. Since sources rank by level first, compare entries with `in_precedence_order` rather than by that number.
 
+### Fields that come from one source together
+
+Some attributes only make sense from one source together, such as the lines of an address, since one source's street with another's postcode is a broken address. Declare them as an attribute group.
+
+  ```ruby
+    class Place < ApplicationRecord
+      laforged attribute_groups: { postal_address: %i[street postcode city] }
+    end
+  ```
+
+- **Forging** takes every attribute of the group from the source whose entry for any of them ranks highest. An attribute that source has no entry for is `nil`.
+- **Recording** some of a group's attributes but not all of them raises, naming the missing ones. Pass `nil` for a value the source doesn't have.
+- **Precedence** is set on the group, as `place.update_precedence_order(:postal_address, [...])`. A rule on one of its attributes raises, naming the group. `precedence:` given while recording goes to the group.
+- **Removing and forging** one attribute of a group, with `remove_data_entries(attribute_names:)` or `forge_attributes(attributes:)`, covers the whole group.
+
 ### Deactivating a source
 
 A source that is no longer used can be deactivated. From each record's next forge, its entries are left out as if it had none, so attributes fall back to the next source, or keep their value where no other source has one. Nothing changes until a record is forged, and its entries are kept. Recording still works, and activating it again restores what it says at the next forge.

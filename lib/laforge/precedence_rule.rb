@@ -65,6 +65,7 @@ module LaForge
     class Resolver
       def initialize(model)
         @model = model
+        @groups = model.respond_to?(:laforge) ? model.laforge : nil
         type = PrecedenceRule.model_type(model)
         @model_rules = PrecedenceCache.fetch([:model, type]) { PrecedenceRule.index_for(PrecedenceRule.for_model(model)) }
         @global_rules = PrecedenceCache.fetch(:global) { PrecedenceRule.index_for(PrecedenceRule.global) }
@@ -76,7 +77,7 @@ module LaForge
       # source's global precedence. A source with only a model-wide rule of 3 and a global precedence of 7 ranks
       # `[-Infinity, -Infinity, 3, 7]`. A nil `record` has no rules of its own.
       def rank(record, attribute_name, source_id)
-        attribute_name = attribute_name.to_s
+        attribute_name = rule_name(attribute_name)
         attribute_rule = @model_rules[[ANY_ID, attribute_name, source_id]] unless attribute_name == ANY_ATTRIBUTE # its rule is the model level
         levels = [record_rule(record, attribute_name, source_id), attribute_rule, @model_rules[[ANY_ID, ANY_ATTRIBUTE, source_id]]]
         specific = levels.index { |precedence| !precedence.nil? }
@@ -86,14 +87,14 @@ module LaForge
       # Returns the precedence of the source's most specific rule for the attribute on `record`, or its global
       # precedence (see `global_precedence`) when it has no other
       def precedence(record, attribute_name, source_id)
-        attribute_name = attribute_name.to_s
+        attribute_name = rule_name(attribute_name)
         record_rule(record, attribute_name, source_id) || model_precedence(attribute_name, source_id) || global_precedence(source_id)
       end
 
       # Returns the precedence of the most specific model-wide rule for the attribute and source, or nil when there is
       # none
       def model_precedence(attribute_name, source_id)
-        @model_rules[[ANY_ID, attribute_name.to_s, source_id]] || @model_rules[[ANY_ID, ANY_ATTRIBUTE, source_id]]
+        @model_rules[[ANY_ID, rule_name(attribute_name), source_id]] || @model_rules[[ANY_ID, ANY_ATTRIBUTE, source_id]]
       end
 
       # Returns the source's global precedence, or `-Float::INFINITY` when it has none, as for the entries of a deleted
@@ -103,6 +104,11 @@ module LaForge
       end
 
       private
+
+      # Returns the name an attribute's rules are stored under, which is its attribute group's name when it is in one
+      def rule_name(attribute_name)
+        @groups&.group_of(attribute_name) || attribute_name.to_s
+      end
 
       def record_rule(record, attribute_name, source_id)
         return unless record.respond_to?(:precedence_rules)

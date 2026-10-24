@@ -6,26 +6,30 @@ module LaForge
     API = %i[update_attribute_source_precedence update_precedence_order precedence_order source_precedences].freeze
     CLASS_API = %i[update_attribute_source_precedence update_source_precedence update_precedence_order precedence_order source_precedences].freeze
 
-    # Set the precedence of a source for one attribute of this record, whether or not the source has recorded it yet.
-    # Saved immediately on a persisted record, otherwise with the record. Pass nil to remove it.
+    # Set the precedence of a source for one attribute, or one attribute group, of this record, whether or not the
+    # source has recorded it yet. Saved immediately on a persisted record, otherwise with the record. Pass nil to remove
+    # it. Raises for an attribute in a group, whose precedence is set on the group.
     def update_attribute_source_precedence(attribute, source, precedence)
+      self.class.assert_rule_attribute!(attribute)
       rule = write_precedence_rule(attribute, source, precedence)
       return unless record.persisted? && rule
 
       rule.marked_for_destruction? ? record.precedence_rules.destroy(rule) : rule.save!
     end
 
-    # Set the precedence order of this record's own rules for one attribute. It replaces the record's other rules for
-    # the attribute, so nil or [] removes them. Saved with the record.
+    # Set the precedence order of this record's own rules for one attribute, or attribute group. It replaces the
+    # record's other rules for the attribute, so nil or [] removes them. Saved with the record. Raises for an attribute
+    # in a group, whose precedence is set on the group.
     def update_precedence_order(attribute, sources)
+      self.class.assert_rule_attribute!(attribute)
       source_ids = DataSource.normalize_source_ids(sources)
       record.precedence_rules.select { |rule| rule.attribute_name == attribute.to_s && !source_ids.include?(rule.source_id) }.each { |rule| write_precedence_rule(attribute, rule.source_id, nil) }
       source_ids.each_with_index { |source_id, index| write_precedence_rule(attribute, source_id, source_ids.size - index) }
     end
 
-    # Returns the active sources in the order they rank for one attribute of this record, as [{ source:, level: }]. The
-    # level is the most specific one the source has a rule at, :record, :attribute, :model or :global, or nil when it
-    # has none.
+    # Returns the active sources in the order they rank for one attribute of this record, as [{ source:, level: }]. An
+    # attribute in a group ranks as its group. The level is the most specific one the source has a rule at, :record,
+    # :attribute, :model or :global, or nil when it has none.
     def precedence_order(attribute)
       resolver = PrecedenceRule::Resolver.new(record.class) # not the last forge's, so rules changed since then count
       LaForge::ActiveRecord.order_by_rank(DataSource.active.to_a, %i[record attribute model global]) { |source| resolver.rank(record, attribute, source.id) }
@@ -85,8 +89,10 @@ module LaForge
     end
 
     class_methods do
-      # Set and save the precedence of a source for one attribute on every record of this model. Pass nil to remove it.
+      # Set and save the precedence of a source for one attribute, or one attribute group, on every record of this
+      # model. Pass nil to remove it. Raises for an attribute in a group, whose precedence is set on the group.
       def update_attribute_source_precedence(attribute, source, precedence)
+        assert_rule_attribute!(attribute)
         update_model_precedence_rule(attribute.to_s, source, precedence)
       end
 
@@ -96,9 +102,11 @@ module LaForge
         update_model_precedence_rule(PrecedenceRule::ANY_ATTRIBUTE, source, precedence)
       end
 
-      # Set and save the precedence order of this model's model-wide rules for one attribute, or for every attribute when
-      # `attribute` is nil. It replaces every rule at that level, so nil or [] removes them.
+      # Set and save the precedence order of this model's model-wide rules for one attribute, or attribute group, or for
+      # every attribute when `attribute` is nil. It replaces every rule at that level, so nil or [] removes them. Raises
+      # for an attribute in a group, whose precedence is set on the group.
       def update_precedence_order(sources, attribute: nil)
+        assert_rule_attribute!(attribute) if attribute
         attribute_name = attribute ? attribute.to_s : PrecedenceRule::ANY_ATTRIBUTE
         source_ids = DataSource.normalize_source_ids(sources)
 
@@ -109,8 +117,9 @@ module LaForge
       end
 
       # Returns the active sources in the order they rank for one attribute, or for every attribute when `attribute` is
-      # nil, on a record of this model with no rules of its own, as [{ source:, level: }]. The level is the most specific
-      # one the source has a rule at, :attribute, :model or :global, or nil when it has none.
+      # nil, on a record of this model with no rules of its own, as [{ source:, level: }]. An attribute in a group ranks
+      # as its group. The level is the most specific one the source has a rule at, :attribute, :model or :global, or nil
+      # when it has none.
       def precedence_order(attribute: nil)
         resolver = PrecedenceRule::Resolver.new(model)
         LaForge::ActiveRecord.order_by_rank(DataSource.active.to_a, %i[record attribute model global]) { |source| resolver.rank(nil, attribute.to_s, source.id) }
@@ -120,6 +129,13 @@ module LaForge
       # attribute is keyed by `PrecedenceRule::ANY_ATTRIBUTE`.
       def source_precedences
         PrecedenceRule.for_model(model).includes(:source).group_by(&:attribute_name).transform_values { |rules| rules.to_h { |rule| [rule.source, rule.precedence] } }
+      end
+
+      # @api private
+      # Raises when `attribute` is in an attribute group, since its precedence rules are set on the group
+      def assert_rule_attribute!(attribute)
+        group = group_of(attribute)
+        raise ArgumentError, "#{model.name}##{attribute} is in attribute group #{group}, which is ranked as a whole; set the precedence on #{group}" if group
       end
 
       private

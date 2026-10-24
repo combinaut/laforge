@@ -8,13 +8,17 @@ module LaForge
     # Record a single piece of information from a source.
     # Optionally pass `precedence` to set this record's precedence for the attribute and source, saved with the record.
     # Omitting it keeps an existing precedence, and passing nil removes it.
+    # Raises for an attribute in an attribute group, whose attributes are recorded together with `record_data_entries`.
     def record_data_entry(attribute_name, value, source, precedence: NOT_GIVEN)
+      self.class.assert_whole_groups!([attribute_name], where: "Recording #{record.class.name}##{attribute_name}")
       record_data_entries({ attribute_name => value }, source, precedence: precedence)
     end
 
     # Record several pieces of information from the same source.
     # `precedence:` covers everything the call records (see `record_data_entry`).
+    # The attributes of an attribute group are recorded together.
     def record_data_entries(attributes_hash, source, precedence: NOT_GIVEN)
+      self.class.assert_whole_groups!(attributes_hash.keys, where: "Recording #{record.class.name}")
       attributes_hash.each do |attribute_name, value|
         record_attribute(attribute_name, value, source, precedence: precedence)
       end
@@ -23,15 +27,16 @@ module LaForge
     # Mark several data entries for destruction, so they are destroyed when the record is saved and a forge leaves them
     # out. To blank an attribute instead, record nil for it.
     # Optionally pass `attribute_names` to remove only the entries for those attributes, and `sources` to remove only
-    # the entries from those sources.
+    # the entries from those sources. An attribute in a group removes the entries for its whole group.
     def remove_data_entries(attribute_names: nil, sources: nil)
+      attribute_names = self.class.with_groups(attribute_names) unless attribute_names.nil?
       filter_data_entries_in_memory(attributes: attribute_names, sources: sources).each do |data_entry|
         data_entry.mark_for_destruction
       end
     end
 
     # @api private
-    # Records one attribute. Raises for an attribute with no setter.
+    # Records one attribute, without checking its group. Raises for an attribute with no setter.
     def record_attribute(attribute_name, value, source, precedence: NOT_GIVEN)
       raise InvalidAttributeName, "Cannot set #{attribute_name} on #{record.class.name}" unless record.respond_to?("#{attribute_name}=")
 
@@ -39,13 +44,13 @@ module LaForge
     end
 
     # @api private
-    # Writes the source's entry for the attribute in memory, and the precedence rule for the attribute when
-    # `precedence` is given.
+    # Writes the source's entry for the attribute in memory, and the precedence rule for the attribute, or its attribute
+    # group, when `precedence` is given.
     def write_data_entry(attribute_name, value, source, precedence: NOT_GIVEN)
       data_entry = filter_data_entries_in_memory(attributes: attribute_name, sources: source).first
       data_entry ||= record.data_entries.build(attribute_name: attribute_name, source_id: DataSource.normalize_source_id(source))
       data_entry.value = value
-      write_precedence_rule(attribute_name, source, precedence) unless precedence.equal?(NOT_GIVEN)
+      write_precedence_rule(self.class.group_of(attribute_name) || attribute_name, source, precedence) unless precedence.equal?(NOT_GIVEN)
     end
 
     # @api private

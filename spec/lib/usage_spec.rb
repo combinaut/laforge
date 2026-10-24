@@ -573,6 +573,80 @@ describe 'Usage' do
     end
   end
 
+  # Attributes that must come from one source together, such as the lines of an address
+  describe 'attribute groups' do
+    let(:grouped_model) do
+      Class.new(ActiveRecordMock) do
+        def self.name = 'ActiveRecordMock'
+
+        laforged attribute_groups: { listing: %i[name count] }
+      end
+    end
+    let(:grouped) { grouped_model.create!(name: 'Original', count: 1) }
+
+    it 'takes every attribute of the group from the source that ranks highest for any of them' do
+      grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      grouped.record_data_entries({ name: 'From Map Editor', count: nil }, map_editor)
+      grouped.forge!
+
+      expect(grouped.reload).to have_attributes(name: 'From Map Editor', count: nil)
+    end
+
+    it 'blanks an attribute the winning source has no entry for' do
+      grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      LaForge::DataEntry.create!(record: grouped, source: map_editor, attribute_name: 'name', value: 'From Map Editor') # recorded before the group was declared
+      grouped.reload.forge!
+
+      expect(grouped.reload).to have_attributes(name: 'From Map Editor', count: nil)
+    end
+
+    it 'raises when a source records part of a group, naming what is missing' do
+      expect { grouped.record_data_entries({ name: 'From Cadastre' }, cadastre) }
+        .to raise_error(ArgumentError, /name, count are attribute group listing, which a source records together \(missing: count\)/)
+      expect { grouped.record_data_entry(:count, 5, cadastre) }.to raise_error(ArgumentError, /missing: name/)
+    end
+
+    it 'ranks the group by rules set on the group, and raises for a rule on one of its attributes' do
+      grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      grouped.record_data_entries({ name: 'From Map Editor', count: 7 }, map_editor)
+      grouped.update_attribute_source_precedence(:listing, cadastre, 1)
+      grouped.forge!
+
+      expect(grouped.reload).to have_attributes(name: 'From Cadastre', count: 5)
+      expect { grouped.update_attribute_source_precedence(:count, cadastre, 1) }.to raise_error(ArgumentError, /ActiveRecordMock#count is in attribute group listing, which is ranked as a whole; set the precedence on listing/)
+      expect { grouped_model.update_attribute_source_precedence(:name, cadastre, 1) }.to raise_error(ArgumentError, /set the precedence on listing/)
+    end
+
+    it 'gives a precedence passed while recording to the group' do
+      grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre, precedence: 1)
+      grouped.record_data_entries({ name: 'From Map Editor', count: 7 }, map_editor)
+      grouped.forge!
+
+      expect(grouped.reload).to have_attributes(name: 'From Cadastre', count: 5)
+      expect(grouped.source_precedences).to eq('listing' => { cadastre => 1 })
+    end
+
+    it 'removes and forges the whole group when given one of its attributes' do
+      grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      grouped.record_data_entries({ name: 'From Map Editor', count: 7 }, map_editor)
+      grouped.save!
+
+      expect(grouped.forge_attributes(attributes: :name)).to eq('name' => 'From Map Editor', 'count' => 7)
+      grouped.remove_data_entries(attribute_names: :name, sources: map_editor)
+      grouped.save!
+
+      expect(grouped.reload.data_entries.map(&:source)).to all(eq(cadastre))
+    end
+
+    it 'raises for a group it cannot use, saying why' do
+      declare = ->(groups) { Class.new(ActiveRecordMock) { def self.name = 'ActiveRecordMock' }.laforged(attribute_groups: groups) }
+
+      expect { declare.(listing: %i[name]) }.to raise_error(ArgumentError, /attribute group listing names 1 attribute; a group needs at least two/)
+      expect { declare.(listing: %i[name count], tally: %i[count active]) }.to raise_error(ArgumentError, /ActiveRecordMock#count is in attribute groups listing and tally/)
+      expect { declare.(name: %i[name count]) }.to raise_error(ArgumentError, /attribute group name is named like one of its attributes/)
+    end
+  end
+
   # A source the host stops using. Its values stop counting from each record's next forge, and its entries are kept.
   describe 'an inactive source' do
     before do

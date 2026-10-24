@@ -6,12 +6,40 @@ module LaForge
   module ActiveRecord
     extend ActiveSupport::Concern
 
-    # Declares the model's data entries, data sources and precedence rules
-    def laforged
+    # Declares the model's data entries, data sources and precedence rules, with these options:
+    # - attribute_groups: { name => [attributes] }, the model's attribute groups (see AttributeGroups)
+    def laforged(attribute_groups: {})
+      groups = LaForge::ActiveRecord.attribute_groups(self, attribute_groups)
       include Model
 
       LaForge::ActiveRecord.declare_data_associations(self)
       LaForge::ActiveRecord.declare_scopes(self)
+
+      laforge.attribute_groups = groups
+    end
+
+    # Returns the attribute groups declared on a model as { group name => [attribute names] }, names as strings. Raises
+    # unless:
+    # - each group names at least two distinct attributes
+    # - no group is named like an attribute of any group
+    # - no attribute is in two groups
+    def self.attribute_groups(model, groups)
+      groups = groups.to_h { |name, attributes| [name.to_s, Array.wrap(attributes).map(&:to_s)] }
+      seen = {}
+      groups.each do |name, attributes|
+        raise ArgumentError, "#{model.name} attribute group #{name} names #{attributes.size} attribute#{'s' unless attributes.one?}; a group needs at least two" if attributes.uniq.size < 2
+        raise ArgumentError, "#{model.name} attribute group #{name} is named like one of its attributes; give the group its own name" if attributes.include?(name)
+
+        attributes.each do |attribute|
+          raise ArgumentError, "#{model.name}##{attribute} is in attribute groups #{seen[attribute]} and #{name}; an attribute belongs to one group at most" if seen[attribute]
+
+          seen[attribute] = name
+        end
+      end
+      clash = groups.keys & seen.keys
+      raise ArgumentError, "#{model.name} attribute group #{clash.first} is also an attribute of group #{seen[clash.first]}; give the group its own name" if clash.any?
+
+      groups
     end
 
     # Declares the model's associations to its data entries, data sources and precedence rules
