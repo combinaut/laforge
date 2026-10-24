@@ -23,7 +23,7 @@ module LaForge
       # Makes the member model laforged if it is not, and autosaves the association so the owner's save writes what a
       # forge changes on its members.
       def declare(owner_class, config)
-        config.klass.laforged unless config.klass.respond_to?(:laforged_associations)
+        config.klass.laforged unless config.klass.respond_to?(:laforge)
         config.reflection.autosave = true
       end
 
@@ -121,9 +121,9 @@ module LaForge
         found = record.class.reflect_on_all_associations(:belongs_to).flat_map do |reflection|
           owner = record.public_send(reflection.name)
           checked << (owner ? "#{owner.class.name} #{owner.id} through #{reflection.name}" : "#{reflection.name}, which is not set")
-          next [] unless owner.class.respond_to?(:laforged_associations)
+          next [] unless owner.class.respond_to?(:laforge)
 
-          owner.class.laforged_associations.values.select { |config| record.is_a?(config.klass) && config.owner_foreign_key == reflection.foreign_key.to_s }.map { |config| new(owner, config) }
+          owner.class.laforge.associations.values.select { |config| record.is_a?(config.klass) && config.owner_foreign_key == reflection.foreign_key.to_s }.map { |config| new(owner, config) }
         end
         return found if found.any?
 

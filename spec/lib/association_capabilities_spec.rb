@@ -1040,7 +1040,7 @@ describe 'Association tracking capabilities' do
       expect { LaForge.tombstone_blocking(place.tenants.first, low) }.to raise_error(ArgumentError, /already exists; tombstone_blocking checks a new member before it is created/)
       expect { LaForge.tombstone_blocking(Tenant.new(name: 'Corner Café'), low) }.to raise_error(ArgumentError, /Tenant is not a member of an association LaForge tracks \(checked occupiable, which is not set\)/)
 
-      allow(Place.laforged_association(:tenants)).to receive(:tombstone_matcher).and_return(->(_tenant, _tombstones) { Tenant.new })
+      allow(Place.laforge.association(:tenants)).to receive(:tombstone_matcher).and_return(->(_tenant, _tombstones) { Tenant.new })
       expect { LaForge.tombstone_blocking(place.tenants.build(name: 'Corner Café'), low) }.to raise_error(ArgumentError, /Place#tenants tombstone_matcher: returned .* which is not one of the tombstones it was given/)
     end
   end
@@ -1449,8 +1449,8 @@ describe 'Association tracking capabilities' do
 
   describe 'declaration' do
     it 'derives join model keys from the association reflection', capability: 'C39' do
-      expect(Place.laforged_association(:place_categories).key).to eq(%w[category_id])
-      expect(Place.laforged_association(:reported_parcel_links).key).to eq(%w[parcel_id parcel_link_type_id])
+      expect(Place.laforge.association(:place_categories).key).to eq(%w[category_id])
+      expect(Place.laforge.association(:reported_parcel_links).key).to eq(%w[parcel_id parcel_link_type_id])
     end
 
     it 'raises for a method the model already defines that would hide LaForge\'s, and lets one defined after it wrap LaForge\'s', capability: 'C98' do
@@ -1478,16 +1478,16 @@ describe 'Association tracking capabilities' do
       pinned_place = PinnedPlace.create!(name: 'Harbor Building')
       ActiveRecordMock.where(parent_id: pinned_place.id).delete_all # rows other specs left pointing at this id
 
-      expect(PinnedPlace.laforged_association(:pins).key).to eq(%w[subject_id subject_type])
+      expect(PinnedPlace.laforge.association(:pins).key).to eq(%w[subject_id subject_type])
       pinned_place.record_data_entries({ pins: [{ subject_id: 1, subject_type: 'Category' }, { subject_id: 1, subject_type: 'Parcel' }] }, low)
       pinned_place.forge!
       expect(ActiveRecordMock.where(parent_id: pinned_place.id).pluck(:subject_type, :subject_id)).to contain_exactly(['Category', 1], ['Parcel', 1])
     end
 
     it 'keys owned records by primary key unless key: names other columns', capability: 'C40' do
-      expect(Place.laforged_association(:tenants).key).to eq(%w[id])
-      expect(Tenant.laforged_association(:opening_hours).key).to eq(%w[day])
-      expect(Place.laforged_association(:marker).key).to eq([]) # a has_one's single member
+      expect(Place.laforge.association(:tenants).key).to eq(%w[id])
+      expect(Tenant.laforge.association(:opening_hours).key).to eq(%w[day])
+      expect(Place.laforge.association(:marker).key).to eq([]) # a has_one's single member
     end
 
     it 'never derives an order column that identifies the member or its owner, so forging keeps their ids', capability: 'C107' do
@@ -1499,7 +1499,7 @@ describe 'Association tracking capabilities' do
       ParcelLink.create!(place: Place.create!(name: 'Other Building'), parcel: lot_12, parcel_link_type: leases) # holds a low id
       links = [lot_12, lot_14].map { |parcel| ParcelLink.create!(place_id: linked_place.id, parcel: parcel, parcel_link_type: occupies) }
 
-      expect(LinkedPlace.laforged_association(:parcel_links).order_column).to be_nil
+      expect(LinkedPlace.laforge.association(:parcel_links).order_column).to be_nil
       linked_place.record_data_entries({ parcel_links: [parcel_link(lot_12, occupies), parcel_link(lot_14, occupies)] }, low)
       expect { linked_place.forge! }.not_to raise_error
       expect(ParcelLink.where(place_id: linked_place.id).order(:id).ids).to eq(links.map(&:id))

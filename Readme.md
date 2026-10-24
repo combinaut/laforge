@@ -85,6 +85,8 @@ Key features:
 
 7. Record a form's `*_attributes` and `*_ids` as edits. They used to be recorded as attribute entries, which forging then assigned. They now raise `ArgumentError` unless recorded with `mode: :edit`, and `LaForge::InvalidAttributeName` for an association LaForge does not track (see [Recording a Rails form](#recording-a-rails-form)).
 
+8. Call `filter_data_entries_in_memory` on `record.laforge`, as `place.laforge.filter_data_entries_in_memory(sources: map_editor)`. It is no longer a method of the record.
+
 ## Usage
 
 1. Create some sources and rank them, giving higher precedence to sources whose attributes should override those
@@ -121,6 +123,8 @@ Key features:
   ```
 
 A source can be given as a `LaForge::DataSource`, its id, or its name. Looking a source up by a name that has no row raises `LaForge::DataSource::Invalid`.
+
+Each of LaForge's methods on a model and its records is also reachable through `laforge`, as `place.laforge.forge!` or `Place.laforge.update_source_precedence(map_editor, 3)`, for code that keeps LaForge's methods apart from the model's own.
 
 ### Precedence
 

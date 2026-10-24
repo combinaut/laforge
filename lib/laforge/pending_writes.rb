@@ -72,7 +72,7 @@ module LaForge
     private
 
     def name_created_members
-      @created_members.each { |name, created| TrackedAssociation.new(@record, @record.laforged_associations.fetch(name)).name_created(created) }
+      @created_members.each { |name, created| TrackedAssociation.new(@record, @record.class.laforge.association(name)).name_created(created) }
       @created_members = {}
     end
 

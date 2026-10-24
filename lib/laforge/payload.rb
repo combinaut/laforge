@@ -30,13 +30,13 @@ module LaForge
       payload.to_h.stringify_keys.each_with_object({}) do |(field, value), result|
         if (name = nested_attributes_name(model, field))
           require_edit!(model, field, edit)
-          edits = nested_attributes(model.laforged_association(name), field, value, record, owner)
+          edits = nested_attributes(model.laforge.association(name), field, value, record, owner)
           result[name] = edits unless edits.equal?(REJECTED)
         elsif (reflection = ids_reflection(model, field))
           require_edit!(model, field, edit)
           result.merge!(ids(model, field, reflection, value, record))
         elsif tracked?(model, field)
-          result[field] = members(model.laforged_association(field), value, record, edit: edit)
+          result[field] = members(model.laforge.association(field), value, record, edit: edit)
         else
           result[field] = value
         end
@@ -64,7 +64,7 @@ module LaForge
     end
 
     def tracked?(model, name)
-      model.respond_to?(:laforged_associations) && model.laforged_associations.key?(name)
+      model.respond_to?(:laforge) && model.laforge.associations.key?(name)
     end
 
     def require_edit!(model, field, edit)
@@ -112,10 +112,10 @@ module LaForge
     # goes through when keyed by the foreign key the ids fill.
     def ids_config(model, reflection)
       if tracked?(model, reflection.name.to_s)
-        config = model.laforged_association(reflection.name)
+        config = model.laforge.association(reflection.name)
         [config, config.klass.primary_key] if config.primary_keyed?
       elsif reflection.through_reflection? && tracked?(model, reflection.through_reflection.name.to_s)
-        config = model.laforged_association(reflection.through_reflection.name)
+        config = model.laforge.association(reflection.through_reflection.name)
         column = reflection.source_reflection.foreign_key.to_s
         [config, column] if config.key == [column]
       end

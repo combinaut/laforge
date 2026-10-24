@@ -9,42 +9,31 @@ module LaForge
     # Declares the model's data entries, data sources and precedence rules, with these options:
     # - associations: { name => options }, the has_many and has_one associations to track (see TrackedAssociation),
     #   each with the options AssociationConfig takes
-    # - attribute_groups: { name => [attributes] }. An attribute group is a set of attributes that come from one source
-    #   together, such as the lines of a postal address. Sources record a group's attributes together, precedence rules
-    #   are set on the group, and forging takes every attribute of the group from the highest-ranked source with an
-    #   entry for any of them.
+    # - attribute_groups: { name => [attributes] }, the model's attribute groups (see AttributeGroups)
     def laforged(associations: {}, attribute_groups: {})
       LaForge::ActiveRecord.assert_no_collisions!(self)
       groups = LaForge::ActiveRecord.attribute_groups(self, attribute_groups, associations)
+      include Model
 
       LaForge::ActiveRecord.declare_data_associations(self)
       LaForge::ActiveRecord.declare_scopes(self)
 
-      class_attribute :laforged_associations, instance_writer: false, default: {}
-      class_attribute :laforged_attribute_groups, instance_writer: false, default: {}
-      self.laforged_attribute_groups = groups
+      laforge.attribute_groups = groups
 
       configs = associations.to_h { |name, options| [name.to_s, AssociationConfig.new(self, name, **options)] }
       configs.each_value { |config| TrackedAssociation.declare(self, config) }
-      self.laforged_associations = configs
-      after_save :laforge_after_save
-
-      extend ClassMethods
-      include InstanceMethods
+      laforge.associations = configs
+      after_save { laforge.write_pending_writes! }
     end
 
-    # OVERRIDES are the methods LaForge defines over Active Record's own, calling super, which `assert_no_collisions!`
-    # lets through
-    OVERRIDES = %i[reload initialize_dup].freeze
-
-    # Raises when the model already has a method by a name `laforged` adds, other than `OVERRIDES`, naming each one. A
-    # method defined after `laforged` is not checked, so a model can wrap LaForge's and call super. Nothing is checked
-    # when the model already has LaForge's methods, as when `laforged` is declared again.
+    # Raises when the model already has a method by a name `laforged` adds, naming each one. A method defined after
+    # `laforged` is not checked, so a model can wrap LaForge's and call super. Nothing is checked when the model already
+    # includes `Model`, as when `laforged` is declared again.
     def self.assert_no_collisions!(model)
-      instance_names = model.include?(InstanceMethods) ? [] : InstanceMethods.public_instance_methods + InstanceMethods.private_instance_methods - OVERRIDES
-      instance = instance_names.select { |name| model.method_defined?(name) || model.private_method_defined?(name) }
-      class_names = model.singleton_class.include?(ClassMethods) ? [] : ClassMethods.public_instance_methods
-      klass = class_names.select { |name| model.respond_to?(name) }
+      return if model.include?(Model)
+
+      instance = (Record::API + [:laforge]).select { |name| model.method_defined?(name) || model.private_method_defined?(name) }
+      klass = (Record::CLASS_API + [:laforge]).select { |name| model.respond_to?(name) }
       return if instance.empty? && klass.empty?
 
       names = instance.map { |name| "##{name}" } + klass.map { |name| ".#{name}" }
@@ -82,8 +71,7 @@ module LaForge
       model.has_many :data_entries, as: :record, dependent: :delete_all, autosave: true, class_name: 'LaForge::DataEntry' do
         # Returns the tombstones of the tracked association `name` (see Tombstone)
         def tombstones(name)
-          owner = proxy_association.owner
-          TrackedAssociation.new(owner, owner.class.laforged_association(name)).tombstones
+          proxy_association.owner.laforge.tombstones(name)
         end
       end
       model.has_many :data_sources, -> { distinct }, through: :data_entries, source: :source, class_name: 'LaForge::DataSource'
@@ -118,103 +106,40 @@ module LaForge
         { source: source, level: level && levels[level] }
       end
     end
-  end
 
-  # The class methods `laforged` adds
-  module ClassMethods
-    include Precedence::ClassMethods
+    # Used to give a laforged model its `laforge` and to delegate LaForge's methods to it
+    module Model
+      extend ActiveSupport::Concern
 
-    def laforged_association(name)
-      laforged_associations.fetch(name.to_s)
-    end
+      delegate(*Record::API, to: :laforge)
 
-    # Returns what each source says about the members of the tracked association `name` on each of `records`, as
-    # { record_id => { source => [member hashes] } }
-    def source_values(name, records:)
-      TrackedAssociation.source_values(self, laforged_association(name), records)
-    end
-
-    # @api private
-    # Returns the attribute names as strings, each attribute in a group replaced by its whole group, in the group's
-    # order. With a group `address: [:street, :city]`, `[:name, :city]` becomes `['name', 'street', 'city']`.
-    def laforge_with_groups(attribute_names)
-      Array.wrap(attribute_names).map(&:to_s).flat_map { |name| (group = laforge_attribute_group(name)) ? laforged_attribute_groups[group] : [name] }.uniq
-    end
-
-    # @api private
-    # Raises unless the attributes recorded together include every attribute of each group they touch, naming the
-    # missing ones. `where` describes what is being recorded, for the message.
-    def laforge_assert_whole_groups!(attribute_names, where: name)
-      attribute_names = attribute_names.map(&:to_s)
-      laforged_attribute_groups.each do |group, attributes|
-        given = attributes & attribute_names
-        next if given.empty? || given.size == attributes.size
-
-        raise ArgumentError, "#{where}: #{attributes.join(', ')} are attribute group #{group}, which a source records together (missing: #{(attributes - given).join(', ')}). " \
-                             'Pass nil for a value the source does not have'
+      # Returns the record's `LaForge::Record`, through which LaForge records, forges and ranks it, made on first use
+      def laforge
+        @laforge ||= self.class.laforge.new(self)
       end
-    end
 
-    # @api private
-    # Raises when `attribute` is in an attribute group, since its precedence rules are set on the group
-    def laforge_assert_rule_attribute!(attribute)
-      group = laforge_attribute_group(attribute)
-      raise ArgumentError, "#{name}##{attribute} is in attribute group #{group}, which is ranked as a whole; set the precedence on #{group}" if group
-    end
+      # Also drops the record's `laforge`, so its pending writes go and the next ranking reads the model-wide and global
+      # rules again
+      def reload(*)
+        @laforge = nil
+        super
+      end
 
-    # @api private
-    # The name of the attribute group an attribute belongs to, or nil
-    def laforge_attribute_group(attribute_name)
-      attribute_name = attribute_name.to_s
-      laforged_attribute_groups.find { |_, attributes| attributes.include?(attribute_name) }&.first
-    end
-  end
+      # Gives a duplicate its own `laforge`, bound to the duplicate
+      def initialize_dup(*)
+        @laforge = nil
+        super
+      end
 
-  # The instance methods `laforged` adds
-  module InstanceMethods
-    include Recording
-    include Forging
-    include Precedence
+      class_methods do
+        delegate(*Record::CLASS_API, to: :laforge)
 
-    # Whether the source has entries on this record
-    def data_source?(source)
-      laforge.filter_data_entries_in_memory(sources: source).any?
-    end
-
-    # Returns the names of the sources with entries on this record, for `attributes` when given
-    def data_source_names(attributes: nil)
-      laforge.filter_data_entries_in_memory(attributes: attributes).map(&:source).map(&:name).uniq
-    end
-
-    # Returns what each source says about the members of the tracked association `name`, as
-    # { source => [member hashes] } (see the class method)
-    def source_values(name)
-      self.class.source_values(name, records: [self])[id] || {}
-    end
-
-    # Returns { membership: source, listed_by: [sources], excluded_by: [sources], attributes: { attribute => source } }
-    # for one member
-    def member_sources(name, **member)
-      TrackedAssociation.new(self, self.class.laforged_association(name)).member_sources(member.stringify_keys)
-    end
-
-    # @api private
-    # Returns what LaForge keeps for this record (see RecordState), made on first use
-    def laforge
-      @laforge ||= RecordState.new(self)
-    end
-
-    # Also drops what LaForge keeps for this record, so its pending writes go and the next ranking reads the model-wide
-    # and global rules again
-    def reload(*)
-      @laforge = nil
-      super
-    end
-
-    # Gives a duplicate its own `laforge`, rather than the one bound to the record it was duplicated from
-    def initialize_dup(*)
-      @laforge = nil
-      super
+        # Returns the model's own subclass of LaForge::Record, made on first use. A subclass of a laforged model gets a
+        # subclass of its parent's, so it keeps what `laforged` declared on the parent.
+        def laforge
+          @laforge ||= Class.new(superclass.respond_to?(:laforge) ? superclass.laforge : Record).tap { |klass| klass.model = self }
+        end
+      end
     end
   end
 

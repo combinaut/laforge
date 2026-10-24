@@ -89,7 +89,7 @@ module LaForge
     end
 
     def nested_config(field)
-      klass.respond_to?(:laforged_associations) && klass.laforged_associations[field.to_s]
+      klass.respond_to?(:laforge) && klass.laforge.associations[field.to_s]
     end
 
     # Returns the member's key values, or ['new', token] for a new member and ['tombstone', token] for a tombstone
@@ -292,10 +292,10 @@ module LaForge
     # Raises unless the member's attributes include every attribute of each attribute group of the member model they
     # touch
     def assert_whole_groups!(member)
-      return unless klass.respond_to?(:laforge_assert_whole_groups!)
+      return unless klass.respond_to?(:laforge)
 
       fields = member.keys.reject { |field| field == NEW_MEMBER || key.include?(field) || nested_config(field) }
-      klass.laforge_assert_whole_groups!(fields, where: "#{klass.name} members of #{owner_class.name}##{name}")
+      klass.laforge.assert_whole_groups!(fields, where: "#{klass.name} members of #{owner_class.name}##{name}")
     end
 
     # Raises unless the member has a value for each key column

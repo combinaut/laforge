@@ -31,7 +31,7 @@ module LaForge
       assert_has_ones_mergeable!(survivor, duplicate)
       merge_entries(survivor, duplicate, winner, report)
       merge_precedence_rules(survivor, duplicate, winner, report)
-      survivor.class.laforged_associations.each_value { |config| merge_members(survivor, duplicate, config, winner, report) }
+      survivor.class.laforge.associations.each_value { |config| merge_members(survivor, duplicate, config, winner, report) }
     end
 
     # Moves the duplicate's entries to the survivor. Where both have one for the same attribute and source, keeps the
@@ -44,7 +44,7 @@ module LaForge
         if other.nil?
           entry.update_columns(record_id: survivor.id)
           report[:entries_moved] += 1
-        elsif (config = survivor.class.laforged_associations[entry.attribute_name])
+        elsif (config = survivor.class.laforge.associations[entry.attribute_name])
           winning, losing = winner == :survivor ? [other, entry] : [entry, other]
           other.update_columns(value: combined_report(config, MemberList.new(winning.value), MemberList.new(losing.value)), recorded_at: [other.recorded_at, entry.recorded_at].max)
           entry.destroy!
@@ -86,7 +86,7 @@ module LaForge
     # Raises when both records have a member in a tracked has_one and their keys differ, as the survivor can hold only
     # one. Members keyed by primary key always differ.
     def assert_has_ones_mergeable!(survivor, duplicate)
-      survivor.class.laforged_associations.each_value do |config|
+      survivor.class.laforge.associations.each_value do |config|
         next if config.collection?
 
         kept, moving = [survivor, duplicate].map { |record| config.members_of(record).first }
@@ -138,7 +138,7 @@ module LaForge
     end
 
     def assert_mergeable!(survivor, duplicate)
-      unless survivor.class.respond_to?(:laforged_associations)
+      unless survivor.class.respond_to?(:laforge)
         raise ArgumentError, "Cannot merge #{survivor.class.name} records: #{survivor.class.name} is not declared with `laforged`"
       end
       unless survivor.class.base_class == duplicate.class.base_class

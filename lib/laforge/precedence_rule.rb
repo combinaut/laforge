@@ -65,7 +65,7 @@ module LaForge
     class Resolver
       def initialize(model)
         @model = model
-        @groups = model.respond_to?(:laforge_attribute_group) ? model : nil
+        @groups = model.respond_to?(:laforge) ? model.laforge : nil
         type = PrecedenceRule.model_type(model)
         @model_rules = PrecedenceCache.fetch([:model, type]) { PrecedenceRule.index_for(PrecedenceRule.for_model(model)) }
         @global_rules = PrecedenceCache.fetch(:global) { PrecedenceRule.index_for(PrecedenceRule.global) }
@@ -107,7 +107,7 @@ module LaForge
 
       # Returns the name an attribute's rules are stored under, which is its attribute group's name when it is in one
       def rule_name(attribute_name)
-        @groups&.laforge_attribute_group(attribute_name) || attribute_name.to_s
+        @groups&.group_of(attribute_name) || attribute_name.to_s
       end
 
       def record_rule(record, attribute_name, source_id)
