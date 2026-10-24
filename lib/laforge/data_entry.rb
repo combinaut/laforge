@@ -14,7 +14,7 @@ module LaForge
 
     # Returns this entry's effective precedence on its record
     def effective_precedence
-      record.laforge_precedence_of(self)
+      record.laforge.precedence_of(self)
     end
 
     # Returns one record's `entries` in the order `forge` ranks them, so the first entry for each attribute is the one
@@ -25,7 +25,7 @@ module LaForge
     #     entries a later position in `entries` is newer.
     def self.in_precedence_order(entries, record: entries.first&.record)
       entries.each_with_index.sort_by do |entry, position|
-        [-record.laforge_precedence_of(entry), -record.laforge_global_precedence(entry.source_id), -(entry.id || Float::INFINITY), -position]
+        [-record.laforge.precedence_of(entry), -record.laforge.global_precedence(entry.source_id), -(entry.id || Float::INFINITY), -position]
       end.map(&:first)
     end
 

@@ -100,6 +100,51 @@ describe 'ActiveRecordExtensions' do
     end
   end
 
+  describe '#dup' do
+    it 'gives the duplicate its own laforge, bound to the duplicate' do
+      record = ActiveRecordMock.create!(name: "Post")
+      original = record.laforge
+
+      expect(record.dup.laforge).not_to equal(original)
+      expect(record.laforge).to equal(original)
+    end
+  end
+
+  describe '#laforge' do
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
+
+    it "holds the methods the model delegates to it, and the model's laforge holds the class methods" do
+      record = ActiveRecordMock.new
+      record.laforge.record_data_entry(:name, "Post", data_source)
+
+      expect(record.laforge.forge_attributes).to eq("name" => "Post")
+      expect(record.forge_attributes).to eq("name" => "Post")
+      expect(record.laforge).to be_a(ActiveRecordMock.laforge)
+      expect(ActiveRecordMock.laforge.model).to eq(ActiveRecordMock)
+      expect(ActiveRecordMock.laforge.source_precedences).to eq(ActiveRecordMock.source_precedences)
+    end
+
+    it "gives a subclass of a laforged model a subclass of its parent's laforge, keeping what was declared" do
+      stub_const('ActiveRecordMockCopy', Class.new(ActiveRecordMock))
+
+      expect(ActiveRecordMockCopy.laforge.superclass).to equal(ActiveRecordMock.laforge)
+      expect(ActiveRecordMockCopy.laforge.model).to eq(ActiveRecordMockCopy)
+      expect(ActiveRecordMockCopy.laforge.inspect).to eq("ActiveRecordMockCopy.laforge")
+    end
+
+    it "runs a forge the model defines after laforged when forge! forges" do
+      stub_const('WrappingMock', Class.new(ActiveRecord::Base))
+      WrappingMock.table_name = 'active_record_mocks'
+      WrappingMock.laforged
+      WrappingMock.define_method(:forge) { |**options| super(**options).tap { @wrapped = true } }
+      record = WrappingMock.create!(name: "Post")
+
+      record.forge!
+
+      expect(record.instance_variable_get(:@wrapped)).to be(true)
+    end
+  end
+
   describe '#forge!' do
     let(:record) { ActiveRecordMock.create(name: "Post", active: true) }
     let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
