@@ -53,11 +53,13 @@ Key features:
   - `laforge:recorded_at` adds `recorded_at` to data entries, filled from `updated_at`.
   - `laforge:active_sources` adds `active` to data sources, with every existing source active (see [Deactivating a source](#deactivating-a-source)).
   - `laforge:expiry` adds `expires_at` and `expires_on_source_id` to data entries and precedence rules. Nothing expires until a change is made with an expiry (see [Expiring a change](#expiring-a-change)). It also gives `created_at` and `updated_at` on LaForge's three tables sub-second precision, which an expiry on a source relies on; this rewrites the columns, which can take a while on a large `laforge_data_entries` table.
+  - `laforge:rulesets` adds `ruleset` to precedence rules, with every existing rule a base rule, and adds it to both unique indexes on `laforge_precedence_rules` (see [Rulesets](#rulesets)). Going down deletes every ruleset's rules.
 
   ```bash
     rails generate laforge:recorded_at
     rails generate laforge:active_sources
     rails generate laforge:expiry
+    rails generate laforge:rulesets
     rails db:migrate
   ```
 
@@ -193,7 +195,46 @@ To set the order of sources as a settings screen shows it, pass the order and le
     MyModel.precedence_order(attribute: :height) # the same, for records with no rules of their own
   ```
 
-`precedence_order` lists the active sources in rank order, each with the most specific level it has a rule at: `:record`, `:attribute`, `:model` or `:global`. `LaForge::PrecedenceRule.for_records(MyModel)` lists the rules records of a model have of their own.
+`precedence_order` lists the active sources in rank order, each with the most specific level it has a rule at: `:record`, `:attribute`, `:model` or `:global`, and the ruleset the rules at that level come from, `nil` for the base rules (see [Rulesets](#rulesets)). `LaForge::PrecedenceRule.for_records(MyModel)` lists the rules records of a model have of their own.
+
+#### Rulesets
+
+An advanced option, which an app with one source order everywhere doesn't need. When groups of records need their sources in different orders, such as places in different regions where a different directory is the authority, give each group a ruleset, which is a named copy of the model-wide and global rules. Sources, data entries and records' own rules are shared; only the orders differ.
+
+A ruleset selector names each record's ruleset, as a method name or a Proc given the record. Its value is turned into a String, and `nil` or blank selects the base rules. A model's own selector replaces the app-wide one, and `false` keeps its records on the base rules.
+
+  ```ruby
+    LaForge.ruleset_selector = :region                                  # every laforged model
+    class Place < ApplicationRecord
+      laforged ruleset_selector: ->(place) { place.region }             # this model only
+    end
+
+    Place.update_precedence_order([business_registry], attribute: :name, ruleset: 'north')
+    LaForge.update_precedence_order([cadastre, map_editor], ruleset: 'north')
+    Place.update_attribute_source_precedence(:name, cadastre, 5, ruleset: 'north')
+    LaForge.update_source_precedence(cadastre, 5, ruleset: 'north')     # one global rule in a ruleset; without ruleset:, the base rules
+
+    place.precedence_order(:name)
+    # => [{ source: business_registry, level: :attribute, ruleset: 'north' }, ...]
+  ```
+
+- **A record's own rules come first.** Below them, a record whose ruleset has rules ranks by that ruleset's attribute, model-wide and global rules; any other record ranks by the base rules. The two are never mixed. A ruleset is a complete set of orders, so a change to the base rules can't reach a ruleset's records in a way nobody chose there, and removing an order in a ruleset falls back to that ruleset's next level.
+- **The first rule written to a ruleset copies the base rules into it.** Every model-wide and global base rule is copied, in the same transaction as the rule being written, so the ruleset's records rank exactly as before except for that rule. From then on the ruleset keeps its own copy, and doesn't follow later changes to the base rules. `LaForge.fork_ruleset('north')` makes the copy without changing anything, and does nothing for a ruleset that has rules already.
+- **`LaForge.reset_ruleset('north')`** deletes the ruleset's rules, so its records follow the base rules again. `LaForge.rulesets` lists the rulesets that have rules. Rulesets are created as they're used, and are named by Strings or Symbols of at most 100 characters.
+- **Only model-wide and global rules belong to a ruleset.** A record's own rules apply whatever its ruleset, so the record-level methods take no `ruleset:`.
+- **Each ruleset is cached apart** inside `LaForge.with_precedence_cache`, and a copy or reset that rolls back is forgotten there too.
+
+##### When the selector is called
+
+The selector is called when a record is forged, by `forge`, `forge_attributes` or `forge_associations`, and by `forge_diff`, `precedence_order` and `member_sources`, never when the app boots. `forge` and `forge_diff` call it once, before any attribute is assigned, so a forge that changes what the selector reads ranks attributes and associations alike. Other ranking helpers, such as `effective_precedence` and `DataEntry.in_precedence_order`, reuse the last selection until the record is forged again or reloaded.
+
+##### Sources created or destroyed later
+
+Every source keeps a global precedence in each ruleset, as in the base rules, so a source created later is placed at the bottom of each existing ruleset's global order, below its lowest, in the same transaction. A ruleset that has placed it already is left alone. Destroying a source deletes its rules in every ruleset.
+
+##### Setting rulesets up while the app runs
+
+Set rulesets up from one writer at a time. Two processes copying a ruleset at once don't copy it twice, since the unique indexes skip the rows the other inserted, but two processes making a ruleset's first write at the same moment can both copy the base rules, so a rule the first one removed can come back. Call `LaForge.fork_ruleset` once ahead of time, such as in a deploy task, to avoid it. Likewise, two sources created at the same moment while rulesets exist can be given the same place in a ruleset, and one creation then fails on the unique index and rolls back. Retry it.
 
 ### Querying
   ```ruby

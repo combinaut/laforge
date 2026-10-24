@@ -1,0 +1,23 @@
+# Adds ruleset to laforge_precedence_rules, so groups of records can rank their sources by a named copy of the model-wide
+# and global rules (see LaForge.fork_ruleset). Every existing rule belongs to the base rules, stored as ''. Both unique
+# indexes take the ruleset, so each ruleset has its own orders and its own global order.
+#
+# Going down deletes every ruleset's rules, since without the column they would collide with the base rules.
+class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
+  def up
+    add_column :laforge_precedence_rules, :ruleset, :string, limit: 100, null: false, default: ''
+    remove_index :laforge_precedence_rules, name: :index_laforge_precedence_rules_on_scope_and_source
+    add_index :laforge_precedence_rules, %i[record_type record_id attribute_name source_id ruleset], unique: true, name: :index_laforge_precedence_rules_on_scope_and_source
+    remove_index :laforge_precedence_rules, :global_precedence
+    add_index :laforge_precedence_rules, %i[ruleset global_precedence], unique: true, name: :index_laforge_precedence_rules_on_ruleset_and_global_precedence
+  end
+
+  def down
+    execute "DELETE FROM laforge_precedence_rules WHERE ruleset <> ''"
+    remove_index :laforge_precedence_rules, name: :index_laforge_precedence_rules_on_ruleset_and_global_precedence
+    add_index :laforge_precedence_rules, :global_precedence, unique: true
+    remove_index :laforge_precedence_rules, name: :index_laforge_precedence_rules_on_scope_and_source
+    add_index :laforge_precedence_rules, %i[record_type record_id attribute_name source_id], unique: true, name: :index_laforge_precedence_rules_on_scope_and_source
+    remove_column :laforge_precedence_rules, :ruleset
+  end
+end

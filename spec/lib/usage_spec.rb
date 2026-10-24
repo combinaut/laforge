@@ -883,8 +883,8 @@ describe 'Usage' do
     it 'lists the model-wide order as the model level when asked for no attribute' do
       ActiveRecordMock.update_source_precedence(cadastre, 5)
 
-      expect(ActiveRecordMock.precedence_order.first).to eq(source: cadastre, level: :model)
-      expect(ActiveRecordMock.precedence_order(attribute: :name).first).to eq(source: cadastre, level: :model)
+      expect(ActiveRecordMock.precedence_order.first).to eq(source: cadastre, level: :model, ruleset: nil)
+      expect(ActiveRecordMock.precedence_order(attribute: :name).first).to eq(source: cadastre, level: :model, ruleset: nil)
     end
 
     it 'lists a source with no global precedence last, with no level' do
@@ -980,7 +980,7 @@ describe 'Usage' do
       travel 8.days do
         record.reload.forge!
         expect(record.reload.name).to eq('From Business Directory')
-        expect(record.precedence_order(:name).first).to eq(source: map_editor, level: :global)
+        expect(record.precedence_order(:name).first).to eq(source: map_editor, level: :global, ruleset: nil)
         expect(record.source_precedences).to eq({})
         expect(record.precedence_rules.size).to eq(2) # both expired rules are kept
       end

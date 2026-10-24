@@ -25,6 +25,7 @@ module LaForge
     # Returns { membership: source, listed_by: [sources], excluded_by: [sources], attributes: { attribute => source } }
     # for one member
     def member_sources(name, **member)
+      reset_resolver # selects the ruleset and reads the rules again
       TrackedAssociation.new(record, self.class.association(name)).member_sources(member.stringify_keys)
     end
 

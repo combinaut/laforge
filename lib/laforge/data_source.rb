@@ -5,6 +5,7 @@ module LaForge
     has_many :data_entries, class_name: 'LaForge::DataEntry'
     has_many :precedence_rules, class_name: 'LaForge::PrecedenceRule', foreign_key: :source_id, dependent: :delete_all
     after_destroy { PrecedenceCache.clear } # its rules are deleted without the callbacks that clear the cache
+    after_create { LaForge.place_in_rulesets(self) }
     after_save { PrecedenceCache.clear if saved_change_to_active? }
     after_rollback { PrecedenceCache.clear } # so no forge sees an undone change to `active`
     has_one :global_precedence_rule, -> { global }, class_name: 'LaForge::PrecedenceRule', foreign_key: :source_id, autosave: true, inverse_of: :source
@@ -76,17 +77,21 @@ module LaForge
     end
   end
 
-  # Set and save the global precedence order, highest first. Sources not listed rank below the listed ones in their
-  # current order, and sources without a global precedence come last. Every source's global precedence is renumbered,
-  # from the number of sources down to 1.
-  def self.update_precedence_order(sources)
+  # Set and save the global precedence order, highest first, in the base rules or in a ruleset. Sources not listed rank
+  # below the listed ones in their current order, and sources without a global precedence come last. Every source's
+  # global precedence is renumbered, from the number of sources down to 1.
+  def self.update_precedence_order(sources, ruleset: nil)
+    ruleset = PrecedenceRule.ruleset_name(ruleset, where: 'LaForge.update_precedence_order')
     listed = DataSource.normalize_source_ids(sources)
-    order = listed + DataSource.by_precedence.ids.reject { |id| listed.include?(id) }
-    order += DataSource.where.not(id: order).ids # sources without a global precedence yet
 
     DataSource.transaction do
-      rules = order.map { |id| PrecedenceRule.global.find_or_initialize_by(source_id: id) }
-      clear = [PrecedenceRule.global.maximum(:precedence) || 0, order.size].max + 1
+      fork_ruleset(ruleset) unless ruleset == PrecedenceRule::BASE
+      globals = PrecedenceRule.global.in_ruleset(ruleset)
+      order = listed + globals.order(precedence: :desc).pluck(:source_id).reject { |id| listed.include?(id) }
+      order += DataSource.where.not(id: order).ids # sources without a global precedence there yet
+
+      rules = order.map { |id| globals.find_or_initialize_by(source_id: id) }
+      clear = [globals.maximum(:precedence) || 0, order.size].max + 1
       rules.each_with_index { |rule, index| rule.update!(precedence: clear + index) } # clear of the unique index first
       rules.each_with_index { |rule, index| rule.update!(precedence: order.size - index) }
     end
