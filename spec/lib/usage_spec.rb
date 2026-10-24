@@ -711,6 +711,66 @@ describe 'Usage' do
     end
   end
 
+  # A host following what sources say, such as to notice that an import changed a value an editor replaced
+  describe 'following changes to entries' do
+    let(:events) { [] }
+
+    around do |example|
+      subscription = ActiveSupport::Notifications.subscribe(LaForge::DataEntry::CHANGED) { |*, payload| events << payload.except(:entry) }
+      example.run
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscription)
+    end
+
+    it 'publishes an entry saved with a new or changed value, and an entry destroyed' do
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre)
+      record.save!
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre) # the same value
+      record.save!
+      record.record_data_entries({ name: 'Renamed' }, cadastre)
+      record.save!
+      record.remove_data_entries(sources: cadastre)
+      record.save!
+
+      expected = { record_type: 'ActiveRecordMock', record_id: record.id, attribute_name: 'name', source_id: cadastre.id }
+      expect(events).to eq([
+        expected.merge(value_was: nil, value: 'From Cadastre', destroyed: false),
+        expected.merge(value_was: 'From Cadastre', value: 'Renamed', destroyed: false),
+        expected.merge(value_was: 'Renamed', value: nil, destroyed: true)
+      ])
+    end
+
+    it 'publishes the values as they were saved, even when one is changed in place before the commit' do
+      ActiveRecord::Base.transaction do
+        record.record_data_entries({ name: ['From Cadastre'] }, cadastre)
+        record.save!
+        record.data_entries.sole.value << 'changed in place'
+      end
+
+      expect(events.map { |event| event[:value] }).to eq([['From Cadastre']])
+    end
+
+    it 'publishes once the write is committed, at once outside a transaction, and nothing for a write that rolls back' do
+      record.record_data_entries({ name: 'From Cadastre' }, cadastre)
+      record.save! # no explicit transaction
+      expect(events.map { |event| event[:value] }).to eq(['From Cadastre'])
+
+      ActiveRecord::Base.transaction do
+        record.record_data_entries({ name: 'Renamed' }, cadastre)
+        record.save!
+        expect(events.size).to eq(1) # not committed yet
+      end
+      expect(events.map { |event| event[:value] }).to eq(['From Cadastre', 'Renamed'])
+
+      ActiveRecord::Base.transaction do
+        record.record_data_entries({ name: 'Renamed again' }, cadastre)
+        record.forge!
+        raise ActiveRecord::Rollback
+      end
+      expect(events.size).to eq(2)
+    end
+  end
+
   # The order of sources at each level, as a settings screen sets it, with LaForge choosing the numbers
   describe 'precedence orders' do
     before do

@@ -40,7 +40,7 @@ Key features:
 
 ### Upgrading from 0.0.1.alpha to 1.0
 
-1.0 requires Rails 7.0 or later.
+1.0 requires Rails 7.2 or later.
 
 1. Move precedence into the precedence rules table. The migration moves each source's `priority` and each entry's `priority` into precedence rules and drops both columns. Before changing anything, it checks that every source has its own priority, that entries for the same record, attribute and source agree, and that every entry with a priority belongs to an existing source. It is reversible (see [Precedence](#precedence)).
 
@@ -368,6 +368,20 @@ A source that is no longer used can be deactivated. From each record's next forg
     geocoder.update!(active: false)
     place.forge! # coordinates fall back to the next source, or stay as they are
   ```
+
+### Following changes
+
+Each data entry saved with a new or changed value, and each one destroyed, publishes `LaForge::DataEntry::CHANGED` (`'data_entry_changed.laforge'`), so an application can follow what sources say without reading every entry, such as to notice that an import changed the value an editor's entry replaced.
+
+  ```ruby
+    ActiveSupport::Notifications.subscribe(LaForge::DataEntry::CHANGED) do |*, payload|
+      payload # => { entry:, record_type:, record_id:, attribute_name:, source_id:, value_was:, value:, destroyed: }
+    end
+  ```
+
+The event fires once the write is committed, and not at all if the transaction rolls back, so a subscriber can enqueue a job, notify someone, or update another store without acting on a change that never happened. A write outside an explicit transaction is committed, and published, as it is saved. Each payload is taken when its write is made, so `value_was` is right when one transaction saves an entry more than once.
+
+Writes that skip callbacks publish nothing, such as rows removed by database cascades when a source is deleted.
 
 ### Counting across records
 
