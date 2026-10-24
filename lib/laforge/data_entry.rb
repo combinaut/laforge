@@ -16,6 +16,10 @@ module LaForge
 
     delegate :precedence, to: :source, prefix: true, allow_nil: true
 
+    # `recorded_at` is when a source said the entry's value, which recording the same value again leaves as it is.
+    # Recording through LaForge sets it, and an entry saved without one gets the time of the save.
+    before_save { self.recorded_at ||= Time.current }
+
     # CHANGED is the `ActiveSupport::Notifications` event published when an entry is created, its value changes, or it
     # is destroyed, so a host can follow what sources say without reading every entry (see `publish_change`). It is
     # published once the transaction commits, and not at all if it rolls back. Entries deleted with their record

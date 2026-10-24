@@ -7,23 +7,46 @@ module LaForge
     extend ActiveSupport::Concern
 
     # Declares the model's data entries, data sources and precedence rules, with these options:
+    # - associations: { name => options }, the has_many and has_one associations to track (see TrackedAssociation),
+    #   each with the options AssociationConfig takes
     # - attribute_groups: { name => [attributes] }, the model's attribute groups (see AttributeGroups)
-    def laforged(attribute_groups: {})
-      groups = LaForge::ActiveRecord.attribute_groups(self, attribute_groups)
+    def laforged(associations: {}, attribute_groups: {})
+      LaForge::ActiveRecord.assert_no_collisions!(self)
+      groups = LaForge::ActiveRecord.attribute_groups(self, attribute_groups, associations)
       include Model
 
       LaForge::ActiveRecord.declare_data_associations(self)
       LaForge::ActiveRecord.declare_scopes(self)
 
       laforge.attribute_groups = groups
+
+      configs = associations.to_h { |name, options| [name.to_s, AssociationConfig.new(self, name, **options)] }
+      configs.each_value { |config| TrackedAssociation.declare(self, config) }
+      laforge.associations = configs
+      after_save { laforge.write_pending_writes! }
+    end
+
+    # Raises when the model already has a method by a name `laforged` adds, naming each one. A method defined after
+    # `laforged` is not checked, so a model can wrap LaForge's and call super. Nothing is checked when the model already
+    # includes `Model`, as when `laforged` is declared again.
+    def self.assert_no_collisions!(model)
+      return if model.include?(Model)
+
+      instance = (Record::API + [:laforge]).select { |name| model.method_defined?(name) || model.private_method_defined?(name) }
+      klass = (Record::CLASS_API + [:laforge]).select { |name| model.respond_to?(name) }
+      return if instance.empty? && klass.empty?
+
+      names = instance.map { |name| "##{name}" } + klass.map { |name| ".#{name}" }
+      raise ArgumentError, "#{model.name} already defines #{names.join(', ')}, which would hide LaForge's of the same name. Rename #{model.name}'s " \
+                           "#{names.one? ? 'method' : 'methods'}, or, to wrap LaForge's and call super, define #{names.one? ? 'it' : 'them'} after `laforged`"
     end
 
     # Returns the attribute groups declared on a model as { group name => [attribute names] }, names as strings. Raises
     # unless:
     # - each group names at least two distinct attributes
     # - no group is named like an attribute of any group
-    # - no attribute is in two groups
-    def self.attribute_groups(model, groups)
+    # - no attribute is in two groups or is a tracked association
+    def self.attribute_groups(model, groups, associations)
       groups = groups.to_h { |name, attributes| [name.to_s, Array.wrap(attributes).map(&:to_s)] }
       seen = {}
       groups.each do |name, attributes|
@@ -32,6 +55,7 @@ module LaForge
 
         attributes.each do |attribute|
           raise ArgumentError, "#{model.name}##{attribute} is in attribute groups #{seen[attribute]} and #{name}; an attribute belongs to one group at most" if seen[attribute]
+          raise ArgumentError, "#{model.name}##{attribute} is a tracked association, which cannot be in an attribute group" if associations.key?(attribute) || associations.key?(attribute.to_sym)
 
           seen[attribute] = name
         end
@@ -44,7 +68,12 @@ module LaForge
 
     # Declares the model's associations to its data entries, data sources and precedence rules
     def self.declare_data_associations(model)
-      model.has_many :data_entries, as: :record, dependent: :delete_all, autosave: true, class_name: 'LaForge::DataEntry'
+      model.has_many :data_entries, as: :record, dependent: :delete_all, autosave: true, class_name: 'LaForge::DataEntry' do
+        # Returns the tombstones of the tracked association `name` (see Tombstone)
+        def tombstones(name)
+          proxy_association.owner.laforge.tombstones(name)
+        end
+      end
       model.has_many :data_sources, -> { distinct }, through: :data_entries, source: :source, class_name: 'LaForge::DataSource'
       model.has_many :precedence_rules, as: :record, dependent: :delete_all, autosave: true, class_name: 'LaForge::PrecedenceRule'
     end
@@ -89,7 +118,8 @@ module LaForge
         @laforge ||= self.class.laforge.new(self)
       end
 
-      # Also drops the record's `laforge`, so the next ranking reads the model-wide and global rules again
+      # Also drops the record's `laforge`, so its pending writes go and the next ranking reads the model-wide and global
+      # rules again
       def reload(*)
         @laforge = nil
         super
@@ -115,4 +145,5 @@ module LaForge
 
   class InvalidAttributeName < StandardError; end
   class InvalidValue < StandardError; end
+  class DuplicateMemberKey < StandardError; end
 end

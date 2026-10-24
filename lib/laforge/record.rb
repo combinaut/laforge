@@ -12,14 +12,21 @@ module LaForge
 
     # What `laforged` declared on the model:
     # - model: the laforged model
+    # - associations: { name => AssociationConfig } for its tracked associations
     # - attribute_groups: { group name => [attribute names] }
-    class_attribute :model, :attribute_groups, instance_writer: false, instance_predicate: false
+    class_attribute :model, :associations, :attribute_groups, instance_writer: false, instance_predicate: false
+    self.associations = {}
     self.attribute_groups = {}
 
     API = [Recording::API, Forging::API, Precedence::API, Inspection::API].flatten.uniq.freeze
-    CLASS_API = [Precedence::CLASS_API].flatten.uniq.freeze
+    CLASS_API = [Precedence::CLASS_API, Inspection::CLASS_API].flatten.uniq.freeze
 
     class << self
+      # Returns the AssociationConfig of the tracked association `name`
+      def association(name)
+        associations.fetch(name.to_s)
+      end
+
       def inspect
         model ? "#{model.name}.laforge" : super
       end

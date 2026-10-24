@@ -1,15 +1,16 @@
 module LaForge
-  # Used to record what sources say about a laforged record, as its data entries
+  # Used to record what sources say about a laforged record, as its data entries and its tracked associations' reports
   module Recording
     extend ActiveSupport::Concern
 
-    API = %i[record_data_entry record_data_entries remove_data_entries].freeze
+    API = %i[record_data_entry record_data_entries remove_data_entries withdraw_source].freeze
 
     # Record a single piece of information from a source.
     # Optionally pass `precedence` to set this record's precedence for the attribute and source, saved with the record.
     # Omitting it keeps an existing precedence, and passing nil removes it.
     # Pass a record or nil for a belongs_to association, which is recorded as its foreign key, and its type when
     # polymorphic.
+    # A tracked association's value is a complete report, as in the default mode of `record_data_entries`.
     # Raises for an attribute in an attribute group, whose attributes are recorded together with `record_data_entries`.
     def record_data_entry(attribute_name, value, source, precedence: NOT_GIVEN)
       self.class.assert_whole_groups!([attribute_name], where: "Recording #{record.class.name}##{attribute_name}")
@@ -17,12 +18,32 @@ module LaForge
     end
 
     # Record several pieces of information from the same source.
-    # `precedence:` covers everything the call records (see `record_data_entry`).
-    # The attributes of an attribute group are recorded together.
-    def record_data_entries(attributes_hash, source, precedence: NOT_GIVEN)
-      self.class.assert_whole_groups!(attributes_hash.keys, where: "Recording #{record.class.name}")
+    # `mode:` says what kind of report a tracked association's value is (see MemberList):
+    # - :complete (the default): a complete report, given as the list of members it includes
+    # - :partial: a partial report, given as the list of members it includes or as { include: [...], exclude: [...] }
+    # - :edit: changes to the source's report for the members named, given as a list of members to include or as
+    #   { include: [...], exclude: [...], forget: [...] }. The rest of the report is kept, and the members' nested lists
+    #   are edits too.
+    # A complete or partial report replaces the source's previous one.
+    # A member is a hash of its key and what the source says about it (see TrackedAssociation), or a saved record.
+    # Where members are keyed by primary key, a hash without an id is a new member.
+    # `precedence:` covers everything the call records, members' attributes included (see `record_data_entry`).
+    # The attributes of an attribute group are recorded together, on the record and on members alike.
+    def record_data_entries(attributes_hash, source, precedence: NOT_GIVEN, mode: :complete)
+      raise ArgumentError, "Unknown mode #{mode.inspect}; pass :complete, :partial or :edit" unless %i[complete partial edit].include?(mode)
+
+      edit = mode == :edit
+      self.class.assert_whole_groups!(attributes_hash.keys.reject { |attribute_name| associations.key?(attribute_name.to_s) }, where: "Recording #{record.class.name}")
       attributes_hash.each do |attribute_name, value|
-        record_attribute(attribute_name, value, source, precedence: precedence)
+        if edit && (config = associations[attribute_name.to_s])
+          TrackedAssociation.new(record, config).edit(value, source, precedence: precedence)
+        elsif (config = associations[attribute_name.to_s])
+          options = { precedence: precedence }
+          options[:partial] = true if mode == :partial
+          TrackedAssociation.new(record, config).record(value, source, **options)
+        else
+          record_attribute(attribute_name, value, source, precedence: precedence)
+        end
       end
     end
 
@@ -37,15 +58,33 @@ module LaForge
       end
     end
 
+    # Destroys the source's attribute entries on this record and withdraws every member its reports in tracked
+    # associations named, as when the source no longer reports the record. Saved immediately, without forging.
+    # Precedence rules for the source are kept.
+    def withdraw_source(source)
+      record.transaction do
+        filter_data_entries_in_memory(sources: source).each do |data_entry|
+          if (config = associations[data_entry.attribute_name])
+            data_entry.value = MemberList.new(data_entry.value).withdrawing_all(config)
+            data_entry.save! if data_entry.persisted?
+          else
+            record.data_entries.destroy(data_entry)
+          end
+        end
+      end
+    end
+
     # @api private
     # Records one attribute, without checking its group. A `belongs_to` is recorded as its reference columns (see
-    # `reference_columns`). Raises for an attribute with no setter, and for a value JSON cannot store.
+    # `reference_columns`). Raises for any other association LaForge does not track, an attribute with no setter, and a
+    # value JSON cannot store.
     def record_attribute(attribute_name, value, source, precedence: NOT_GIVEN)
       reflection = record.class.reflect_on_association(attribute_name)
       if reflection&.belongs_to?
         return reference_columns(reflection, value).each { |column, column_value| write_data_entry(column, column_value, source, precedence: precedence) }
       end
 
+      raise InvalidAttributeName, "#{record.class.name}##{attribute_name} is not a tracked association" if reflection
       raise InvalidAttributeName, "Cannot set #{attribute_name} on #{record.class.name}" unless record.respond_to?("#{attribute_name}=")
       raise InvalidValue, "Cannot record #{value.class} for #{record.class.name}##{attribute_name}; values are stored as JSON, so record a string, number, boolean, date, nil, or an array or hash of those" unless DataEntry.storable?(value)
 
@@ -53,12 +92,53 @@ module LaForge
     end
 
     # @api private
+    # Records what the source's report on the record's owner said about it at `recorded_at`, which the owner validated
+    # when recording the report. An attribute the record has a newer entry for from the same source is left out, so an
+    # older report does not undo it. With `edit`, nested lists are recorded as edits. `precedence` covers everything
+    # recorded, nested lists included. Returns whether anything was recorded.
+    def record_reported(attributes, source, recorded_at, edit: false, precedence: NOT_GIVEN)
+      newer = filter_data_entries_in_memory(sources: source).select { |entry| entry.recorded_at && entry.recorded_at > recorded_at }.map(&:attribute_name)
+      attributes = attributes.except(*newer)
+
+      attributes.each do |attribute_name, value|
+        if (config = associations[attribute_name]) && edit && config.collection?
+          TrackedAssociation.new(record, config).edit(value, source, precedence: precedence, recorded_at: recorded_at)
+        elsif config
+          TrackedAssociation.new(record, config).record(value, source, precedence: precedence, recorded_at: recorded_at)
+        else
+          write_data_entry(attribute_name, value, source, precedence: precedence, recorded_at: recorded_at)
+        end
+      end
+      attributes.any?
+    end
+
+    # @api private
+    # Withdraws the source from the record, a member of `owner`, in memory, as `owner`'s forge does when the source's
+    # report there excludes or has withdrawn it. The source's attribute entries are dropped, to be destroyed when
+    # `owner` is saved, and each of its reports in the record's tracked associations withdraws every member it named.
+    # Returns whether the source had any entry on the record not marked for destruction.
+    def withdraw(source_id, owner)
+      entries = filter_data_entries_in_memory(sources: source_id).reject(&:marked_for_destruction?)
+      entries.each do |data_entry|
+        if (config = associations[data_entry.attribute_name])
+          data_entry.value = MemberList.new(data_entry.value).withdrawing_all(config)
+        else
+          record.data_entries.target.delete(data_entry)
+          owner.laforge.pending_writes.delete_entry(data_entry) if data_entry.persisted?
+        end
+      end
+      entries.any?
+    end
+
+    # @api private
     # Writes the source's entry for the attribute in memory, and the precedence rule for the attribute, or its attribute
-    # group, when `precedence` is given.
-    def write_data_entry(attribute_name, value, source, precedence: NOT_GIVEN)
+    # group, when `precedence` is given. Recording onto an entry marked for destruction undoes the unsaved removal.
+    def write_data_entry(attribute_name, value, source, precedence: NOT_GIVEN, recorded_at: Time.current)
       data_entry = filter_data_entries_in_memory(attributes: attribute_name, sources: source).first
       data_entry ||= record.data_entries.build(attribute_name: attribute_name, source_id: DataSource.normalize_source_id(source))
+      LaForge::ActiveRecord.set_marked_for_destruction(data_entry, false)
       data_entry.value = value
+      data_entry.recorded_at = recorded_at if data_entry.new_record? || data_entry.will_save_change_to_value?
       write_precedence_rule(self.class.group_of(attribute_name) || attribute_name, source, precedence) unless precedence.equal?(NOT_GIVEN)
     end
 

@@ -129,6 +129,7 @@ describe 'ActiveRecordExtensions' do
 
       expect(ActiveRecordMockCopy.laforge.superclass).to equal(ActiveRecordMock.laforge)
       expect(ActiveRecordMockCopy.laforge.model).to eq(ActiveRecordMockCopy)
+      expect(ActiveRecordMockCopy.laforge.associations).to equal(ActiveRecordMock.laforge.associations)
       expect(ActiveRecordMockCopy.laforge.inspect).to eq("ActiveRecordMockCopy.laforge")
     end
 

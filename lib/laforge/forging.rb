@@ -1,9 +1,9 @@
 module LaForge
-  # Used to forge a laforged record's attributes from its data entries
+  # Used to forge a laforged record's attributes and tracked associations from its data entries
   module Forging
     extend ActiveSupport::Concern
 
-    API = %i[forge! forge forge_diff forge_attributes].freeze
+    API = %i[forge! forge forge_associations forge_diff forge_attributes].freeze
 
     # Assign attributes and save the record based on the data entries
     def forge!(**forge_options, &block)
@@ -14,9 +14,15 @@ module LaForge
       end
     end
 
-    # Assign attributes based on the data entries
+    # Assign attributes and tracked associations based on the data entries
     def forge(attributes: nil, sources: nil)
       record.attributes = forge_attributes(attributes: attributes, sources: sources)
+      forge_associations(associations: attributes)
+    end
+
+    def forge_associations(associations: nil)
+      names = associations ? Array.wrap(associations).map(&:to_s) : self.associations.keys
+      self.associations.slice(*names).each_value { |config| TrackedAssociation.new(record, config).forge }
     end
 
     # Returns a hash of the attribute changes between the saved record and the data entries
@@ -29,6 +35,12 @@ module LaForge
         diff[key] = [value, forge_attrs[key]] if forge_attrs[key] != value
       end
 
+      names = forge_options[:attributes] ? Array.wrap(forge_options[:attributes]).map(&:to_s) : associations.keys # limited as `forge` limits them
+      associations.slice(*names).each do |name, config|
+        association_diff = TrackedAssociation.new(record, config).diff
+        diff[name] = association_diff if association_diff
+      end
+
       return diff
     end
 
@@ -37,7 +49,8 @@ module LaForge
     # Optionally pass `sources` to limit data entries used in the calculation to only those from the given sources
     # Optionally pass `except_sources` to leave out the entries of the given sources, as when asking what would be
     # forged without one source's values
-    # An attribute in `attributes` brings in the rest of its group. The entries of inactive sources are left out.
+    # An attribute in `attributes` brings in the rest of its group. Tracked associations and the entries of inactive
+    # sources are left out.
     # Entries marked for destruction are left out, so each of their attributes takes the value of the next entry, and an
     # attribute with no other entry is left out of the hash.
     # An attribute of a group is nil when the source that supplies the group has no entry for it.
@@ -45,7 +58,7 @@ module LaForge
       reset_resolver # each forge reads the model-wide and global rules again (see PrecedenceCache)
       forged_attrs = {}
       attributes = self.class.with_groups(attributes) unless attributes.nil?
-      data_entries = forging_entries(attributes: attributes, sources: sources, except_sources: except_sources).reject { |data_entry| data_entry.marked_for_destruction? }
+      data_entries = forging_entries(attributes: attributes, sources: sources, except_sources: except_sources).reject { |data_entry| data_entry.marked_for_destruction? || associations.key?(data_entry.attribute_name) }
       winners = winning_entries(data_entries)
 
       # The hash's key order is the order `forge` calls the setters, which matters when one setter
@@ -62,6 +75,45 @@ module LaForge
       end
 
       return forged_attrs
+    end
+
+    # @api private
+    # Returns `forge_diff` as it would be once `reported` is recorded on the record, then restores the record's entries
+    # and rules. `reported` is what its owner's reports say about it, as
+    # [[source id, attributes, recorded_at, edit, precedence], ...].
+    def forge_diff_with(reported)
+      entries = record.data_entries.to_a
+      values = entries.to_h { |entry| [entry, [entry.value, entry.recorded_at, entry.marked_for_destruction?]] }
+      rules = record.precedence_rules.to_a # recording with a precedence builds or changes rules, which the owner's next save writes
+      precedences = rules.to_h { |rule| [rule, [rule.precedence, rule.marked_for_destruction?]] }
+      reported.each { |source_id, attributes, recorded_at, edit, precedence| record_reported(attributes, source_id, recorded_at, edit: edit, precedence: precedence) }
+      forge_diff
+    ensure
+      record.data_entries.target.replace(entries)
+      values.each { |entry, (value, recorded_at, marked)| entry.value = value; entry.recorded_at = recorded_at; LaForge::ActiveRecord.set_marked_for_destruction(entry, marked) }
+      record.precedence_rules.target.replace(rules)
+      precedences.each { |rule, (precedence, marked)| rule.precedence = precedence; LaForge::ActiveRecord.set_marked_for_destruction(rule, marked) }
+    end
+
+    # @api private
+    # Makes the record's pending writes, then drops them
+    def write_pending_writes!
+      pending_writes.write!
+      @pending_writes = nil
+    end
+
+    # @api private
+    # Returns the record's pending writes (see PendingWrites), which forges add to and its next save makes
+    def pending_writes
+      @pending_writes ||= PendingWrites.new(record)
+    end
+
+    # @api private
+    # Returns the association's entries in precedence order, each paired with its report (see MemberList). Inactive
+    # sources' entries are left out unless `inactive` is true.
+    def association_reports(config, inactive: false)
+      entries = inactive ? filter_data_entries_in_memory(attributes: config.name) : forging_entries(attributes: config.name)
+      by_precedence(entries).map { |data_entry| [data_entry, MemberList.new(data_entry.value, marked: data_entry.marked_for_destruction?)] }
     end
 
     # @api private

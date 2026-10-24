@@ -77,6 +77,13 @@ module LaForge
     end
 
     # @api private
+    # Whether one source's value for an attribute of the record outranks another's
+    def outranks?(attribute_name, source_id, other_source_id)
+      rank = ->(id) { resolver.rank(record, attribute_name, id) }
+      (rank.(source_id) <=> rank.(other_source_id)) == 1
+    end
+
+    # @api private
     # Returns the precedence resolver the record ranks by, kept until `reset_resolver`
     def resolver
       @resolver ||= PrecedenceRule::Resolver.new(record.class)
