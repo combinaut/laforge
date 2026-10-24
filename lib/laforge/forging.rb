@@ -35,12 +35,15 @@ module LaForge
     # Returns a hash of the attributes generated from the record's the data entries
     # Optionally pass `attributes` to limit data entries used in the calculation to only those for the given attributes
     # Optionally pass `sources` to limit data entries used in the calculation to only those from the given sources
+    # Optionally pass `except_sources` to leave out the entries of the given sources, as when asking what would be
+    # forged without one source's values
+    # The entries of inactive sources are left out.
     # Entries marked for destruction are left out, so each of their attributes takes the value of the next entry, and an
     # attribute with no other entry is left out of the hash.
-    def forge_attributes(attributes: nil, sources: nil)
+    def forge_attributes(attributes: nil, sources: nil, except_sources: nil)
       reset_resolver # each forge reads the model-wide and global rules again (see PrecedenceCache)
       forged_attrs = {}
-      data_entries = filter_data_entries_in_memory(attributes: attributes, sources: sources).reject { |data_entry| data_entry.marked_for_destruction? }
+      data_entries = forging_entries(attributes: attributes, sources: sources, except_sources: except_sources).reject { |data_entry| data_entry.marked_for_destruction? }
       winners = DataEntry.in_precedence_order(data_entries, record: record).uniq(&:attribute_name).index_by(&:attribute_name)
 
       # The hash's key order is the order `forge` calls the setters, which matters when one setter
@@ -55,6 +58,14 @@ module LaForge
       end
 
       return forged_attrs
+    end
+
+    # @api private
+    # Returns the entries matching the filters that forging reads, leaving out those of inactive sources and of
+    # `except_sources`
+    def forging_entries(attributes: nil, sources: nil, except_sources: nil)
+      left_out = DataSource.inactive_ids + DataSource.normalize_source_ids(except_sources)
+      filter_data_entries_in_memory(attributes: attributes, sources: sources).reject { |data_entry| left_out.include?(data_entry.source_id) }
     end
   end
 end

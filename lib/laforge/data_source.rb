@@ -5,11 +5,23 @@ module LaForge
     has_many :data_entries, class_name: 'LaForge::DataEntry'
     has_many :precedence_rules, class_name: 'LaForge::PrecedenceRule', foreign_key: :source_id, dependent: :delete_all
     after_destroy { PrecedenceCache.clear } # its rules are deleted without the callbacks that clear the cache
+    after_save { PrecedenceCache.clear if saved_change_to_active? }
+    after_rollback { PrecedenceCache.clear } # so no forge sees an undone change to `active`
     has_one :global_precedence_rule, -> { global }, class_name: 'LaForge::PrecedenceRule', foreign_key: :source_id, autosave: true, inverse_of: :source
 
     validates :name, presence: true, uniqueness: { case_sensitive: false }
     validates :precedence, presence: true, numericality: { only_integer: true, allow_nil: true }
     validate :precedence_is_unique
+
+    scope :active, -> { where(active: true) }
+    scope :inactive, -> { where(active: false) }
+
+    # Returns the ids of the inactive sources, through `PrecedenceCache`. Forging leaves out an inactive source's
+    # entries as if it had none. Its entries are kept and recording still writes them, so activating the source again
+    # and forging restores what it says.
+    def self.inactive_ids
+      PrecedenceCache.fetch(:inactive_sources) { inactive.ids }
+    end
 
     # Sources from the highest global precedence to the lowest, leaving out any source without one
     scope :by_precedence, -> { joins(:global_precedence_rule).order(PrecedenceRule.arel_table[:precedence].desc) }

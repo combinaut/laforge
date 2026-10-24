@@ -31,6 +31,7 @@ ActiveRecord::Schema.define(version: 0) do
 
   create_table :laforge_data_sources, force: true do |t|
     t.text :name
+    t.boolean :active, null: false, default: true
     t.timestamps null: false
   end
 

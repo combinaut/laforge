@@ -49,7 +49,15 @@ Key features:
     rails db:migrate
   ```
 
-2. Rename `priority` to `precedence` where you call LaForge. There are no aliases.
+2. Add the columns 1.0 adds to LaForge's tables. Each generator creates one migration.
+  - `laforge:active_sources` adds `active` to data sources, with every existing source active (see [Deactivating a source](#deactivating-a-source)).
+
+  ```bash
+    rails generate laforge:active_sources
+    rails db:migrate
+  ```
+
+3. Rename `priority` to `precedence` where you call LaForge. There are no aliases.
 
   | Before | After |
   |---|---|
@@ -58,7 +66,7 @@ Key features:
   | `record.update_attribute_source_priority` | `record.update_attribute_source_precedence`, which also works before the source has recorded the attribute |
   | `DataEntry#priority_with_fallback`, `DataEntry#source_priority` | `DataEntry#effective_precedence`, `DataEntry#source_precedence` |
 
-3. Record `nil` where a removal was meant to blank an attribute. Removing entries inside `forge!` used to blank the removed attributes for that forge, and the next forge then fell back to lower sources. A forge now leaves removed entries out, so each attribute falls back to the next source straight away, or keeps its value where no other source has one (see [When a source stops reporting a record](#when-a-source-stops-reporting-a-record)). Where a source should blank what it supplied, record `nil` for those attributes instead.
+4. Record `nil` where a removal was meant to blank an attribute. Removing entries inside `forge!` used to blank the removed attributes for that forge, and the next forge then fell back to lower sources. A forge now leaves removed entries out, so each attribute falls back to the next source straight away, or keeps its value where no other source has one (see [When a source stops reporting a record](#when-a-source-stops-reporting-a-record)). Where a source should blank what it supplied, record `nil` for those attributes instead.
 
   ```ruby
     # Before
@@ -298,6 +306,18 @@ Whether another source still has entries on the record tells whether anything el
 
     # An attribute's entries, winning entry first
     place.data_entries.includes(:source).select { |entry| entry.attribute_name == 'name' }.sort_by(&:effective_precedence).reverse
+
+    # What would be forged without a source, such as the import value an edit replaced
+    place.forge_attributes(attributes: :name, except_sources: map_editor)
+  ```
+
+### Deactivating a source
+
+A source that is no longer used can be deactivated. From each record's next forge, its entries are left out as if it had none, so attributes fall back to the next source, or keep their value where no other source has one. Nothing changes until a record is forged, and its entries are kept. Recording still works, and activating it again restores what it says at the next forge.
+
+  ```ruby
+    geocoder.update!(active: false)
+    place.forge! # coordinates fall back to the next source, or stay as they are
   ```
 
 ### Pitfalls

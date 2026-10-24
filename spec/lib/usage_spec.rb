@@ -572,6 +572,70 @@ describe 'Usage' do
     end
   end
 
+  # A source the host stops using. Its values stop counting from each record's next forge, and its entries are kept.
+  describe 'an inactive source' do
+    before do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.record_data_entries({ name: 'From Map Editor', count: 9 }, map_editor)
+      record.forge!
+    end
+
+    it "falls back to the next source, and keeps a value no other source has, once the record is forged again" do
+      record.update!(active: false)
+      record.record_data_entries({ active: true }, map_editor) # an attribute only the map editor reports
+      record.forge!
+      map_editor.update!(active: false)
+
+      expect(record.reload).to have_attributes(name: 'From Map Editor', count: 9, active: true) # nothing changes until the next forge
+      record.forge!
+      expect(record.reload).to have_attributes(name: 'From Cadastre', count: 5, active: true)
+    end
+
+    it 'keeps its entries and still records, so activating it again restores what it says' do
+      map_editor.update!(active: false)
+      record.reload.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor)
+      record.forge!
+      expect(record.reload.name).to eq('From Cadastre')
+
+      map_editor.update!(active: true)
+      record.forge!
+      expect(record.reload.name).to eq('Renamed in the Map Editor')
+    end
+
+    it 'is seen as active again inside a precedence cache once deactivating it rolls back' do
+      LaForge.with_precedence_cache do
+        ActiveRecord::Base.transaction do
+          map_editor.update!(active: false)
+          record.reload.forge
+          raise ActiveRecord::Rollback
+        end
+        record.reload.forge
+        expect(record.name).to eq('From Map Editor')
+      end
+    end
+
+    it 'is seen by a forge inside a precedence cache once it changes there' do
+      LaForge.with_precedence_cache do
+        record.reload.forge!
+        map_editor.update!(active: false)
+        record.reload.forge!
+      end
+
+      expect(record.reload.name).to eq('From Cadastre')
+    end
+  end
+
+  # What would be forged without one source, such as the import value an edit replaced
+  describe 'forging without a source' do
+    it 'leaves out the given sources' do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.record_data_entries({ name: 'From Map Editor' }, map_editor)
+
+      expect(record.forge_attributes(attributes: :name, except_sources: map_editor)).to eq('name' => 'From Cadastre')
+      expect(record.forge_attributes(except_sources: [map_editor, cadastre])).to eq({})
+    end
+  end
+
   describe 'data sources' do
     it 'requires a unique precedence and a case-insensitively unique name' do
       expect(LaForge::DataSource.new(name: 'Other', precedence: business_directory.precedence)).not_to be_valid

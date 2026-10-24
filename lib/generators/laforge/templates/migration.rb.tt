@@ -2,6 +2,7 @@ class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version
   def change
     create_table :laforge_data_sources do |t|
       t.text :name
+      t.boolean :active, null: false, default: true
       t.timestamps null: false
     end
 
