@@ -3,8 +3,8 @@ module LaForge
   module Precedence
     extend ActiveSupport::Concern
 
-    API = %i[update_attribute_source_precedence source_precedences].freeze
-    CLASS_API = %i[update_attribute_source_precedence update_source_precedence source_precedences].freeze
+    API = %i[update_attribute_source_precedence update_precedence_order precedence_order source_precedences].freeze
+    CLASS_API = %i[update_attribute_source_precedence update_source_precedence update_precedence_order precedence_order source_precedences].freeze
 
     # Set the precedence of a source for one attribute of this record, whether or not the source has recorded it yet.
     # Saved immediately on a persisted record, otherwise with the record. Pass nil to remove it.
@@ -13,6 +13,22 @@ module LaForge
       return unless record.persisted? && rule
 
       rule.marked_for_destruction? ? record.precedence_rules.destroy(rule) : rule.save!
+    end
+
+    # Set the precedence order of this record's own rules for one attribute. It replaces the record's other rules for
+    # the attribute, so nil or [] removes them. Saved with the record.
+    def update_precedence_order(attribute, sources)
+      source_ids = DataSource.normalize_source_ids(sources)
+      record.precedence_rules.select { |rule| rule.attribute_name == attribute.to_s && !source_ids.include?(rule.source_id) }.each { |rule| write_precedence_rule(attribute, rule.source_id, nil) }
+      source_ids.each_with_index { |source_id, index| write_precedence_rule(attribute, source_id, source_ids.size - index) }
+    end
+
+    # Returns the active sources in the order they rank for one attribute of this record, as [{ source:, level: }]. The
+    # level is the most specific one the source has a rule at, :record, :attribute, :model or :global, or nil when it
+    # has none.
+    def precedence_order(attribute)
+      resolver = PrecedenceRule::Resolver.new(record.class) # not the last forge's, so rules changed since then count
+      LaForge::ActiveRecord.order_by_rank(DataSource.active.to_a, %i[record attribute model global]) { |source| resolver.rank(record, attribute, source.id) }
     end
 
     # Returns `{ attribute_name => { source => precedence } }` for this record's own rules, unsaved ones included and
@@ -51,9 +67,9 @@ module LaForge
     end
 
     # @api private
-    # Returns the global precedence of the source with `source_id`, or `-Float::INFINITY` when it has none
-    def global_precedence(source_id)
-      resolver.global_precedence(source_id)
+    # Returns the rank of `data_entry`'s source for its attribute on the record (see `PrecedenceRule::Resolver#rank`)
+    def rank_of(data_entry)
+      resolver.rank(record, data_entry.attribute_name, data_entry.source_id)
     end
 
     # @api private
@@ -78,6 +94,26 @@ module LaForge
       # it.
       def update_source_precedence(source, precedence)
         update_model_precedence_rule(PrecedenceRule::ANY_ATTRIBUTE, source, precedence)
+      end
+
+      # Set and save the precedence order of this model's model-wide rules for one attribute, or for every attribute when
+      # `attribute` is nil. It replaces every rule at that level, so nil or [] removes them.
+      def update_precedence_order(sources, attribute: nil)
+        attribute_name = attribute ? attribute.to_s : PrecedenceRule::ANY_ATTRIBUTE
+        source_ids = DataSource.normalize_source_ids(sources)
+
+        model.transaction do
+          PrecedenceRule.for_model(model).where(attribute_name: attribute_name).where.not(source_id: source_ids).destroy_all
+          source_ids.each_with_index { |source_id, index| update_model_precedence_rule(attribute_name, source_id, source_ids.size - index) }
+        end
+      end
+
+      # Returns the active sources in the order they rank for one attribute, or for every attribute when `attribute` is
+      # nil, on a record of this model with no rules of its own, as [{ source:, level: }]. The level is the most specific
+      # one the source has a rule at, :attribute, :model or :global, or nil when it has none.
+      def precedence_order(attribute: nil)
+        resolver = PrecedenceRule::Resolver.new(model)
+        LaForge::ActiveRecord.order_by_rank(DataSource.active.to_a, %i[record attribute model global]) { |source| resolver.rank(nil, attribute.to_s, source.id) }
       end
 
       # Returns `{ attribute_name => { source => precedence } }` for this model's model-wide rules. A rule for every

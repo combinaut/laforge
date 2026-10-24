@@ -47,9 +47,9 @@ module LaForge
       winners = DataEntry.in_precedence_order(data_entries, record: record).uniq(&:attribute_name).index_by(&:attribute_name)
 
       # The hash's key order is the order `forge` calls the setters, which matters when one setter
-      # resets another attribute. It is by each attribute's highest effective precedence, highest first.
-      # Attributes that share one come in no defined order.
-      assignment_order = data_entries.sort_by { |data_entry| precedence_of(data_entry) }.reverse.map(&:attribute_name).uniq
+      # resets another attribute. It is by the rank of each attribute's highest-ranked entry, highest first.
+      # Attributes whose entries rank equally come in no defined order.
+      assignment_order = data_entries.sort_by { |data_entry| rank_of(data_entry) }.reverse.map(&:attribute_name).uniq
 
       assignment_order.each do |attribute_name|
         next unless record.respond_to?("#{attribute_name}=")

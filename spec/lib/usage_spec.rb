@@ -463,6 +463,7 @@ describe 'Usage' do
     end
 
     it 'ranks by precedence rules changed since the last forge once the record is reloaded' do
+      record.update_attribute_source_precedence(:name, business_directory, nil)
       record.forge
       ActiveRecordMock.update_attribute_source_precedence(:name, cadastre, 200)
       record.reload
@@ -633,6 +634,93 @@ describe 'Usage' do
 
       expect(record.forge_attributes(attributes: :name, except_sources: map_editor)).to eq('name' => 'From Cadastre')
       expect(record.forge_attributes(except_sources: [map_editor, cadastre])).to eq({})
+    end
+  end
+
+  # The order of sources at each level, as a settings screen sets it, with LaForge choosing the numbers
+  describe 'precedence orders' do
+    before do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.record_data_entries({ name: 'From Business Directory', count: 7 }, business_directory)
+      record.record_data_entries({ name: 'From Map Editor', count: 9 }, map_editor)
+      record.save!
+    end
+
+    it "sets one record's order for an attribute, saved with the record, ranking the sources it leaves out below" do
+      record.update_precedence_order(:name, [cadastre])
+      expect(record.precedence_rules.select(&:new_record?).size).to eq(1)
+      record.forge!
+
+      expect(record.reload).to have_attributes(name: 'From Cadastre', count: 9)
+      expect(record.precedence_order(:name).map { |item| [item[:source], item[:level]] }.first(3))
+        .to eq([[cadastre, :record], [map_editor, :global], [business_directory, :global]])
+    end
+
+    it 'replaces the order at that level, and removes it given nil' do
+      record.update_precedence_order(:name, [cadastre, business_directory])
+      record.update_precedence_order(:name, [business_directory])
+      record.forge!
+      expect(record.reload.name).to eq('From Business Directory')
+      expect(record.source_precedences).to eq('name' => { business_directory => 1 })
+
+      record.update_precedence_order(:name, nil)
+      record.forge!
+      expect(record.reload.name).to eq('From Map Editor')
+    end
+
+    it 'ranks a source added later below an order set at a more specific level, whatever its global precedence' do
+      record.update_precedence_order(:name, [business_directory, cadastre])
+      record.forge!
+      geocoder = LaForge::DataSource.create!(name: 'Geocoder', precedence: 1000)
+      record.reload.record_data_entries({ name: 'From Geocoder' }, geocoder)
+      record.forge!
+
+      expect(record.reload.name).to eq('From Business Directory')
+    end
+
+    it 'sets the order for one attribute, or every attribute, on every record of a model' do
+      ActiveRecordMock.update_precedence_order([cadastre], attribute: :count)
+      ActiveRecordMock.update_precedence_order([business_directory, cadastre])
+      record.reload.forge
+
+      expect(record).to have_attributes(name: 'From Business Directory', count: 5)
+      expect(ActiveRecordMock.precedence_order(attribute: :count).map { |item| [item[:source], item[:level]] }.first(3))
+        .to eq([[cadastre, :attribute], [business_directory, :model], [map_editor, :global]])
+    end
+
+    it 'lists the model-wide order as the model level when asked for no attribute' do
+      ActiveRecordMock.update_source_precedence(cadastre, 5)
+
+      expect(ActiveRecordMock.precedence_order.first).to eq(source: cadastre, level: :model)
+      expect(ActiveRecordMock.precedence_order(attribute: :name).first).to eq(source: cadastre, level: :model)
+    end
+
+    it 'lists a source with no global precedence last, with no level' do
+      # As for a source whose rules were deleted with it, while its entries, which have no foreign key, stayed
+      LaForge::PrecedenceRule.global.where(source_id: cadastre.id).delete_all
+
+      expect(ActiveRecordMock.precedence_order.last).to include(source: cadastre, level: nil)
+    ensure
+      cadastre.update!(precedence: 31) # specs in other files expect every source to have a global precedence
+    end
+
+    it 'sets the global order, renumbering every source and keeping those it leaves out below, in their order' do
+      ActiveRecord::Base.transaction do
+        LaForge.update_precedence_order([cadastre, map_editor])
+
+        ranked = LaForge::DataSource.by_precedence.to_a
+        expect(ranked.first(3)).to eq([cadastre, map_editor, business_directory])
+        expect(ranked.map(&:precedence)).to eq((1..ranked.size).to_a.reverse)
+        expect(record.reload.forge_attributes).to include('name' => 'From Cadastre')
+        raise ActiveRecord::Rollback # leave the other specs' sources as they were
+      end
+    end
+
+    it 'lists the records that have an order of their own' do
+      record.update_precedence_order(:name, [cadastre])
+      record.save!
+
+      expect(LaForge::PrecedenceRule.for_records(ActiveRecordMock).pluck(:record_id, :attribute_name)).to eq([[record.id, 'name']])
     end
   end
 

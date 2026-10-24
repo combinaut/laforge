@@ -246,10 +246,19 @@ describe 'ActiveRecordExtensions' do
       expect { record.forge }.to change { record.name }.from("Post").to("Higher Precedence")
     end
 
-    it 'breaks a tie in effective precedence by the higher global precedence' do
+    it 'ranks a source with a rule on the record above one without, whatever the numbers' do
       data_entry.update(attribute_name: "name", value: "From the lower source")
       preceding_data_entry.update(attribute_name: "name", value: "From the higher source")
       record.update_attribute_source_precedence(:name, data_source, 2)
+
+      expect { record.forge }.to change { record.name }.from("Post").to("From the lower source")
+    end
+
+    it 'breaks a tie at one level by the higher global precedence' do
+      data_entry.update(attribute_name: "name", value: "From the lower source")
+      preceding_data_entry.update(attribute_name: "name", value: "From the higher source")
+      record.update_attribute_source_precedence(:name, data_source, 2)
+      record.update_attribute_source_precedence(:name, preceding_data_source, 2)
 
       expect { record.forge }.to change { record.name }.from("Post").to("From the higher source")
     end
@@ -265,6 +274,7 @@ describe 'ActiveRecordExtensions' do
       data_entry.update(attribute_name: "name", value: "From the lower source")
       preceding_data_entry.update(attribute_name: "name", value: "From the higher source")
       record.update_attribute_source_precedence(:name, data_source, 2)
+      record.update_attribute_source_precedence(:name, preceding_data_source, 2)
       entries = record.data_entries.to_a
 
       expect([entries, entries.reverse].map { |list| LaForge::DataEntry.in_precedence_order(list, record: record).first.value })

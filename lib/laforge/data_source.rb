@@ -75,4 +75,20 @@ module LaForge
       errors.add(:precedence, :taken) if taken.exists?
     end
   end
+
+  # Set and save the global precedence order, highest first. Sources not listed rank below the listed ones in their
+  # current order, and sources without a global precedence come last. Every source's global precedence is renumbered,
+  # from the number of sources down to 1.
+  def self.update_precedence_order(sources)
+    listed = DataSource.normalize_source_ids(sources)
+    order = listed + DataSource.by_precedence.ids.reject { |id| listed.include?(id) }
+    order += DataSource.where.not(id: order).ids # sources without a global precedence yet
+
+    DataSource.transaction do
+      rules = order.map { |id| PrecedenceRule.global.find_or_initialize_by(source_id: id) }
+      clear = [PrecedenceRule.global.maximum(:precedence) || 0, order.size].max + 1
+      rules.each_with_index { |rule, index| rule.update!(precedence: clear + index) } # clear of the unique index first
+      rules.each_with_index { |rule, index| rule.update!(precedence: order.size - index) }
+    end
+  end
 end

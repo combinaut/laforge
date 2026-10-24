@@ -38,6 +38,18 @@ module LaForge
       record.instance_variable_set(:@marked_for_destruction, marked)
     end
 
+    # Returns `sources` highest-ranked first, as [{ source:, level: }], given each source's rank from the block (see
+    # `PrecedenceRule::Resolver#rank`). `levels` names the rank's positions, and a source's level is the first one it
+    # has a rule at. Sources that rank equally come in id order. A source with no rule at any level, such as one without
+    # a global precedence, comes last with a nil level.
+    def self.order_by_rank(sources, levels)
+      ranked = sources.map { |source| [source, yield(source)] }.sort_by { |source, rank| rank.map(&:-@) + [source.id] }
+      ranked.map do |source, rank|
+        level = rank.index { |precedence| precedence != -Float::INFINITY }
+        { source: source, level: level && levels[level] }
+      end
+    end
+
     # Used to give a laforged model its `laforge` and to delegate LaForge's methods to it
     module Model
       extend ActiveSupport::Concern

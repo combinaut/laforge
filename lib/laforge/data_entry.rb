@@ -12,20 +12,20 @@ module LaForge
 
     delegate :precedence, to: :source, prefix: true, allow_nil: true
 
-    # Returns this entry's effective precedence on its record
+    # Returns this entry's effective precedence on its record. Entries rank by level first (see PrecedenceRule), so this
+    # number alone does not order two entries. `in_precedence_order` does.
     def effective_precedence
       record.laforge.precedence_of(self)
     end
 
-    # Returns one record's `entries` in the order `forge` ranks them, so the first entry for each attribute is the one
-    # it applies. `record` defaults to the first entry's record. The order is by, highest first:
-    #   - the entry's effective precedence on `record`
-    #   - its source's global precedence, a source without one ranking below every other
+    # Returns one record's `entries` in the order `forge` ranks them, highest first. `record` defaults to the first
+    # entry's record. The order is by:
+    #   - the rank of the entry's source for its attribute on `record` (see PrecedenceRule)
     #   - recency, which is the id for saved entries. An unsaved entry is newer than every saved one, and among unsaved
     #     entries a later position in `entries` is newer.
     def self.in_precedence_order(entries, record: entries.first&.record)
       entries.each_with_index.sort_by do |entry, position|
-        [-record.laforge.precedence_of(entry), -record.laforge.global_precedence(entry.source_id), -(entry.id || Float::INFINITY), -position]
+        record.laforge.rank_of(entry).map(&:-@) + [-(entry.id || Float::INFINITY), -position]
       end.map(&:first)
     end
 
