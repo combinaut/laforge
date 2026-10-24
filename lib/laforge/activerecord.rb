@@ -114,4 +114,5 @@ module LaForge
   end
 
   class InvalidAttributeName < StandardError; end
+  class InvalidValue < StandardError; end
 end

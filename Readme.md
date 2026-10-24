@@ -79,6 +79,8 @@ Key features:
     place.forge!
   ```
 
+6. Record only values JSON can hold. Recording anything other than a string, symbol, number, boolean, date, time, `nil`, or an array or hash of those raises `LaForge::InvalidValue`, rather than storing whatever JSON makes of it. A saved record given for a `belongs_to` association is stored as its foreign key (see [belongs_to](#belongs_to)).
+
 ## Usage
 
 1. Create some sources and rank them, giving higher precedence to sources whose attributes should override those
@@ -243,7 +245,7 @@ To report what an import would change before saving, use `forge_attributes` (the
     place.forge_diff # => { 'land_use' => ['Commercial', 'Mixed Use'] }
   ```
 
-Recorded attributes do not have to be columns. Any attribute with a setter can be recorded and forged, such as a `phone_number=` that maintains a phone number association.
+Recorded attributes do not have to be columns. Any attribute with a setter can be recorded and forged, such as a `phone_number=` that maintains a phone number association. Values are stored as JSON, so record strings, numbers, booleans, dates, `nil`, or arrays and hashes of those; anything else, such as an object, raises `LaForge::InvalidValue` rather than coming back as something different.
 
 ### Editor overrides
 
@@ -397,3 +399,13 @@ It costs every write, so add it only where those counts are needed.
 
 - Recorded entries are unsaved until the record is saved. Reloading the record before saving discards them, along with any forged values.
 - `forge` applies every stored entry, so stopping recording an attribute is not enough to stop forging it; its existing entries must be deleted.
+
+## Associations
+
+### belongs_to
+
+A `belongs_to` association needs no declaration. Record the associated record, or `nil`, and it is stored as the foreign key (and the type, when polymorphic), resolved across sources like any attribute. The associated record must already be saved.
+
+  ```ruby
+    tenant.record_data_entries({ occupiable: place }, business_directory) # stored as occupiable_id and occupiable_type
+  ```

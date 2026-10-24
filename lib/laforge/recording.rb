@@ -8,6 +8,8 @@ module LaForge
     # Record a single piece of information from a source.
     # Optionally pass `precedence` to set this record's precedence for the attribute and source, saved with the record.
     # Omitting it keeps an existing precedence, and passing nil removes it.
+    # Pass a record or nil for a belongs_to association, which is recorded as its foreign key, and its type when
+    # polymorphic.
     # Raises for an attribute in an attribute group, whose attributes are recorded together with `record_data_entries`.
     def record_data_entry(attribute_name, value, source, precedence: NOT_GIVEN)
       self.class.assert_whole_groups!([attribute_name], where: "Recording #{record.class.name}##{attribute_name}")
@@ -36,9 +38,16 @@ module LaForge
     end
 
     # @api private
-    # Records one attribute, without checking its group. Raises for an attribute with no setter.
+    # Records one attribute, without checking its group. A `belongs_to` is recorded as its reference columns (see
+    # `reference_columns`). Raises for an attribute with no setter, and for a value JSON cannot store.
     def record_attribute(attribute_name, value, source, precedence: NOT_GIVEN)
+      reflection = record.class.reflect_on_association(attribute_name)
+      if reflection&.belongs_to?
+        return reference_columns(reflection, value).each { |column, column_value| write_data_entry(column, column_value, source, precedence: precedence) }
+      end
+
       raise InvalidAttributeName, "Cannot set #{attribute_name} on #{record.class.name}" unless record.respond_to?("#{attribute_name}=")
+      raise InvalidValue, "Cannot record #{value.class} for #{record.class.name}##{attribute_name}; values are stored as JSON, so record a string, number, boolean, date, nil, or an array or hash of those" unless DataEntry.storable?(value)
 
       write_data_entry(attribute_name, value, source, precedence: precedence)
     end
@@ -70,6 +79,26 @@ module LaForge
       end
 
       return list
+    end
+
+    private
+
+    # Returns { foreign_key => key, foreign_type => class name } for `target`, a record or nil, assigned to the
+    # belongs_to `reflection`, foreign_type only when it is polymorphic. The key is the column `primary_key:` names, or
+    # the target's primary key. Raises unless `target` is nil or a saved record of a class the association takes.
+    def reference_columns(reflection, target)
+      unless target.nil? || target.is_a?(::ActiveRecord::Base)
+        raise InvalidValue, "#{record.class.name}##{reflection.name} must be recorded as a record or nil, not #{target.class}"
+      end
+      raise InvalidValue, "Cannot record an unsaved #{target.class.name} for #{record.class.name}##{reflection.name}" if target&.new_record?
+      if target && !reflection.polymorphic? && !target.is_a?(reflection.klass)
+        raise InvalidValue, "#{record.class.name}##{reflection.name} must be a #{reflection.klass.name}, not #{target.class.name}"
+      end
+
+      primary_key = reflection.polymorphic? ? target && reflection.association_primary_key(target.class) : reflection.association_primary_key
+      columns = { reflection.foreign_key.to_s => target && target[primary_key] }
+      columns[reflection.foreign_type.to_s] = target&.class&.polymorphic_name if reflection.polymorphic?
+      columns
     end
   end
 end

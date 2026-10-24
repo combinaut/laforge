@@ -24,6 +24,9 @@ ActiveRecord::Schema.define(version: 0) do
     t.string :name
     t.boolean :active
     t.integer :count
+    t.bigint :parent_id
+    t.string :subject_type
+    t.bigint :subject_id
     t.timestamps null: false
   end
 
@@ -57,5 +60,8 @@ ActiveRecord::Schema.define(version: 0) do
 end
 
 class ActiveRecordMock < ActiveRecord::Base
+  belongs_to :parent, class_name: 'ActiveRecordMock', optional: true
+  belongs_to :subject, polymorphic: true, optional: true
+
   laforged
 end

@@ -2,6 +2,10 @@ module LaForge
   class DataEntry < ActiveRecord::Base
     self.table_name = "laforge_data_entries"
 
+    # STORABLE_TYPES are the classes of value an entry can store. Values are stored as JSON, so symbols, dates and times
+    # read back as strings. `storable?` also accepts arrays and hashes of them.
+    STORABLE_TYPES = [NilClass, TrueClass, FalseClass, String, Symbol, Numeric, Date, Time, ActiveSupport::TimeWithZone].freeze
+
     belongs_to :record, polymorphic: true
     belongs_to :source, class_name: 'LaForge::DataSource'
 
@@ -48,6 +52,17 @@ module LaForge
       entries.each_with_index.sort_by do |entry, position|
         record.laforge.rank_of(entry).map(&:-@) + [-(entry.id || Float::INFINITY), -position]
       end.map(&:first)
+    end
+
+    # Returns whether `value` can be stored, which takes an instance of one of `STORABLE_TYPES`, or an array or hash of
+    # storable values whose keys are strings or symbols
+    def self.storable?(value)
+      case value
+      when *STORABLE_TYPES then true
+      when Array then value.all? { |item| storable?(item) }
+      when Hash then value.all? { |key, item| (key.is_a?(String) || key.is_a?(Symbol)) && storable?(item) }
+      else false
+      end
     end
 
     def source_id=(source)
