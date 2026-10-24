@@ -3,7 +3,7 @@ module LaForge
   module Inspection
     extend ActiveSupport::Concern
 
-    API = %i[data_source? data_source_names source_values member_sources tombstones].freeze
+    API = %i[data_source? data_source_names source_values member_sources tombstones membership_expiries].freeze
     CLASS_API = %i[source_values].freeze
 
     # Whether the source has entries on this record
@@ -31,6 +31,12 @@ module LaForge
     # Returns the tombstones of the tracked association `name` (see Tombstone)
     def tombstones(name)
       TrackedAssociation.new(record, self.class.association(name)).tombstones
+    end
+
+    # Returns the expiries in the reports of the tracked association `name` (see MemberList). The `expiring` scope (see
+    # Expiring) finds only rows, so it misses these.
+    def membership_expiries(name)
+      TrackedAssociation.new(record, self.class.association(name)).membership_expiries
     end
 
     class_methods do

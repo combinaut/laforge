@@ -1,0 +1,29 @@
+# Adds expires_at and expires_on_source_id to laforge_data_entries and laforge_precedence_rules, so a change to one
+# record can expire. Nothing expires until a change is made with expires_at: or expires_on:.
+#
+# Also gives created_at and updated_at on LaForge's tables sub-second precision, as an expiry on a source compares a
+# recording's time with when the change was saved. This rewrites the columns, which can take a while on a large
+# laforge_data_entries table.
+class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
+  TABLES = %i[laforge_data_sources laforge_data_entries laforge_precedence_rules].freeze
+  EXPIRING_TABLES = %i[laforge_data_entries laforge_precedence_rules].freeze
+
+  def up
+    EXPIRING_TABLES.each do |table|
+      add_column table, :expires_at, :datetime, precision: 6
+      add_index table, :expires_at
+      add_reference table, :expires_on_source, foreign_key: { to_table: :laforge_data_sources, on_delete: :nullify }
+    end
+    TABLES.each { |table| %i[created_at updated_at].each { |column| change_column table, column, :datetime, precision: 6, null: false } }
+  end
+
+  # Restores whole-second timestamps, as older versions of Rails created them
+  def down
+    TABLES.each { |table| %i[created_at updated_at].each { |column| change_column table, column, :datetime, precision: nil, null: false } }
+    EXPIRING_TABLES.each do |table|
+      remove_reference table, :expires_on_source, foreign_key: { to_table: :laforge_data_sources }
+      remove_index table, :expires_at
+      remove_column table, :expires_at
+    end
+  end
+end

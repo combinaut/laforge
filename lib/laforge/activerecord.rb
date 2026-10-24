@@ -1,8 +1,4 @@
 module LaForge
-  # `NOT_GIVEN` stands for an omitted `precedence:` argument, so omitting it can be told from passing nil, which removes
-  # the precedence.
-  NOT_GIVEN = Object.new.freeze
-
   module ActiveRecord
     extend ActiveSupport::Concern
 
@@ -72,6 +68,11 @@ module LaForge
         # Returns the tombstones of the tracked association `name` (see Tombstone)
         def tombstones(name)
           proxy_association.owner.laforge.tombstones(name)
+        end
+
+        # Returns the expiries in the reports of the tracked association `name` (see Inspection#membership_expiries)
+        def membership_expiries(name)
+          proxy_association.owner.laforge.membership_expiries(name)
         end
       end
       model.has_many :data_sources, -> { distinct }, through: :data_entries, source: :source, class_name: 'LaForge::DataSource'
