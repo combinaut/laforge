@@ -383,7 +383,7 @@ In a tracked association, an inactive source's reports are left out too. Members
 
 ### Expiring a change
 
-A change to one record can be made to expire, so the record goes back to what its sources say without it and no one has to remember to undo it. A recorded value, a record's precedence order, a single precedence, or several of them in one save, take `expires_at:` (a time) or `expires_on:` (a source, so the change expires the next time that source records the same attribute or association for the record, whatever it reports, which sets `expires_at` to when it was recorded). Only a recording made after the change counts, so a report the source made earlier, kept pending on an owner until the owner is forged, does not end it.
+A change to one record can be made to expire, so the record goes back to what its sources say without it and no one has to remember to undo it. A recorded value, a record's precedence order, a single precedence, or several of them in one save, take `expires_at:` (a time) or `expires_on:` (a source, so the change expires the next time that source records the same attribute or association for the record, whatever it reports, which sets `expires_at` to when it was recorded).
 
   ```ruby
     # Rename the place until the next cadastre import
@@ -394,9 +394,8 @@ A change to one record can be made to expire, so the record goes back to what it
     place.forge!
   ```
 
-- **Recording the value again, or setting the order again, replaces its expiry**; leaving the options out clears it. A precedence passed with `precedence:` while recording takes the same expiry. A value can't expire on the source recording it, since that source's next recording replaces it anyway.
+- **Recording the value again, or setting the order again, replaces its expiry**; leaving the options out clears it. A precedence passed with `precedence:` while recording takes the same expiry.
 - **An expired row is left out of forging, and kept.** Like an inactive source's entries, an expired value no longer counts, so the attribute falls back to the next source, or keeps its value where no other source has one; an expired order no longer ranks, so the next level's order applies. The rows stay readable, so a settings screen can show when a change expired, and removing them is up to the application. `source_precedences` lists only the rules that still count.
-- **An expired association report counts as if it did not exist**, exactly as an inactive source's report, and nothing is removed because of the expiry itself. A report recorded whole, as a complete or partial list, expires as a whole with the call's expiry. A member only it named becomes a row no report names, which is left alone; a member another report excludes, such as a higher-ranked complete list that leaves it out, is removed once the expired report no longer keeps it in. An expired exclusion or tombstone stops keeping its member out, so a source can bring the member back. What the report says about members is recorded on them with the same expiry, so their attributes fall back with it.
 - **An expiry on part of an attribute group applies to the whole group.**
 - **Only changes to one record expire.** Model-wide and global rules are configuration; giving one an expiry raises.
 
@@ -410,6 +409,16 @@ A change to one record can be made to expire, so the record goes back to what it
 
 LaForge publishes nothing when a change expires by time, and the forge writes nothing because of an expiry, since an expiry is not new data. The event that recorded the change carries its expiry, so the application's change tracking can note when it will expire and decide what to do (see [Following changes](#following-changes)). An expiry on a source that fires sets `expires_at` on the waiting entry, which is published when the entry is saved.
 
+#### Which recordings end an expiry on a source
+
+Only a recording made after the change counts, so a report the source made earlier, kept pending on an owner until the owner is forged, does not end it. A value can't expire on the source recording it, since that source's next recording replaces it anyway.
+
+A change kept pending on an owner is made when its report was, so a recording the source makes after that report and before the owner is forged ends it, whether that is a later report forged with it or a recording on the member itself. A recording on the member shows only in the entries it changed, so one that changed nothing there does not end the change. If the source is deleted before the owner is forged, the change keeps only its expiry at a time, when it has one.
+
+#### Expiring an association report
+
+An expired association report counts as if it did not exist, exactly as an inactive source's report, and nothing is removed because of the expiry itself. A report recorded whole, as a complete or partial list, expires as a whole with the call's expiry. A member only it named becomes a row no report names, which is left alone; a member another report excludes, such as a higher-ranked complete list that leaves it out, is removed once the expired report no longer keeps it in. An expired exclusion or tombstone stops keeping its member out, so a source can bring the member back. What the report says about members is recorded on them with the same expiry, so their attributes fall back with it.
+
 #### Expiring one member
 
 In an edit (`mode: :edit`), the expiry is given to each member the edit includes or excludes, not to the source's report, so editing one member leaves the expiries earlier edits gave the others as they are. Editing the same member again replaces its expiry, and leaving the options out makes it permanent.
@@ -422,8 +431,8 @@ In an edit (`mode: :edit`), the expiry is given to each member the edit includes
 
 - **An expired inclusion or exclusion is no opinion on that member**, as an expired report is no opinion on any. An expired inclusion no longer keeps the member in, so a complete list from another source that leaves it out removes it, and an expired exclusion or its tombstone stops keeping the member out. A complete list's own inclusion that has expired excludes the member, as the list no longer lists it. What an expired inclusion said about the member is not recorded on it.
 - **An expiry on a source** fires the next time that source records the association for the record, under the same rule as for a row, so only a recording made after the edit counts.
-- **A complete list can't exclude a member with an expiry**: excluding from it drops the member from the list. Record the source's list with `mode: :partial`, or exclude from another source.
-- **Edits don't change the report's own expiry**: a report recorded whole with an expiry expires as a whole, edits since included. An edit over a report whose expiry has passed starts a new report, which does not expire. A `precedence:` passed with an edit takes its expiry, as everything else it sets does.
+- **A complete list can't exclude a member with an expiry.** Excluding from it drops the member from the list. Record the source's list with `mode: :partial`, or exclude from another source.
+- **Edits don't change the report's own expiry.** A report recorded whole with an expiry expires as a whole, edits since included. An edit over a report whose expiry has passed starts a new report, which does not expire. A `precedence:` passed with an edit takes its expiry, as everything else it sets does.
 - **The `expiring` scopes can't see these expiries**, which are kept in the report's value. `place.data_entries.membership_expiries(:tenants)` lists them, as `[{ source_id:, key:, expires_at:, expires_on_source_id: }]`.
 
 #### Settings for part of a payload
@@ -441,8 +450,8 @@ In an edit (`mode: :edit`), the expiry is given to each member the edit includes
   ```
 
 - **Precedence ranks a source for a whole association**, so a wrapper's precedence on a member applies to the member's own attributes, and the association's precedence comes from the call, or from a wrapper around the association's whole value. A wrapper with a precedence of its own around a member with no attributes, such as an exclusion or a saved record, raises.
-- **An attribute group takes one set of settings**: wrapping some of its attributes but not the others, or wrapping them differently, raises.
-- **Settings go where something can carry them**: wrapping part of an attribute's value, part of a member's key, a list of members rather than each member, or a member to forget raises, saying where. `record_data_entry` takes a wrapped value too.
+- **An attribute group takes one set of settings.** Wrapping some of its attributes but not the others, or wrapping them differently, raises.
+- **Settings go where something can carry them.** Wrapping part of an attribute's value, part of a member's key, a list of members rather than each member, or a member to forget raises, saying where, in nested lists too, before anything is saved. `record_data_entry` takes a wrapped value too.
 
 ### Following changes
 
