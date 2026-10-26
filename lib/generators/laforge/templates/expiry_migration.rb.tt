@@ -1,0 +1,38 @@
+# Adds expires_at and expires_on_source_id to laforge_data_entries and laforge_precedence_rules, so a change to one
+# record can expire. Nothing expires until a change is made with expires_at: or expires_on:.
+#
+# Also adds recorded_at to laforge_precedence_rules, the time a rule's precedence or expiry was last set, which an
+# expiry on a source compares a recording's time with, as it does a data entry's. Existing rules get their updated_at,
+# the closest time they have.
+#
+# Also gives created_at and updated_at on LaForge's tables sub-second precision. An expiry on a source compares a
+# recording's recorded_at with the change's recorded_at, on entries and rules alike, so times within the same second
+# must stay apart, and the timestamps keep the same precision. This rewrites the columns, which can take a while on a
+# large laforge_data_entries table.
+class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
+  TABLES = %i[laforge_data_sources laforge_data_entries laforge_precedence_rules].freeze
+  EXPIRING_TABLES = %i[laforge_data_entries laforge_precedence_rules].freeze
+
+  def up
+    EXPIRING_TABLES.each do |table|
+      add_column table, :expires_at, :datetime, precision: 6
+      add_index table, :expires_at
+      add_reference table, :expires_on_source, foreign_key: { to_table: :laforge_data_sources, on_delete: :nullify }
+    end
+    add_column :laforge_precedence_rules, :recorded_at, :datetime, precision: 6
+    execute "UPDATE laforge_precedence_rules SET recorded_at = updated_at"
+    change_column_null :laforge_precedence_rules, :recorded_at, false
+    TABLES.each { |table| %i[created_at updated_at].each { |column| change_column table, column, :datetime, precision: 6, null: false } }
+  end
+
+  # Restores whole-second timestamps, as older versions of Rails created them
+  def down
+    TABLES.each { |table| %i[created_at updated_at].each { |column| change_column table, column, :datetime, precision: nil, null: false } }
+    remove_column :laforge_precedence_rules, :recorded_at
+    EXPIRING_TABLES.each do |table|
+      remove_reference table, :expires_on_source, foreign_key: { to_table: :laforge_data_sources }
+      remove_index table, :expires_at
+      remove_column table, :expires_at
+    end
+  end
+end
