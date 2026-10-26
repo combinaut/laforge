@@ -210,7 +210,7 @@ describe 'ActiveRecordExtensions' do
 
       expect(record.name).to eq("Ranked")
     ensure
-      data_source.update!(precedence: 1) # other examples expect every source to have a global precedence
+      data_source.reload.update!(precedence: 1) # other examples expect every source to have a global precedence; reloaded, as its cached rule was deleted
       LaForge::DataEntry.where(source_id: negative_source.id).delete_all
       negative_source.destroy! # frees its precedence for other examples
     end
