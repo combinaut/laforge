@@ -6,6 +6,8 @@ By [Combinaut](http://www.combinaut.com).
 management of which data sources a record is assembled from, and to perform the actual data assembly in order to output
 a record.
 
+LaForge records each attribute's value as a data entry from every source that provides it. Sources can provide overlapping attributes, so LaForge combines these by using the value from the source with the highest precedence for that attribute.
+
 Key features:
 
 - Allows published content to be edited without those changes immediately being seen by visitors
@@ -91,8 +93,9 @@ Key features:
 
 ## Usage
 
-1. Create some sources and rank them, giving higher precedence to sources whose attributes should override those
-   same attributes from lower precedence sources. Each source needs a unique name and a unique precedence.
+1. Create some sources and rank them by precedence. A source with a higher precedence outranks one with a lower, so an
+   attribute takes its value from the highest-ranked source that provides it. Each source needs a unique name and a unique
+   precedence.
 
   ```ruby
     source1 = LaForge::DataSource.create(name: 'Encyclopedia Britannica', precedence: 2)
