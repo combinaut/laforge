@@ -1,6 +1,7 @@
 module LaForge
-  # Used to translate the shapes a Rails form submits into the edits `record_data_entries(..., mode: :edit)` takes, at
-  # every level, so a controller can record its permitted params as they are:
+  # `Payload` is used to translate the shapes a Rails form submits into the edits
+  # `record_data_entries(..., mode: :edit)` takes, at every level, so a controller can record its permitted params as
+  # they are:
   #
   # - `tenants_attributes`, an array or a hash keyed by index of member hashes, as `accepts_nested_attributes_for`
   #   takes, becomes `tenants: { include: [...], exclude: [...] }`. A hash with a truthy `_destroy` excludes the member

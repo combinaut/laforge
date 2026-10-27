@@ -129,7 +129,7 @@ module AssociationCapabilities
 
       has_many :parcel_links, dependent: :destroy
       # Leaves out computed links, which another process derives from parcel geometry, so forging never touches them
-      has_many :reported_parcel_links,
+      has_many :provided_parcel_links,
                -> { where.not(parcel_link_type_id: ParcelLinkType.where(key: 'computed').select(:id)) },
                class_name: 'ParcelLink'
 
@@ -140,9 +140,9 @@ module AssociationCapabilities
 
       laforged associations: {
         place_categories: {},          # key derived from the reflection, `category_id`
-        reported_parcel_links: {},     # key derived, `parcel_id` and `parcel_link_type_id`
-        # Tenants are keyed by primary key. An excluded tenant is destroyed, and recognised by its name when a source
-        # reports it again.
+        provided_parcel_links: {},     # key derived, `parcel_id` and `parcel_link_type_id`
+        # Tenants are keyed by primary key. An excluded tenant is destroyed, and recognized by its name when a source
+        # lists it again.
         tenants: { tombstone_matcher: ->(tenant, tombstones) { tombstones.find { |tombstone| tombstone.name == tenant.name } } },
         marker: {}                      # a has_one with no key, as there is only ever one
       }

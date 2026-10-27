@@ -2,9 +2,9 @@ require 'spec_helper'
 
 # Association assignment as importers drive it, end to end across several import runs.
 #
-# Each run records everything the source currently says about a record, whole association lists included, then forges.
-# A tenant's attributes, reported in the place's list, are recorded on the tenant itself. An orphan sweep withdraws a
-# source from a record it no longer reports, without forging, and closes the record only when no other source has
+# Each run records everything the source currently says about a record, whole member lists included, then forges. A
+# tenant's attributes, provided in the place's member list, are recorded on the tenant itself. An orphan sweep withdraws
+# a source from a record it no longer provides, without forging, and closes the record only when no other source has
 # entries on it.
 #
 # Sources, lowest to highest precedence: cadastre, business directory, business registry, and the map editor, which
@@ -62,7 +62,7 @@ describe 'Association assignment by importers' do
   end
   def tenants_of(record) = record.reload.tenants.order(:external_id).pluck(:external_id, :name, :unit)
 
-  describe 'a single importer reporting a category list each run' do
+  describe "a single importer recording a place's categories each run" do
     it 'adds, removes, re-adds and reorders categories as the list changes from run to run' do
       import(place, cadastre, place_categories: categories(cafe, bakery))
       expect(categories_of(place)).to eq([cafe, bakery])
@@ -85,7 +85,7 @@ describe 'Association assignment by importers' do
       expect(place.reload.place_categories.find_by!(category: cafe).id).to eq(cafe_row.id)
     end
 
-    it 'clears every category when the source reports none' do
+    it 'clears every category when the source lists none' do
       import(place, cadastre, place_categories: categories(cafe, bakery))
       import(place.reload, cadastre, place_categories: [])
 
@@ -94,7 +94,7 @@ describe 'Association assignment by importers' do
     end
   end
 
-  describe 'two importers reporting categories for the same place' do
+  describe 'two importers listing categories for the same place' do
     before do
       import(place, cadastre, place_categories: categories(cafe, bakery, bookstore))
       import(place.reload, business_directory, place_categories: categories(cafe, florist))
@@ -106,7 +106,7 @@ describe 'Association assignment by importers' do
       expect(categories_of(place)).to eq([cafe, florist])
     end
 
-    it "falls back to the lower importer's list on the next forge after the higher one stops reporting the place" do
+    it "falls back to the lower importer's member list on the next forge after the higher one stops providing the place" do
       sweep(place.reload, business_directory)
       expect(categories_of(place)).to eq([cafe, florist]) # the sweep does not forge
 
@@ -159,10 +159,10 @@ describe 'Association assignment by importers' do
     let!(:computed_row) { place.parcel_links.create!(parcel: lot_14, parcel_link_type: computed) }
 
     it 'adds, updates in place and removes parcel links without touching computed ones' do
-      import(place.reload, cadastre, reported_parcel_links: [parcel_link(lot_12, occupies, external_id: 'E-1'), parcel_link(lot_14, leases)])
+      import(place.reload, cadastre, provided_parcel_links: [parcel_link(lot_12, occupies, external_id: 'E-1'), parcel_link(lot_14, leases)])
       occupies_row = place.parcel_links.find_by!(parcel: lot_12, parcel_link_type: occupies)
 
-      import(place.reload, cadastre, reported_parcel_links: [parcel_link(lot_12, occupies, external_id: 'E-2', active: false)])
+      import(place.reload, cadastre, provided_parcel_links: [parcel_link(lot_12, occupies, external_id: 'E-2', active: false)])
 
       expect(parcel_links_of(place)).to eq([[lot_14, computed, true, nil], [lot_12, occupies, false, 'E-2']])
       expect(place.parcel_links.find_by!(parcel: lot_12, parcel_link_type: occupies).id).to eq(occupies_row.id)
@@ -170,23 +170,23 @@ describe 'Association assignment by importers' do
     end
 
     it 'replaces the row when only the link type changes, since the type is part of the identity' do
-      import(place.reload, cadastre, reported_parcel_links: [parcel_link(lot_12, occupies, external_id: 'E-1')])
-      import(place.reload, cadastre, reported_parcel_links: [parcel_link(lot_12, leases, external_id: 'E-1')])
+      import(place.reload, cadastre, provided_parcel_links: [parcel_link(lot_12, occupies, external_id: 'E-1')])
+      import(place.reload, cadastre, provided_parcel_links: [parcel_link(lot_12, leases, external_id: 'E-1')])
 
       expect(parcel_links_of(place)).to eq([[lot_14, computed, true, nil], [lot_12, leases, true, 'E-1']])
     end
 
-    it "keeps a map editor's attribute on a parcel link the importer keeps reporting" do
-      import(place.reload, cadastre, reported_parcel_links: [parcel_link(lot_12, occupies, active: true)])
-      import(place.reload, map_editor, reported_parcel_links: [parcel_link(lot_12, occupies, active: false)])
-      import(place.reload, cadastre, reported_parcel_links: [parcel_link(lot_12, occupies, active: true, external_id: 'E-3')])
+    it "keeps a map editor's attribute on a parcel link the importer keeps listing" do
+      import(place.reload, cadastre, provided_parcel_links: [parcel_link(lot_12, occupies, active: true)])
+      import(place.reload, map_editor, provided_parcel_links: [parcel_link(lot_12, occupies, active: false)])
+      import(place.reload, cadastre, provided_parcel_links: [parcel_link(lot_12, occupies, active: true, external_id: 'E-3')])
 
       expect(parcel_links_of(place).last).to eq([lot_12, occupies, false, 'E-3'])
     end
   end
 
   describe 'tenants listed by a business directory and enriched by a business registry' do
-    # Records on the tenant as the business registry does, giving the registration number precedence 100 so that it
+    # Records values from the business registry on the tenant, giving the registration number precedence 100 so that it
     # outranks every other source
     def register(tenant, registration_number, **fields)
       tenant.record_data_entries({ registration_number: registration_number }, business_registry, precedence: 100)
@@ -208,7 +208,7 @@ describe 'Association assignment by importers' do
       expect(t1.reload).to have_attributes(registration_number: 'R-10', name: 'Harbor Café', unit: '2B')
     end
 
-    it "clears the registration number and restores the importer's unit once the business registry stops reporting the business" do
+    it "clears the registration number and restores the importer's unit once the business registry stops providing the business" do
       register(t1, 'R-10', unit: '3C')
 
       # Blanks the registration number and lets the unit fall back to the importer's
@@ -230,7 +230,7 @@ describe 'Association assignment by importers' do
       expect(t1.reload.status).to eq('open')
     end
 
-    it 'removes a tenant, including the registration number the business registry recorded on it, when the business directory drops it' do
+    it 'removes a tenant, including its registration number from the business registry, when the business directory drops it' do
       register(t1, 'R-10')
 
       import(place.reload, business_directory, tenants: [tenant('T-2', unit: '1A')])
@@ -259,7 +259,7 @@ describe 'Association assignment by importers' do
   end
 
   describe 'a nightly import that names the tenants it created before by id' do
-    it 'keeps the same tenants, and what other sources recorded on them, from night to night' do
+    it "keeps the same tenants, and other sources' entries on them, from night to night" do
       import(place, business_directory, tenants: [tenant('T-1', unit: '1A'), tenant('T-2', unit: '2A')])
       corner_cafe, harbor_books = %w[T-1 T-2].map { |external_id| Tenant.find_by!(external_id: external_id) }
       corner_cafe.forge! { corner_cafe.record_data_entries({ unit: '1B' }, map_editor) }
@@ -286,7 +286,7 @@ describe 'Association assignment by importers' do
       place.forge!
     end
 
-    it 'destroys the tenant and keeps it out of later imports that report it again as new, while new tenants still arrive' do
+    it 'destroys the tenant and keeps it out of later imports that list it again as new, while new tenants still arrive' do
       expect(tenants_of(place).map(&:first)).to eq(%w[T-1]) # noted: destroyed per `dependent: :destroy`
       expect(place.reload.data_entries.tombstones(:tenants).map { |tombstone| [tombstone.source, tombstone.attributes['name']] }).to eq([[map_editor, 'Tenant T-2']])
 
@@ -376,7 +376,7 @@ describe 'Association assignment by importers' do
     end
   end
 
-  describe 'an importer that reports only the tenants it knows about' do
+  describe 'an importer that lists only the tenants it knows about' do
     before do
       import(place, business_directory, tenants: [tenant('T-1')])
       place.reload.record_data_entries({ tenants: [tenant('T-9', unit: '9Z')] }, business_registry, mode: :partial)
@@ -415,15 +415,15 @@ describe 'Association assignment by importers' do
     end
   end
 
-  describe 'a dry run that reports changes before applying them (change tracking)' do
-    it 'reports the categories and parcel links an import would add, remove and change' do
-      import(place, cadastre, place_categories: categories(cafe, bakery), reported_parcel_links: [parcel_link(lot_12, occupies)])
+  describe 'a dry run that shows changes before applying them (change tracking)' do
+    it 'shows the categories and parcel links an import would add, remove and change' do
+      import(place, cadastre, place_categories: categories(cafe, bakery), provided_parcel_links: [parcel_link(lot_12, occupies)])
 
-      place.reload.record_data_entries({ place_categories: categories(cafe, bookstore), reported_parcel_links: [parcel_link(lot_12, occupies, external_id: 'E-1')] }, cadastre)
+      place.reload.record_data_entries({ place_categories: categories(cafe, bookstore), provided_parcel_links: [parcel_link(lot_12, occupies, external_id: 'E-1')] }, cadastre)
       diff = place.forge_diff
 
       expect(diff['place_categories']).to include(added: [{ 'category_id' => bookstore.id }], removed: [{ 'category_id' => bakery.id }])
-      expect(diff['reported_parcel_links'][:changed]).to eq([{ 'parcel_id' => lot_12.id, 'parcel_link_type_id' => occupies.id, 'external_id' => [nil, 'E-1'] }])
+      expect(diff['provided_parcel_links'][:changed]).to eq([{ 'parcel_id' => lot_12.id, 'parcel_link_type_id' => occupies.id, 'external_id' => [nil, 'E-1'] }])
       expect(categories_of(place)).to eq([cafe, bakery])
     end
   end

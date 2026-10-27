@@ -62,7 +62,7 @@ describe 'Usage' do
       expect(record.name).to eq('From Map Editor')
     end
 
-    it 'reports the winning value of every recorded attribute, so changes can be tracked before saving' do
+    it 'returns the winning value of every recorded attribute, so changes can be tracked before saving' do
       record.record_data_entries({ name: 'From Cadastre', active: false }, cadastre)
       record.record_data_entries({ name: 'From Business Directory' }, business_directory)
 
@@ -192,7 +192,7 @@ describe 'Usage' do
       expect(record.data_entries.sole).to have_attributes(attribute_name: 'name', value: 'Approved', source_id: map_editor.id)
     end
 
-    it 'updates the existing entry when the same source records the attribute again' do
+    it 'updates the existing entry when a value from the same source is recorded for the attribute again' do
       record.record_data_entries({ name: 'First' }, map_editor)
       record.save!
       record.reload.record_data_entries({ name: 'Second' }, map_editor)
@@ -223,7 +223,7 @@ describe 'Usage' do
       expect(record.reload.name).to eq('From Business Directory')
     end
 
-    it 'keeps the custom precedence when the same source records the attribute again without one' do
+    it 'keeps the custom precedence when a value from the same source is recorded for the attribute again without one' do
       record.record_data_entries({ name: 'From Map Editor' }, map_editor)
       record.record_data_entries({ name: 'From Business Directory' }, business_directory, precedence: 100)
       record.forge!
@@ -245,7 +245,7 @@ describe 'Usage' do
       expect(record.name).to eq('From Cadastre')
     end
 
-    it 'can be set before the source has recorded the attribute, and applies once it does' do
+    it 'can be set before the source has an entry for the attribute, and applies once it has one' do
       record.update_attribute_source_precedence(:name, cadastre, 100)
       record.record_data_entries({ name: 'From Map Editor' }, map_editor)
       record.forge!
@@ -381,14 +381,14 @@ describe 'Usage' do
     end
   end
 
-  describe 'a source that stops reporting a record' do
+  describe 'a source that stops providing a record' do
     before do
       record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
       record.record_data_entries({ name: 'From Business Directory', count: 7, active: false }, business_directory)
       record.forge!
     end
 
-    it 'blanks the attributes the source was supplying by recording nil, even where a lower source has a value' do
+    it 'blanks the attributes the source was providing by recording nil, even where a lower source has a value' do
       record.record_data_entries({ name: nil, count: nil }, business_directory)
       record.forge!
 
@@ -450,7 +450,7 @@ describe 'Usage' do
       expect(still_claimed?(record, cadastre.name, [])).to be(true)
     end
 
-    it 'ignores sources that only supply attribute values' do
+    it 'ignores sources that only provide attribute values' do
       expect(still_claimed?(record, cadastre.name, ['Geocoder'])).to be(false)
       expect(record.data_entries.reload.map(&:source)).to eq([geocoder])
     end
@@ -579,7 +579,7 @@ describe 'Usage' do
       expect(counted.reload.subject).to eq(parent)
     end
 
-    it 'clears the association when the winning source records nil' do
+    it 'clears the association when the winning source provides nil' do
       record.record_data_entries({ parent: parent }, cadastre)
       record.record_data_entries({ parent: nil }, business_directory)
       record.forge!
@@ -673,9 +673,9 @@ describe 'Usage' do
       expect(grouped.reload).to have_attributes(name: 'From Map Editor', count: nil)
     end
 
-    it 'raises when a source records part of a group, naming what is missing' do
+    it 'raises when a source provides part of a group, naming what is missing' do
       expect { grouped.record_data_entries({ name: 'From Cadastre' }, cadastre) }
-        .to raise_error(ArgumentError, /name, count are attribute group listing, which a source records together \(missing: count\)/)
+        .to raise_error(ArgumentError, /name, count are attribute group listing, which a source provides together \(missing: count\)/)
       expect { grouped.record_data_entry(:count, 5, cadastre) }.to raise_error(ArgumentError, /missing: name/)
     end
 
@@ -730,7 +730,7 @@ describe 'Usage' do
 
     it "falls back to the next source, and keeps a value no other source has, once the record is forged again" do
       record.update!(active: false)
-      record.record_data_entries({ active: true }, map_editor) # an attribute only the map editor reports
+      record.record_data_entries({ active: true }, map_editor) # an attribute only the map editor provides
       record.forge!
       map_editor.update!(active: false)
 
@@ -955,7 +955,7 @@ describe 'Usage' do
       end
     end
 
-    it 'expires a value the next time the source it expires on records the attribute, whatever that source reports' do
+    it 'expires a value the next time the attribute is recorded from the source it expires on, whatever that source provides' do
       record.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor, expires_on: cadastre)
       record.forge!
       record.reload.record_data_entries({ count: 6 }, cadastre) # another attribute
@@ -1107,7 +1107,7 @@ describe 'Usage' do
 
     it 'raises for an expiry it cannot apply, saying what to pass' do
       expect { record.record_data_entries({ name: 'Renamed' }, map_editor, expires_at: '2030-01-01') }.to raise_error(ArgumentError, /expires_at: must be a time, such as 2.weeks.from_now, not "2030-01-01"/)
-      expect { record.record_data_entries({ name: 'Renamed' }, map_editor, expires_on: map_editor) }.to raise_error(ArgumentError, /expires_on: names the source recording.*Pass the source whose next report should end the change/)
+      expect { record.record_data_entries({ name: 'Renamed' }, map_editor, expires_on: map_editor) }.to raise_error(ArgumentError, /expires_on: names the source these values come from.*Pass another source, whose next values should end the change/)
       expect { record.update_precedence_order(:name, [], expires_at: 1.week.from_now) }.to raise_error(ArgumentError, /update_precedence_order\(:name\) with no sources removes it, so there is nothing to expire/)
       expect { record.update_attribute_source_precedence(:name, cadastre, nil, expires_on: map_editor) }.to raise_error(ArgumentError, /with a nil precedence removes it/)
       expect { LaForge::PrecedenceRule.create!(record_type: 'ActiveRecordMock', attribute_name: 'name', source: cadastre, precedence: 1, expires_at: 1.week.from_now) }

@@ -1,8 +1,8 @@
 module LaForge
-  # Used to record, forge and rank one laforged record, reached through `record.laforge`. Each laforged model has its
-  # own subclass, reached through `Model.laforge`, whose class methods act on the model. The model delegates `API` and
-  # `CLASS_API` to them, so `place.forge!` is `place.laforge.forge!`. The methods marked `@api private` are the
-  # low-level ones LaForge's own objects call.
+  # `Record` is used to record, forge and rank one laforged record, reached through `record.laforge`. Each laforged
+  # model has its own subclass, reached through `Model.laforge`, whose class methods act on the model. The model
+  # delegates `API` and `CLASS_API` to them, so `place.forge!` is `place.laforge.forge!`. The methods marked
+  # `@api private` are the low-level ones LaForge's own objects call.
   class Record
     include AttributeGroups
     include Recording

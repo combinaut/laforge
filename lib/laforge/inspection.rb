@@ -1,5 +1,5 @@
 module LaForge
-  # Used to find where a laforged record's values and tracked associations' members came from
+  # `Inspection` is used to find where a laforged record's values and tracked associations' members came from
   module Inspection
     extend ActiveSupport::Concern
 
@@ -34,8 +34,8 @@ module LaForge
       TrackedAssociation.new(record, self.class.association(name)).tombstones
     end
 
-    # Returns the expiries in the reports of the tracked association `name` (see MemberList). The `expiring` scope (see
-    # Expiring) finds only rows, so it misses these.
+    # Returns the expiries in the member lists of the tracked association `name` (see MemberList). The `expiring` scope
+    # (see Expiring) finds only rows, so it misses these.
     def membership_expiries(name)
       TrackedAssociation.new(record, self.class.association(name)).membership_expiries
     end

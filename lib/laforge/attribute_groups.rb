@@ -1,8 +1,8 @@
 module LaForge
-  # Used to read and check a laforged model's attribute groups. An attribute group is a set of attributes that come from
-  # one source together, such as the lines of a postal address, declared with `laforged attribute_groups:`. Sources
-  # record a group's attributes together, precedence rules are set on the group, and forging takes every attribute of
-  # the group from the highest-ranked source with an entry for any of them.
+  # `AttributeGroups` is used to read and check a laforged model's attribute groups. An attribute group is a set of
+  # attributes that come from one source together, such as the lines of a postal address, declared with
+  # `laforged attribute_groups:`. Sources provide a group's attributes together, precedence rules are set on the group,
+  # and forging takes every attribute of the group from the highest-ranked source with an entry for any of them.
   module AttributeGroups
     extend ActiveSupport::Concern
 
@@ -30,7 +30,7 @@ module LaForge
           given = attributes & attribute_names
           next if given.empty? || given.size == attributes.size
 
-          raise ArgumentError, "#{where}: #{attributes.join(', ')} are attribute group #{group}, which a source records together (missing: #{(attributes - given).join(', ')}). " \
+          raise ArgumentError, "#{where}: #{attributes.join(', ')} are attribute group #{group}, which a source provides together (missing: #{(attributes - given).join(', ')}). " \
                                'Pass nil for a value the source does not have'
         end
       end

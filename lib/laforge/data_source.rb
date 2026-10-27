@@ -1,4 +1,5 @@
 module LaForge
+  # `DataSource` is a source of values, such as an importer or an editor, ranked against the others by precedence
   class DataSource < ActiveRecord::Base
     self.table_name = "laforge_data_sources"
 
