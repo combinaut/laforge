@@ -1,20 +1,21 @@
 module LaForge
-  # The configuration of a tracked association, derived from its reflection wherever it can be. A has_one is tracked as
-  # a list of at most one member.
+  # `AssociationConfig` is the configuration of a tracked association, derived from its reflection wherever it can be. A
+  # has_one is tracked as a member list of at most one member.
   #
   # A member is named by its key, which is the first of these that applies:
   # - the columns given with `key:`
   # - the foreign keys of the records a join row references, with the type column of a polymorphic one
   # - the member's primary key, for a has_many
-  # A has_one with none of these has no key, so every source reports the same single member.
+  # A has_one with none of these has no key, so every source lists the same single member.
   #
-  # Where members are keyed by primary key, a member a source names without one is a new member. Reports name it by a
-  # placeholder key, `{ 'new' => token }`, until the owner is saved after the forge that builds it, and by its id after.
+  # Where members are keyed by primary key, a member a source names without one is a new member. Member lists name it by
+  # a placeholder key, `{ 'new' => token }`, until the owner is saved after the forge that builds it, and by its id
+  # after.
   #
-  # A member keyed by primary key that a partial report excludes is removed like any other, and every report then names
-  # it by a tombstone key, `{ 'tombstone' => token }` (see Tombstone). `tombstone_matcher:` is a callable given a member
-  # a source reports and the tombstones' records, which returns the record that member is, or nil. Only a has_many keyed
-  # by primary key takes one.
+  # A member keyed by primary key that a partial list excludes is removed like any other, and every member list then
+  # names it by a tombstone key, `{ 'tombstone' => token }` (see Tombstone). `tombstone_matcher:` is a callable given a
+  # member a source lists and the tombstones' records, which returns the record that member is, or nil. Only a has_many
+  # keyed by primary key takes one.
   #
   # Member order is written to `order_column:` when given, or else to the integer column the association scope orders
   # by, unless it identifies the member or its owner. `order_column: false` writes none.
@@ -57,7 +58,7 @@ module LaForge
     end
 
     # Returns the owner's members by key, without the rows missing a key value, which LaForge leaves alone. Raises
-    # `DuplicateMemberKey` when several rows share a key, since a report naming that key could mean any of them.
+    # `DuplicateMemberKey` when several rows share a key, since a member list naming that key could mean any of them.
     def identified_members_of(owner)
       members = members_of(owner).reject { |record| blank_key?(record_key(record)) }.group_by { |record| record_key(record) }
       duplicated = members.select { |_, records| records.size > 1 }
@@ -144,7 +145,7 @@ module LaForge
     end
 
     # Raises when `members` include a member keyed by primary key and the association has no `tombstone_matcher:`. An
-    # excluded member is removed, and only the matcher can recognise it when a source reports it again.
+    # excluded member is removed, and only the matcher can recognize it when a source lists it again.
     def assert_excludable!(owner, members)
       return unless primary_keyed? && !tombstone_matcher
 
@@ -152,8 +153,8 @@ module LaForge
       return if ids.empty?
 
       raise ArgumentError, "Cannot exclude #{klass.name} #{ids.join(', ')} from #{owner_class.name} #{owner.id.inspect}'s #{name}: excluding it removes it per `dependent:`, " \
-                           "and without a tombstone_matcher LaForge could not recognise it when a source reports it again, so it would come back. " \
-                           "Declare tombstone_matcher: on #{owner_class.name}'s #{name}, a callable given the reported #{klass.name} and the excluded ones " \
+                           "and without a tombstone_matcher LaForge could not recognize it when a source lists it again, so it would come back. " \
+                           "Declare tombstone_matcher: on #{owner_class.name}'s #{name}, a callable given the listed #{klass.name} and the excluded ones " \
                            "that returns the one it is, or nil, such as " \
                            "`laforged associations: { #{name}: { tombstone_matcher: ->(#{klass.model_name.element}, tombstones) { tombstones.find { |tombstone| ... } } } }`"
     end
@@ -187,7 +188,7 @@ module LaForge
     # Returns [[action, member], ...] for a source's edits, given as a list of members to include or as
     # { include: [...], exclude: [...], forget: [...] }. Raises for a has_one.
     def edits(value)
-      raise ArgumentError, "#{owner_class.name}##{name} is a has_one, which takes a complete report" unless collection?
+      raise ArgumentError, "#{owner_class.name}##{name} is a has_one, which takes a complete list" unless collection?
 
       lists = value.is_a?(Hash) ? value.to_h.stringify_keys : { 'include' => value }
       unknown = lists.keys - %w[include exclude forget]
@@ -356,7 +357,7 @@ module LaForge
       return if collection? && primary_keyed?
 
       reason =
-        if !collection? then 'it is a has_one, which takes complete reports, so nothing is explicitly excluded from it'
+        if !collection? then 'it is a has_one, which takes complete lists, so nothing is explicitly excluded from it'
         else "its members are keyed by #{key.join(', ')}, so an exclusion names something that outlasts the row"
         end
       raise ArgumentError, "#{owner_class.name}##{name} does not use a tombstone_matcher: #{reason}. Remove tombstone_matcher:"

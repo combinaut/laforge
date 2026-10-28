@@ -1,4 +1,5 @@
 module LaForge
+  # `LaForge::ActiveRecord` is used to declare a model laforged, with `laforged`
   module ActiveRecord
     extend ActiveSupport::Concern
 
@@ -74,7 +75,8 @@ module LaForge
           proxy_association.owner.laforge.tombstones(name)
         end
 
-        # Returns the expiries in the reports of the tracked association `name` (see Inspection#membership_expiries)
+        # Returns the expiries in the member lists of the tracked association `name` (see
+        # Inspection#membership_expiries)
         def membership_expiries(name)
           proxy_association.owner.laforge.membership_expiries(name)
         end

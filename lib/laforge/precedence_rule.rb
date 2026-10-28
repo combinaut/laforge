@@ -1,5 +1,5 @@
 module LaForge
-  # One rule ranking a source's values at one of four levels, from most to least specific:
+  # `PrecedenceRule` is one rule ranking a source's values at one of four levels, from most to least specific:
   #
   #   record_type  record_id  attribute_name  applies to
   #   'Tenant'     1          'name'          one attribute of one record

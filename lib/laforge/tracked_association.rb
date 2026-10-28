@@ -1,23 +1,24 @@
 module LaForge
-  # Used to record, forge and inspect one owner's has_many or has_one association declared with
-  # `laforged associations:`, described by an AssociationConfig, which also defines how members are named by key. The
+  # `TrackedAssociation` is used to record, forge and inspect one owner's has_many or has_one association declared with
+  # `laforged associations:`, described by an `AssociationConfig`, which also defines how members are named by key. The
   # class methods act on the association across owners.
   #
-  # Each source's entry for the association on the owner is its report of the members (see MemberList). Membership is
-  # whether a member belongs to the association, decided per member by the highest-precedence report with an opinion on
-  # it. A row no report names is left alone.
+  # Each source's entry for the association on the owner is its member list (see MemberList). Membership is
+  # whether a member belongs to the association, decided per member by the highest-precedence member list that covers
+  # it. A row no member list names is left alone.
   #
   # A forge of the owner applies membership. A member it removes goes when the owner is saved, per the association's
-  # `dependent:` option. What a report says about a member besides its key waits there as pending until a forge includes
-  # the member, and is then recorded on the member as the source's entries, like attributes recorded on the member
-  # directly. So nothing is created for a member membership excludes, and a member's attributes are resolved on the
-  # member alone. The owner's forge forges the members it records on, and any other member is forged on its own.
+  # `dependent:` option. What a member list says about a member besides its key waits there as pending until a forge
+  # includes the member, and is then recorded on the member as the source's entries, like attributes recorded on the
+  # member directly. So nothing is created for a member membership excludes, and a member's attributes are resolved on
+  # the member alone. The owner's forge forges the members it records on or withdraws a source from, and any other
+  # member is forged on its own.
   #
-  # Withdrawing a source from a member drops the source's entries on the member, and makes each of its reports for the
-  # member's own tracked associations withdraw every member it named. A forge withdraws each source whose report
-  # excludes or withdrew a member the forge keeps.
+  # Withdrawing a source from a member drops the source's entries on the member, and makes each of its member lists for
+  # the member's own tracked associations withdraw every member it named. A forge withdraws each source whose member
+  # list excludes or withdrew a member the forge keeps.
   #
-  # An instance reads the owner's reports and members when it first needs them, so each operation uses a new one.
+  # An instance reads the owner's member lists and members when it first needs them, so each operation uses a new one.
   class TrackedAssociation
     class << self
       # Makes the member model laforged if it is not, and autosaves the association so the owner's save writes what a
@@ -32,8 +33,8 @@ module LaForge
       end
 
       # Returns { owner id => { source => [member hashes] } } for `records`, each member hash as
-      # `with_member_attributes` builds it. A source gives the members its report includes, then the other rows it has
-      # entries on. An owner no source has anything on is left out.
+      # `with_member_attributes` builds it. A source gives the members its member list includes, then the other rows it
+      # has entries on. An owner no source has anything on is left out.
       def source_values(owner_class, config, records)
         owner_keys = records.to_h { |record| [record.id, config.owner_key(record)] } # members point at the owner key, entries at the id
         entries = DataEntry.where(record_type: owner_class.base_class.name, record_id: owner_keys.keys, attribute_name: config.name).preload(:source).group_by(&:record_id)
@@ -44,8 +45,8 @@ module LaForge
         rows_by_owner = rows.group_by { |record| record[config.owner_foreign_key] }
 
         owner_keys.each_with_object({}) do |(owner_id, owner_key), result|
-          reports = (entries[owner_id] || []).to_h { |entry| [entry.source, MemberList.new(entry.value)] }
-          values = values_by_source(config, reports, rows_by_owner[owner_key] || [], member_entries)
+          member_lists = (entries[owner_id] || []).to_h { |entry| [entry.source, MemberList.new(entry.value)] }
+          values = values_by_source(config, member_lists, rows_by_owner[owner_key] || [], member_entries)
           result[owner_id] = values if values.any?
         end
       end
@@ -74,22 +75,22 @@ module LaForge
         scope.to_a
       end
 
-      # Returns { source => [member hashes] } for one owner, given its `reports` by source, its member `rows`, and
+      # Returns { source => [member hashes] } for one owner, given its `member_lists` by source, its member `rows`, and
       # `member_entries` by member id
-      def values_by_source(config, reports, rows, member_entries)
+      def values_by_source(config, member_lists, rows, member_entries)
         rows = rows.reject { |record| config.blank_key?(config.record_key(record)) }.index_by { |record| config.record_key(record) }
-        sources = (reports.keys + rows.values.flat_map { |record| (member_entries[record.id] || []).map(&:source) }).uniq
+        sources = (member_lists.keys + rows.values.flat_map { |record| (member_entries[record.id] || []).map(&:source) }).uniq
 
         sources.to_h do |source|
-          listed = listed_members(config, reports[source], rows, member_entries, source)
+          listed = listed_members(config, member_lists[source], rows, member_entries, source)
           [source, listed + unlisted_members(config, listed, rows, member_entries, source)]
         end
       end
 
-      # Returns the member hash of each member `report` includes, or none when the source has no report
-      def listed_members(config, report, rows, member_entries, source)
-        (report&.include || []).map do |member|
-          pending = report.pending.select { |item| config.key_of(item['key']) == config.key_of(member) }.sort_by { |item| item['recorded_at'] }
+      # Returns the member hash of each member `list` includes, or none when the source has no member list
+      def listed_members(config, list, rows, member_entries, source)
+        (list&.include || []).map do |member|
+          pending = list.pending.select { |item| config.key_of(item['key']) == config.key_of(member) }.sort_by { |item| item['recorded_at'] }
           with_member_attributes(config, member, rows[config.key_of(member)], member_entries, source, pending)
         end
       end
@@ -143,11 +144,12 @@ module LaForge
       @config = config
     end
 
-    # Applies a source's edits to its report with `edit_member`, one member at a time, and leaves the rest of the report
-    # as it is. `value` is what `AssociationConfig#edits` takes. The settings' precedence is set for the source on the
-    # association, with their expiry, even when there is nothing to edit. Each member edited takes the settings, or its
-    # wrapper's. A has_one's edit is its single member, recorded as a complete report. `recorded_at` is given for an
-    # edit replayed from a pending report, whose rule is then made at that time rather than now (see Expiring).
+    # Applies a source's edits to its member list with `edit_member`, one member at a time, and leaves the rest of the
+    # member list as it is. `value` is what `AssociationConfig#edits` takes. The settings' precedence is set for the
+    # source on the association, with their expiry, even when there is nothing to edit. Each member edited takes the
+    # settings, or its wrapper's. A has_one's edit is its single member, recorded as a complete list. `recorded_at`,
+    # when given, is when the edit was made, and its precedence rule is made at that time rather than now (see
+    # Expiring).
     def edit(value, source, settings: RecordingSettings::DEFAULT, recorded_at: nil)
       at = recorded_at || Time.current
       return record(value, source, settings: settings, recorded_at: at) unless config.collection?
@@ -159,18 +161,16 @@ module LaForge
       owner.laforge.expire_replayed(config.name, recorded_at, [rule]) if recorded_at
     end
 
-    # Writes the source's report of `members`, replacing its previous one. `members` is a list of members, or for
-    # `partial: true` either a list to include or { include: [...], exclude: [...] }. `settings` are the report's. Their
-    # precedence is set for the source on the association, their expiry is the report entry's and that rule's, and both
-    # are given to every attribute the report's pending items record. A wrapped member or exclusion takes its wrapper's
-    # settings instead, and an expiry of its own other than the report's is kept among the report's expiries (see
-    # MemberList).
-    # The members the previous report included or withdrew and this one does not name are withdrawn, except new members
-    # and tombstones. A partial report keeps the previous one's tombstones, and its exclusions of tombstones this one
-    # does not name, with their expiries. Raises for a partial report of a has_one, and for members AssociationConfig
-    # rejects.
+    # Writes the source's member list of `members`, replacing its previous one. `members` is a list of members, or for
+    # `partial: true` either a list to include or { include: [...], exclude: [...] }. `settings` are the member list's.
+    # Their precedence is set for the source on the association, their expiry is the member list's entry's and that
+    # rule's, and both are given to every attribute the member list's pending items record. A wrapped member or
+    # exclusion takes its wrapper's settings instead, and an expiry of its own other than the member list's is kept
+    # among the member list's expiries (see MemberList). It replaces the previous member list as
+    # `MemberList::Complete.replacing` and `MemberList::Partial.replacing` do. Raises for a partial list of a has_one,
+    # and for members AssociationConfig rejects.
     def record(members, source, settings: RecordingSettings::DEFAULT, partial: false, recorded_at: Time.current)
-      raise ArgumentError, "#{owner.class.name}##{config.name} is a has_one, which takes a complete report" if partial && !config.collection?
+      raise ArgumentError, "#{owner.class.name}##{config.name} is a has_one, which takes a complete list. Record it without mode: :partial" if partial && !config.collection?
 
       included, excluded = partial ? partial_members(members, settings) : [normalize_with_settings(members, settings), []]
       keys = included.map(&:first)
@@ -179,32 +179,32 @@ module LaForge
       expiries = member_expiries(included + excluded, settings, recorded_at)
 
       value =
-        if partial then MemberList::Partial.replacing(report(source), config, include: keys, exclude: excluded.map(&:first), pending: pending, expiries: expiries)
-        else MemberList::Complete.replacing(report(source), config, include: keys, pending: pending, expiries: expiries)
+        if partial then MemberList::Partial.replacing(member_list(source), config, include: keys, exclude: excluded.map(&:first), pending: pending, expiries: expiries)
+        else MemberList::Complete.replacing(member_list(source), config, include: keys, pending: pending, expiries: expiries)
         end
       owner.laforge.write_data_entry(config.name, value, source, settings: settings, recorded_at: recorded_at)
     end
 
-    # Changes the source's report for one member. A source with no report, or an expired one, gets a partial one.
-    # `action` is one of:
+    # Changes the source's member list for one member. A source with no member list, or an expired one, gets a partial
+    # one. `action` is one of:
     # - :include: includes the member, and adds what the edit says about it as a pending item after the earlier ones, so
     #   each edit changes only the attributes it names. Its nested lists are edits too.
-    # - :exclude: leaves the member out of a complete report, or adds it to a partial report's exclusions
-    # - :forget: drops the member from a partial report, and the report's tombstone when the member is one. Raises for a
-    #   complete report, which has an opinion on every member.
-    # Excluding or forgetting a member drops its pending items. Excluding a member from a complete report withdraws it,
-    # and forgetting one withdraws it when the report included it by an inclusion that has not expired, or withdrew it.
-    # The member's inclusion or exclusion takes the settings' expiry as its own, in place of any an earlier edit gave
-    # it, and forgetting the member drops its expiry. The report entry keeps its own expiry, unless it has expired, when
-    # the new report has none. Raises for an expiry on an exclusion from a complete report, which cannot expire, and for
-    # a wrapper on a member to forget.
+    # - :exclude: leaves the member out of a complete list, or adds it to a partial list's exclusions
+    # - :forget: drops the member from a partial list, and the member list's tombstone when the member is one. Raises
+    #   for a complete list, which covers every member.
+    # Excluding or forgetting a member drops its pending items, and may withdraw it (see
+    # `MemberList::Complete#excluding` and `MemberList::Partial#forgetting`). The member's inclusion or exclusion takes
+    # the settings' expiry as its own, in place of any an earlier edit gave it, and forgetting the member drops its
+    # expiry. The member list's entry keeps its own expiry, unless it has expired, when the new member list has none.
+    # Raises for an expiry on an exclusion from a complete list, which cannot expire, for a wrapper on a member to
+    # forget, and as `AssociationConfig#assert_references_exist!` and `AssociationConfig#assert_excludable!` do.
     def edit_member(member, source, action, recorded_at: Time.current, settings: RecordingSettings::DEFAULT)
       raise ArgumentError, "#{owner.class.name}##{config.name}: forgetting a member takes no settings; remove LaForge.with_settings around it" if action == :forget && RecordingSettings.wrapped?(member)
 
       (member, attributes, member_settings), = normalize_with_settings([member], settings, attributes: action == :include, edit: true)
       config.assert_references_exist!(owner, [member]) if action == :include
       config.assert_excludable!(owner, [member]) if action == :exclude
-      previous = report(source)
+      previous = member_list(source)
       assert_editable!(previous, member, action, member_settings)
 
       expiry = MemberList.expiry_item(config.key_hash(member), member_settings, recorded_at) if member_settings.expiring?
@@ -217,21 +217,23 @@ module LaForge
       owner.laforge.write_data_entry(config.name, value, source, settings: edit_entry_settings(source, settings), recorded_at: recorded_at)
     end
 
-    # Expires at `recorded_at` the inclusions and exclusions in other sources' reports on the owner that expire on
-    # `source_id` and were made before `recorded_at` (see MemberList#expired_on)
-    def expire_members_on(source_id, recorded_at)
+    # Expires at `recorded_at` the inclusions and exclusions in other sources' member lists on the owner that expire on
+    # `source_id` and were made before `recorded_at` (see MemberList#expired_on). Given `lists`, the source's member
+    # lists before and after a recording, only those for a member the two cover differently.
+    def expire_members_on(source_id, recorded_at, lists = nil)
+      coverage_changed = lists && ->(key) { lists.map { |list| list.recorded_coverage(config, config.key_of(key)) }.uniq.size > 1 }
       owner.laforge.filter_data_entries_in_memory(attributes: config.name).each do |entry|
         next if entry.source_id == source_id || entry.marked_for_destruction?
 
         saved = entry.new_record? ? [] : MemberList.new(entry.attribute_in_database('value')).expiries
-        value = MemberList.new(entry.value).expired_on(source_id, recorded_at, saved: saved)
+        value = MemberList.new(entry.value).expired_on(source_id, recorded_at, saved: saved, coverage_changed: coverage_changed)
         entry.value = value if value
       end
     end
 
-    # Returns the expiries in every one of the owner's reports for the association, as
-    # [{ source_id:, key:, expires_at:, expires_on_source_id: }]. Expired items are included, and so are the reports of
-    # inactive sources, expired reports and reports marked for destruction.
+    # Returns the expiries in every one of the owner's member lists for the association, as
+    # [{ source_id:, key:, expires_at:, expires_on_source_id: }]. Expired items are included, and so are the member
+    # lists of inactive sources, expired member lists and member lists marked for destruction.
     def membership_expiries
       owner.laforge.filter_data_entries_in_memory(attributes: config.name).flat_map do |entry|
         MemberList.new(entry.value).expiries.map do |item|
@@ -241,12 +243,12 @@ module LaForge
     end
 
     # Applies membership to the owner's members in memory, for the owner's save to write. Does nothing when no source
-    # has reported the association.
+    # has a member list for the association.
     def forge
-      return if reports.empty?
+      return if member_lists.empty?
 
       include_removed_members
-      recognise_tombstones(save: true)
+      recognize_tombstones(save: true)
       discard_created
       records = included_records + undecided.map { |key| existing.delete(key) } # one an earlier forge removed stays in the owner's pending writes
       forge_members(records)
@@ -257,17 +259,17 @@ module LaForge
       remove_unclaimed(records)
     end
 
-    # Returns what a forge would do to the members, without changing anything, or nil when no source has reported the
-    # association:
+    # Returns what a forge would do to the members, without changing anything, or nil when no source has a member
+    # list for the association:
     # - added: each member it would build, as its key, or as what the sources say about it for a new member
     # - removed: the key of each member it would remove
     # - changed: the key of each member whose pending items would change it, merged with those changes
     # - skipped: present only when it has members, the key of each one it would not build, because it is named by an id
     #   that is not one of the owner's, or because no source described it and it is invalid with its key alone
     def diff
-      return if reports.empty?
+      return if member_lists.empty?
 
-      recognise_tombstones(save: false)
+      recognize_tombstones(save: false)
       changed = changed_members
       added, skipped = included.reject { |member| existing.key?(config.key_of(member)) }.partition { |member| buildable?(member) }
 
@@ -278,9 +280,9 @@ module LaForge
       }.tap { |result| result[:skipped] = skipped.map { |member| config.key_hash(member) } if skipped.any? }
     end
 
-    # Names each saved member of `created` by its id in every report of the association that has not expired, in place
-    # of its placeholder key. Each changed report is saved at once and keeps its recorded_at, since its source said
-    # nothing new.
+    # Names each saved member of `created` by its id in every member list of the association that has not expired, in
+    # place of its placeholder key. Each changed member list is saved at once and keeps its recorded_at, since its
+    # source said nothing new.
     def name_created(created)
       names = created.select { |_, record| record.persisted? }.transform_values { |record| config.key_hash(record) }
       return if names.empty?
@@ -302,18 +304,27 @@ module LaForge
       match_tombstone(record, outranking)
     end
 
-    # Returns the tombstones in the reports a forge reads whose exclusions have not expired, the highest-precedence
-    # source's first and each token once, so inactive sources' tombstones are left out
+    # Returns the tombstones whose exclusions have not expired in the member lists a forge reads, which leaves out those
+    # of inactive sources, expired entries and entries marked for destruction. The highest-precedence source's come
+    # first, and each token once.
     def tombstones
-      reports.reject { |entry, _| entry.marked_for_destruction? }
-             .flat_map { |entry, report| report.counting_tombstones(config).map { |item| Tombstone.new(owner, config, entry.source_id, item) } }
+      member_lists.reject { |entry, _| entry.marked_for_destruction? }
+             .flat_map { |entry, list| list.counting_tombstones(config).map { |item| Tombstone.new(owner, config, entry.source_id, item) } }
              .uniq(&:token)
+    end
+
+    # Returns `list` with each new member the tombstone matcher matches to a tombstone named by that tombstone's key,
+    # as the next forge names it (see `recognize_tombstones`)
+    def recognized(list)
+      known = config.tombstone_matcher ? tombstones : []
+      names = known.empty? ? {} : tombstone_names(list, known)
+      names.empty? ? list : MemberList.new(list.renamed(config, names))
     end
 
     # Returns an unsaved member pointing at the owner, with the association scope's attributes and the member model's
     # columns among `attributes`, except its primary key.
     def unsaved_member(attributes)
-      new_member(reported_columns(RecordingSettings.strip(attributes)))
+      new_member(member_columns(RecordingSettings.strip(attributes)))
     end
 
     def member_sources(member)
@@ -322,26 +333,26 @@ module LaForge
       candidates = record ? record.laforge.forging_entries.reject { |entry| entry.marked_for_destruction? || config.nested_config(entry.attribute_name) } : []
       record&.laforge&.reset_resolver_unless_held # a loaded member's selector value may have changed since it last ranked
 
-      deciding = reports.find { |_, report| report.decision(config, key) }
+      deciding = member_lists.find { |_, list| list.decision(config, key) }
 
       {
         membership: (deciding[0].source if deciding && deciding[1].decision(config, key) == :include),
-        listed_by: reports.select { |_, report| report.decision(config, key) == :include }.map { |entry, _| entry.source },
-        excluded_by: reports.select { |_, report| report.partial? && report.decision(config, key) == :exclude }.map { |entry, _| entry.source },
+        listed_by: member_lists.select { |_, list| list.decision(config, key) == :include }.map { |entry, _| entry.source },
+        excluded_by: member_lists.select { |_, list| list.partial? && list.decision(config, key) == :exclude }.map { |entry, _| entry.source },
         attributes: record ? record.laforge.winning_entries(candidates).transform_values { |winner, _| winner.source } : {}
       }
     end
 
     private
 
-    # Returns [included, excluded] for a partial report's `members`, a list to include or
+    # Returns [included, excluded] for a partial list's `members`, a list to include or
     # { include: [...], exclude: [...] }, both as `normalize_with_settings` returns them. Raises for other keys in the
     # hash, and for an exclusion `AssociationConfig#assert_excludable!` rejects.
     def partial_members(members, settings)
       lists = members.is_a?(Hash) ? members.stringify_keys : { 'include' => members }
       unknown = lists.keys - %w[include exclude]
       if unknown.any?
-        raise ArgumentError, "#{owner.class.name}##{config.name} partial reports are a list of members, or { include:, exclude: }, not #{unknown.join(', ')}. " \
+        raise ArgumentError, "#{owner.class.name}##{config.name}: a partial list is given as a list of members or as { include:, exclude: }, not with #{unknown.join(', ')}. " \
                              'To forget a member, record it with mode: :edit'
       end
 
@@ -377,28 +388,28 @@ module LaForge
     end
 
     # Returns an expiries item (see MemberList) for each of `members`, as `normalize_with_settings` returns them, whose
-    # settings expire otherwise than the report's `settings`
+    # settings give an expiry other than the member list's `settings`
     def member_expiries(members, settings, recorded_at)
       members.filter_map do |key_hash, _, member_settings|
         MemberList.expiry_item(key_hash, member_settings, recorded_at) if member_settings.expiring? && member_settings.expiry != settings.expiry
       end
     end
 
-    # Raises when the source's `previous` report cannot take the edit `action` of `member`, with `member_settings`:
-    # - forgetting a member of a complete report, which has an opinion on every member
-    # - excluding a member from a complete report with an expiry, since that exclusion cannot expire
+    # Raises when the source's `previous` member list cannot take the edit `action` of `member`, with `member_settings`:
+    # - forgetting a member of a complete list, which covers every member
+    # - excluding a member from a complete list with an expiry, since that exclusion cannot expire
     def assert_editable!(previous, member, action, member_settings)
       return if previous.partial?
 
       described = config.describe_key(config.key_of(member))
       if action == :forget
-        raise ArgumentError, "#{owner.class.name}##{config.name}: the source's report is a complete list, which has an opinion on every member, so forgetting #{described} " \
-                             'would exclude it rather than leave it to other sources. Record the list with mode: :partial first, or exclude the member'
+        raise ArgumentError, "#{owner.class.name}##{config.name}: the source has a complete list, which covers every member, so forgetting #{described} " \
+                             'would exclude it rather than leave it to other sources. Record the member list with mode: :partial first, or exclude the member'
       end
       return unless action == :exclude && member_settings.expiring?
 
-      raise ArgumentError, "#{owner.class.name}##{config.name}: the source's report is a complete list, so excluding #{described} drops it from the list, " \
-                           'which cannot expire. Record the list with mode: :partial, or exclude the member from another source'
+      raise ArgumentError, "#{owner.class.name}##{config.name}: the source has a complete list, which excludes #{described} by leaving it out, " \
+                           'and leaving a member out cannot expire. Record the member list with mode: :partial, or exclude the member from another source'
     end
 
     # Adds the members an earlier forge removed in the owner's pending writes to `existing`, so this forge can include
@@ -408,29 +419,35 @@ module LaForge
     end
 
     # Names each new member whose pending item the tombstone matcher matches to a tombstone by that tombstone's key in
-    # the reports, so membership decides it as the excluded member it was. With `save: true` the entries take the
-    # renamed reports too, to be saved with the owner. Leaves the reports as they are when the association has no
-    # tombstone matcher or no tombstones.
-    def recognise_tombstones(save:)
+    # the member lists, so membership decides it as the excluded member it was. With `save: true` the entries take the
+    # renamed member lists too, to be saved with the owner. Leaves the member lists as they are when the association has
+    # no tombstone matcher or no tombstones.
+    def recognize_tombstones(save:)
       return unless config.tombstone_matcher
 
       known = tombstones
       return if known.empty?
 
-      @reports = reports.map do |entry, report|
-        next [entry, report] if entry.marked_for_destruction?
+      @member_lists = member_lists.map do |entry, list|
+        next [entry, list] if entry.marked_for_destruction?
 
-        names = report.pending.each_with_object({}) do |item, result|
-          next unless config.new_member?(item['key'])
+        names = tombstone_names(list, known)
+        next [entry, list] if names.empty?
 
-          found = match_tombstone(unsaved_member(item['attributes']), known)
-          result[config.key_of(item['key'])] = found.key if found
-        end
-        next [entry, report] if names.empty?
-
-        value = report.renamed(config, names)
+        value = list.renamed(config, names)
         entry.value = value if save
         [entry, MemberList.new(value)]
+      end
+    end
+
+    # Returns { placeholder key => tombstone key hash } for each new member of `list` whose pending item the tombstone
+    # matcher matches to one of `known`
+    def tombstone_names(list, known)
+      list.pending.each_with_object({}) do |item, result|
+        next unless config.new_member?(item['key'])
+
+        found = match_tombstone(unsaved_member(item['attributes']), known)
+        result[config.key_of(item['key'])] = found.key if found
       end
     end
 
@@ -459,7 +476,7 @@ module LaForge
     end
 
     # Returns a record for each member membership includes, in order, and records each one's pending items on it. An
-    # existing member is taken out of `existing`, and its removal by an earlier forge is cancelled (see `keep`). A member
+    # existing member is taken out of `existing`, and its removal by an earlier forge is canceled (see `keep`). A member
     # that does not exist is the one an earlier forge built, or is built now, and is left out when it is skipped.
     def included_records
       included.filter_map do |member|
@@ -468,7 +485,7 @@ module LaForge
         record = existing.delete(key)&.then { |kept| keep(kept) } || created[key] || add(member, described: items.any?)
         next unless record
 
-        recorded = items.map { |source_id, attributes, recorded_at, edit, settings| record.laforge.record_reported(attributes, source_id, recorded_at, edit: edit, settings: settings) }
+        recorded = items.map { |source_id, attributes, recorded_at, edit, settings| record.laforge.record_pending(attributes, source_id, recorded_at, edit: edit, settings: settings) }
         recorded_on << record if recorded.any?
         record
       end
@@ -489,7 +506,7 @@ module LaForge
     def add(member, described:)
       if config.primary_keyed? && !config.unsaved?(member)
         owner.logger&.warn("LaForge skipped #{config.klass.name} #{config.key_of(member).first.inspect} in #{owner.class.name} #{owner.id}'s #{config.name}: " \
-                           "membership includes it, but it is no longer one of them. Report it without its #{config.klass.primary_key} to create a new one")
+                           "membership includes it, but it is no longer one of them. List it without its #{config.klass.primary_key} to create a new one")
         return
       end
 
@@ -510,7 +527,7 @@ module LaForge
       association.target.delete(record) if config.collection?
       owner.logger&.warn("LaForge skipped the #{config.klass.name} with #{config.describe_key(config.key_of(member))} in #{owner.class.name} #{owner.id}'s #{config.name}: " \
                          "membership includes it, but it does not exist and is invalid with its key alone (#{record.errors.full_messages.to_sentence}). " \
-                         'It is created when a source next reports it with its attributes')
+                         'It is created when a source next lists it with its attributes')
       nil
     end
 
@@ -526,64 +543,64 @@ module LaForge
       (recorded_on + withdraw_from_members(records)).uniq.each(&:forge)
     end
 
-    # Withdraws each source whose report excludes or withdrew a member from that member, for each saved one of
+    # Withdraws each source whose member list excludes or withdrew a member from that member, for each saved one of
     # `records`. Returns the members a withdrawn source had entries on, which need forging.
     def withdraw_from_members(records)
       records.select do |record|
         next false if record.new_record?
 
         key = config.record_key(record)
-        withdrawing = reports.select { |_, report| report.decision(config, key) == :exclude || report.withdrew?(config, key) }
+        withdrawing = member_lists.select { |_, list| list.decision(config, key) == :exclude || list.withdrew?(config, key) }
         withdrawing.map { |entry, _| record.laforge.withdraw(entry.source_id, owner) }.any?
       end
     end
 
-    # Drops from the reports the pending items of the included members, which the forge has recorded on them. A report
-    # whose inclusion of the member has expired keeps them, as the forge did not record them. Each report keeps its
-    # recorded_at, since its source said nothing new.
+    # Drops from the member lists the pending items of the included members, which the forge has recorded on them. A
+    # member list whose inclusion of the member has expired keeps them, as the forge did not record them. Each member
+    # list keeps its recorded_at, since its source said nothing new.
     def clear_pending
-      reports.each do |entry, report|
-        remaining = report.pending.reject { |item| included_keys.include?(config.key_of(item['key'])) && !report.expired?(config, config.key_of(item['key'])) }
-        next if remaining.size == report.pending.size
+      member_lists.each do |entry, list|
+        remaining = list.pending.reject { |item| included_keys.include?(config.key_of(item['key'])) && !list.expired?(config, config.key_of(item['key'])) }
+        next if remaining.size == list.pending.size
 
-        entry.value = report.with(pending: remaining)
+        entry.value = list.with(pending: remaining)
       end
     end
 
-    # Empties each report's withdrawn list, which the forge has applied. A partial report left with no members and no
+    # Empties each member list's withdrawn list, which the forge has applied. A partial list left with no members and no
     # pending items is marked for destruction, to go with the owner's save, whether or not it withdrew any.
     def prune_withdrawn
-      reports.each do |entry, _|
+      member_lists.each do |entry, _|
         next if entry.marked_for_destruction?
 
-        report = MemberList.new(entry.value)
-        if report.vacant?
+        list = MemberList.new(entry.value)
+        if list.vacant?
           entry.mark_for_destruction
-        elsif report.withdrawn.any?
-          entry.value = report.with(withdrawn: [])
+        elsif list.withdrawn.any?
+          entry.value = list.with(withdrawn: [])
         end
       end
     end
 
-    # Gives a tombstone to each member left in `existing`, which the forge removes, that a partial report excludes by an
-    # exclusion that has not expired. Every report that has not expired names the member by the tombstone's key in place
-    # of its id, inactive sources' included so they still name it when their source is active again, and each excluding
-    # report keeps the tombstone.
+    # Gives a tombstone to each member left in `existing`, which the forge removes, that a partial list excludes by an
+    # exclusion that has not expired. Every member list that has not expired names the member by the tombstone's key in
+    # place of its id. That includes inactive sources' member lists, so they still name it when the source is active
+    # again. Each excluding member list keeps the tombstone.
     def entomb
-      all_reports = owner.laforge.association_reports(config, inactive: true)
+      all_member_lists = owner.laforge.association_member_lists(config, inactive: true)
       existing.each_value do |record|
         key = config.record_key(record)
-        excluding = reports.reject { |entry, _| entry.marked_for_destruction? }.select { |entry, _| MemberList.new(entry.value).then { |report| report.partial? && report.decision(config, key) == :exclude } }
+        excluding = member_lists.reject { |entry, _| entry.marked_for_destruction? }.select { |entry, _| MemberList.new(entry.value).then { |list| list.partial? && list.decision(config, key) == :exclude } }
         next if excluding.empty?
 
         tombstone = { AssociationConfig::TOMBSTONE => SecureRandom.hex(8) }
         item = MemberList.tombstone_item(tombstone, tombstone_attributes(record), Time.current)
-        all_reports.each do |entry, _|
+        all_member_lists.each do |entry, _|
           next if entry.marked_for_destruction? || entry.expired?
 
-          report = MemberList.new(MemberList.new(entry.value).renamed(config, { key => tombstone }))
-          tombstones = excluding.any? { |excluder, _| excluder.equal?(entry) } ? report.tombstones + [item] : report.tombstones
-          value = report.with(tombstones: tombstones)
+          list = MemberList.new(MemberList.new(entry.value).renamed(config, { key => tombstone }))
+          tombstones = excluding.any? { |excluder, _| excluder.equal?(entry) } ? list.tombstones + [item] : list.tombstones
+          value = list.with(tombstones: tombstones)
           entry.value = value unless value == entry.value
         end
       end
@@ -592,7 +609,7 @@ module LaForge
     # Returns the removed member's columns as JSON values, without its primary key, its timestamps and its link to the
     # owner
     def tombstone_attributes(record)
-      reported_columns(record.attributes).except('created_at', 'updated_at').transform_values(&:as_json)
+      member_columns(record.attributes).except('created_at', 'updated_at').transform_values(&:as_json)
     end
 
     # Removes each member left in `existing`, which the forge does not keep, per the association's `dependent:` option.
@@ -633,15 +650,15 @@ module LaForge
       pending.key?(config.key_of(member)) || new_member(config.build_attributes(member)).valid?
     end
 
-    # Returns the included `member`, which does not exist, as `diff` reports it added
+    # Returns the included `member`, which does not exist, as `diff` shows it added
     def added_member(member)
       return config.key_hash(member) unless config.unsaved?(member)
 
-      pending.fetch(config.key_of(member), []).inject({}) { |attributes, (_, reported)| attributes.merge(RecordingSettings.strip(reported)) }
+      pending.fetch(config.key_of(member), []).inject({}) { |attributes, (_, provided)| attributes.merge(RecordingSettings.strip(provided)) }
     end
 
     # Returns the member model's columns among `attributes`, without its primary key and its link to the owner
-    def reported_columns(attributes)
+    def member_columns(attributes)
       attributes.slice(*config.klass.column_names).except(config.klass.primary_key, config.owner_foreign_key, config.owner_type_column)
     end
 
@@ -673,35 +690,35 @@ module LaForge
       resolution.last
     end
 
-    # Returns [included, undecided], read from the reports and `existing` when first called:
-    # - included: the hashes of the members membership includes, the highest-precedence report's first, without those
-    #   whose referenced record does not exist
-    # - undecided: the keys of the `existing` members a forge leaves as they are, which are those no report names, and
-    #   those no report has an opinion on and none withdrew
+    # Returns [included, undecided], read from the member lists and `existing` when first called:
+    # - included: the hashes of the members membership includes, the highest-precedence member list's first, without
+    #   those whose referenced record does not exist
+    # - undecided: the keys of the `existing` members a forge leaves as they are, which are those no member list names,
+    #   and those no member list covers and none withdrew
     def resolution
       @resolution ||= begin
-        decision = ->(key) { reports.lazy.filter_map { |_, report| report.decision(config, key) }.first }
-        named = reports.flat_map { |_, report| report.reported_keys(config) }.map { |member| config.key_of(member) }.to_set
+        decision = ->(key) { member_lists.lazy.filter_map { |_, list| list.decision(config, key) }.first }
+        named = member_lists.flat_map { |_, list| list.listed_keys(config) }.map { |member| config.key_of(member) }.to_set
 
-        candidates = reports.flat_map { |_, report| report.include }.uniq { |member| config.key_of(member) }
+        candidates = member_lists.flat_map { |_, list| list.include }.uniq { |member| config.key_of(member) }
         included = config.drop_dangling(candidates.select { |member| decision.(config.key_of(member)) == :include })
         included_keys = included.map { |member| config.key_of(member) }
 
         undecided = existing.keys.reject do |key|
-          included_keys.include?(key) || (named.include?(key) && (decision.(key) || reports.any? { |_, report| report.withdrew?(config, key) }))
+          included_keys.include?(key) || (named.include?(key) && (decision.(key) || member_lists.any? { |_, list| list.withdrew?(config, key) }))
         end
 
         [included, undecided]
       end
     end
 
-    # Returns the reports' pending items by member key, oldest first so they are recorded in the order the sources
-    # reported them, as { key => [[source id, attributes, recorded_at, edit, settings], ...] }. The items of a member
-    # whose inclusion in that report has expired are left out.
+    # Returns the member lists' pending items by member key, oldest first so they are recorded in the order the sources
+    # provided them, as { key => [[source id, attributes, recorded_at, edit, settings], ...] }. The items of a member
+    # whose inclusion in that member list has expired are left out.
     def pending
       @pending ||= begin
-        items = reports.flat_map do |entry, report|
-          RecordingSettings.without_deleted_sources(report.counting_pending(config)).map do |item|
+        items = member_lists.flat_map do |entry, list|
+          RecordingSettings.without_deleted_sources(list.counting_pending(config)).map do |item|
             [config.key_of(item['key']), [entry.source_id, item['attributes'], Time.iso8601(item['recorded_at']), item['edit'] == true, RecordingSettings.from_item(item)]]
           end
         end
@@ -720,16 +737,17 @@ module LaForge
       @created ||= owner.laforge.pending_writes.created_members(config)
     end
 
-    # Returns the source's report, or `MemberList.none` when it has none or its entry has expired. An expired report
-    # counts as if it did not exist, so one replacing it starts afresh and withdraws nothing. An entry marked for
-    # destruction gives a report that withdraws what it named, so a report replacing it removes those members.
-    def report(source)
+    # Returns the source's member list, or `MemberList.none` when it has none or its entry has expired. An expired
+    # member list counts as if it did not exist, so one replacing it starts afresh and withdraws nothing. An entry
+    # marked for destruction gives a member list that withdraws what it named, so a member list replacing it withdraws
+    # those members.
+    def member_list(source)
       entry = source_entry(source)
       entry && !entry.expired? ? MemberList.new(entry.value, marked: entry.marked_for_destruction?) : MemberList.none
     end
 
-    # Returns `settings` for the source's report entry an edit writes. They keep the entry's own expiry, unless it has
-    # expired, when the edit starts a new report with no expiry.
+    # Returns `settings` for the source's entry an edit writes. They keep the entry's own expiry, unless it has
+    # expired, when the edit starts a new member list with no expiry.
     def edit_entry_settings(source, settings)
       settings.with_entry_expiry(source_entry(source)&.expired? ? Expiring::NONE : nil)
     end
@@ -738,9 +756,9 @@ module LaForge
       owner.laforge.filter_data_entries_in_memory(attributes: config.name, sources: source).first
     end
 
-    # Returns the association's entries in precedence order, each paired with its report, as read when first called
-    def reports
-      @reports ||= owner.laforge.association_reports(config)
+    # Returns the association's entries in precedence order, each paired with its member list, as read when first called
+    def member_lists
+      @member_lists ||= owner.laforge.association_member_lists(config)
     end
 
     def association

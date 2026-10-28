@@ -1,9 +1,10 @@
 require 'spec_helper'
 
-# What association tracking does, one capability per example. Its vocabulary (report, member, membership, tombstone)
-# is defined on `LaForge::TrackedAssociation`, `LaForge::MemberList` and `LaForge::AssociationConfig`.
+# What association tracking does, one capability per example. Its vocabulary (member list, member, membership,
+# tombstone) is in `.ai/language.md`, and is defined in code on `LaForge::MemberList`, `LaForge::TrackedAssociation`
+# and `LaForge::Tombstone`.
 #
-# The API is experimental. These names can change while the behaviour stays:
+# The API is experimental. These names can change while the behavior stays:
 # - `laforged associations:`
 # - association names as keys in `record_data_entries`
 # - `source_values`
@@ -13,14 +14,13 @@ require 'spec_helper'
 # `noted:` marks an example's line that checks a removed row. The rows removed are:
 # - owned records (tenants) that membership no longer includes, per the association's `dependent:` option, as
 #   `place.tenants = [...]` would. They are destroyed for `:destroy`, as the spec model's tenants are, deleted for
-#   `:delete_all`, and have their foreign key nullified otherwise. The entries other sources recorded on them go with
-#   them.
+#   `:delete_all`, and have their foreign key nullified otherwise. Other sources' entries on them go with them.
 # - join rows (place categories) that membership no longer includes, the same way, with the entries recorded on them.
 # - the join row of a member whose referenced record was deleted, since the forge drops the member (C30).
 # - the duplicate's join row that `LaForge.merge` merges into the survivor's (C102).
 #
 # A record keyed by `key:` columns and destroyed some other way is recreated by the next forge while membership includes
-# it. One keyed by primary key is not, and a source reporting it without its id creates a new one. Entries alone never
+# it. One keyed by primary key is not, and a source listing it without its id creates a new one. Entries alone never
 # recreate a record.
 #
 # Every example carries a `capability:` id. Retired ids (C09 C10 C11 C23 C35 C48 C66 C67 C76 C82 C83 C84) are not reused.
@@ -121,7 +121,7 @@ describe 'Association tracking capabilities' do
   end
 
   describe 'membership' do
-    it 'takes the member list from the highest-precedence source that recorded one', capability: 'C06' do
+    it 'takes the member list from the highest-precedence source that has one', capability: 'C06' do
       place.record_data_entries({ place_categories: categories(cafe, bakery, bookstore) }, low)
       place.record_data_entries({ place_categories: categories(bakery, bookstore, florist) }, high)
       place.forge!
@@ -129,7 +129,7 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to contain_exactly(bakery, bookstore, florist)
     end
 
-    it "replaces a source's previous list when that source records again", capability: 'C07' do
+    it "replaces a source's previous list when a list from that source is recorded again", capability: 'C07' do
       place.record_data_entries({ place_categories: categories(cafe) }, low)
       place.record_data_entries({ place_categories: categories(bakery, bookstore, florist) }, high)
       place.forge!
@@ -154,18 +154,18 @@ describe 'Association tracking capabilities' do
       place.data_entries.with_source(high).with_attribute(:place_categories).destroy_all
       place.data_entries.reset
       place.forge!
-      expect(categories_of(place)).to eq([cafe, bakery, florist]) # no report names florist, so it is left alone, like a row from before tracking
+      expect(categories_of(place)).to eq([cafe, bakery, florist]) # no member list names florist, so it is left alone, like a row from before tracking
     end
 
     it "creates a join row with its columns when a lower-precedence source's list takes over", capability: 'C46' do
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_14, occupies, active: false)] }, low)
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies)] }, high)
+      place.record_data_entries({ provided_parcel_links: [parcel_link(lot_14, occupies, active: false)] }, low)
+      place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies)] }, high)
       place.forge!
       expect(parcel_link_row(place, lot_14, occupies)).to be_nil
 
-      place.data_entries.with_source(high).with_attribute(:reported_parcel_links).destroy_all
+      place.data_entries.with_source(high).with_attribute(:provided_parcel_links).destroy_all
       place.reload.forge!
-      expect(parcel_link_row(place, lot_14, occupies)).to have_attributes(active: false) # from the attributes low's report kept pending
+      expect(parcel_link_row(place, lot_14, occupies)).to have_attributes(active: false) # from the attributes low's member list kept pending
     end
 
     it "creates an owned record with the attributes a lower-precedence source's list gave it once that list takes over, and skips one named by an id that no longer exists", capability: 'C47' do
@@ -192,7 +192,7 @@ describe 'Association tracking capabilities' do
       expect(log.string).to include(%(LaForge skipped Tenant #{harbor_books.id} in Place #{place.id}'s tenants: membership includes it, but it is no longer one of them))
     end
 
-    it 'skips a member named by key alone that is invalid with its key alone, until a source reports it with its attributes', capability: 'C80' do
+    it 'skips a member named by key alone that is invalid with its key alone, until a source lists it with its attributes', capability: 'C80' do
       corner_cafe = place.tenants.create!(name: 'Corner Café')
       corner_cafe.record_data_entries({ opening_hours: [{ day: 1 }] }, low)
       log = StringIO.new
@@ -225,8 +225,8 @@ describe 'Association tracking capabilities' do
     end
   end
 
-  describe 'partial reports' do
-    it "keeps every member that partial reports include, the highest-precedence report's members first", capability: 'C49' do
+  describe 'partial lists' do
+    it "keeps every member that partial lists include, the highest-precedence list's members first", capability: 'C49' do
       place.record_data_entries({ place_categories: categories(cafe) }, low, mode: :partial)
       place.record_data_entries({ place_categories: categories(bakery) }, high, mode: :partial)
       place.forge!
@@ -256,7 +256,7 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([bakery])
     end
 
-    it 'lets a complete list exclude what lower partial reports include, but not what higher ones include', capability: 'C52' do
+    it 'lets a complete list exclude what lower partial lists include, but not what higher ones include', capability: 'C52' do
       place.record_data_entries({ place_categories: categories(florist) }, low, mode: :partial)
       place.record_data_entries({ place_categories: categories(cafe) }, high)
       place.record_data_entries({ place_categories: categories(bookstore) }, top, mode: :partial)
@@ -265,7 +265,7 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([bookstore, cafe])
     end
 
-    it 'leaves rows that no source has reported alone when only partial reports exist', capability: 'C53' do
+    it 'leaves alone the rows no source has listed, when only partial lists exist', capability: 'C53' do
       place.place_categories.create!(category: bookstore)
       place.record_data_entries({ place_categories: categories(cafe) }, low, mode: :partial)
       place.forge!
@@ -273,7 +273,7 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([cafe, bookstore])
     end
 
-    it 'withdraws everything a source reported when it stops reporting the record, keeping what others include', capability: 'C54' do
+    it 'withdraws everything a source listed when it stops providing the record, keeping what others include', capability: 'C54' do
       place.record_data_entries({ name: 'From Low', tenants: [tenant('T-1', name: 'Corner Café')] }, low, mode: :partial)
       place.record_data_entries({ tenants: [tenant('T-2', name: 'Harbor Books')] }, high, mode: :partial)
       place.forge!
@@ -295,7 +295,7 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([bakery])
     end
 
-    it 'removes a member a complete report excludes, when excluded twice before a forge or created outside tracking', capability: 'C160' do
+    it 'removes a member a complete list excludes, when excluded twice before a forge or created outside tracking', capability: 'C160' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
       place.forge!
 
@@ -309,7 +309,7 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([bakery])
     end
 
-    it 'withdraws what a removed complete report included, keeping the members another source includes', capability: 'C161' do
+    it 'withdraws what a removed complete list included, keeping the members another source includes', capability: 'C161' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
       place.record_data_entries({ place_categories: categories(cafe, florist) }, high)
       place.forge!
@@ -319,7 +319,7 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([cafe, bakery])
     end
 
-    it "withdraws a removed report's members when the source records a new report before the forge", capability: 'C162' do
+    it "withdraws a removed member list's members when a new member list from the source is recorded before the forge", capability: 'C162' do
       place.record_data_entries({ place_categories: categories(cafe) }, low)
       place.forge!
 
@@ -330,7 +330,7 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([bakery])
     end
 
-    it 'destroys a partial report left with nothing in it, as when its last exclusion is forgotten', capability: 'C163' do
+    it 'destroys a partial list left with nothing in it, as when its last exclusion is forgotten', capability: 'C163' do
       place.record_data_entries({ place_categories: categories(cafe) }, low)
       place.record_data_entries({ place_categories: { exclude: categories(cafe) } }, top, mode: :edit)
       place.forge!
@@ -346,7 +346,7 @@ describe 'Association tracking capabilities' do
       expect(place.reload.data_entries.with_source(high)).to be_empty
     end
 
-    it 'adds members one at a time to a report without replacing the rest of it', capability: 'C55' do
+    it 'includes members one edit at a time, without replacing the rest of the member list', capability: 'C55' do
       place.record_data_entries({ place_categories: categories(cafe) }, low)
       place.record_data_entries({ place_categories: { include: [{ category_id: florist.id }] } }, top, mode: :edit)
       place.record_data_entries({ place_categories: { include: [{ category_id: bakery.id }] } }, top, mode: :edit)
@@ -355,7 +355,7 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([florist, bakery, cafe])
     end
 
-    it 'includes some members and excludes others in one partial report', capability: 'C75' do
+    it 'includes some members and excludes others in one partial list', capability: 'C75' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
       place.record_data_entries({ place_categories: { include: categories(florist), exclude: categories(cafe) } }, high, mode: :partial)
       place.forge!
@@ -363,7 +363,7 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([florist, bakery])
     end
 
-    it 'applies edits to only the members they name, at every nested level, keeping the rest of the report', capability: 'C87' do
+    it 'applies edits to only the members they name, at every nested level, keeping the rest of the member list', capability: 'C87' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', opening_hours: week('08:00', days: [1, 2]))] }, low)
       place.forge!
       corner_cafe = place.tenants.sole
@@ -387,13 +387,13 @@ describe 'Association tracking capabilities' do
       expect { place.record_data_entries({ tenants: [] }, top, mode: :edits) }.to raise_error(ArgumentError, /Unknown mode :edits; pass :complete, :partial or :edit/)
     end
 
-    it 'rejects a partial report given as a hash with keys other than include: and exclude:', capability: 'C168' do
+    it 'rejects a partial list given as a hash with keys other than include: and exclude:', capability: 'C168' do
       expect { place.record_data_entries({ place_categories: { include: categories(cafe), forget: categories(bakery) } }, low, mode: :partial) }
-        .to raise_error(ArgumentError, /Place#place_categories partial reports are a list of members, or \{ include:, exclude: \}, not forget. To forget a member, record it with mode: :edit/)
-      expect { place.record_data_entries({ place_categories: { 'includes' => categories(cafe) } }, low, mode: :partial) }.to raise_error(ArgumentError, /not includes\./)
+        .to raise_error(ArgumentError, /Place#place_categories: a partial list is given as a list of members or as \{ include:, exclude: \}, not with forget. To forget a member, record it with mode: :edit/)
+      expect { place.record_data_entries({ place_categories: { 'includes' => categories(cafe) } }, low, mode: :partial) }.to raise_error(ArgumentError, /not with includes\./)
     end
 
-    it 'reports which sources include and which exclude a member', capability: 'C56' do
+    it 'shows which sources include and which exclude a member', capability: 'C56' do
       place.record_data_entries({ place_categories: categories(cafe) }, low)
       place.record_data_entries({ place_categories: { exclude: [{ category_id: cafe.id }] } }, top, mode: :edit)
 
@@ -403,43 +403,43 @@ describe 'Association tracking capabilities' do
 
   describe 'member attributes' do
     it 'applies join model attributes', capability: 'C14' do
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies, active: false, external_id: 'CR-1')] }, low)
+      place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies, active: false, external_id: 'CR-1')] }, low)
       place.forge!
 
       expect(parcel_link_row(place, lot_12, occupies)).to have_attributes(active: false, external_id: 'CR-1')
     end
 
     it 'resolves each attribute of a member independently, including from sources whose list did not win', capability: 'C15' do
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies, active: false, external_id: 'L-1')] }, low)
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies, external_id: 'H-1')] }, high)
+      place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies, active: false, external_id: 'L-1')] }, low)
+      place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies, external_id: 'H-1')] }, high)
       place.forge!
 
       expect(parcel_link_row(place, lot_12, occupies)).to have_attributes(active: false, external_id: 'H-1')
     end
 
-    it 'treats an omitted attribute as no opinion and an explicit nil as a value', capability: 'C16' do
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies, active: false, external_id: 'L-1')] }, low)
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies, external_id: nil)] }, high)
+    it 'treats an omitted attribute as not provided and an explicit nil as a value', capability: 'C16' do
+      place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies, active: false, external_id: 'L-1')] }, low)
+      place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies, external_id: nil)] }, high)
       place.forge!
 
       expect(parcel_link_row(place, lot_12, occupies)).to have_attributes(active: false, external_id: nil)
     end
 
     it 'updates existing join rows in place rather than recreating them', capability: 'C17' do
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies)] }, low)
+      place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies)] }, low)
       place.forge!
       original_id = parcel_link_row(place, lot_12, occupies).id
 
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies, external_id: 'H-1')] }, high)
+      place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies, external_id: 'H-1')] }, high)
       place.forge!
 
       expect(parcel_link_row(place, lot_12, occupies).id).to eq(original_id)
     end
 
     it 'identifies 3-way join members by every foreign key other than the owner', capability: 'C18' do
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies), parcel_link(lot_12, leases)] }, low)
+      place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies), parcel_link(lot_12, leases)] }, low)
       place.forge!
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies, external_id: 'L-1'), parcel_link(lot_12, leases)] }, low)
+      place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies, external_id: 'L-1'), parcel_link(lot_12, leases)] }, low)
       place.forge!
 
       expect(place.reload.parcel_links.count).to eq(2)
@@ -463,7 +463,7 @@ describe 'Association tracking capabilities' do
       expect(corner_cafe.reload.name).to eq('Corner Café')
     end
 
-    it "withdraws a source's attributes from a member when its partial report stops including it while another source keeps it", capability: 'C62' do
+    it "withdraws a source's attributes from a member when its partial list stops including it while another source includes it", capability: 'C62' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low)
       place.forge!
       place.record_data_entries({ tenants: [tenant('T-1', unit: '2B')] }, high, mode: :partial)
@@ -476,10 +476,10 @@ describe 'Association tracking capabilities' do
 
       expect(corner_cafe.reload.unit).to eq('1A')
       expect(corner_cafe.data_source?(high)).to be(false)
-      expect(place.reload.data_source?(high)).to be(false) # its report, settled and empty, is gone
+      expect(place.reload.data_source?(high)).to be(false) # the forge emptied its member list and destroyed it
     end
 
-    it "withdraws a source from a member its complete list leaves out while another source keeps it, including the member's own lists", capability: 'C85' do
+    it "withdraws a source from a member its complete list leaves out while another source includes it, including the member's own member lists", capability: 'C85' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A', opening_hours: week('08:00', days: [1]))] }, low)
       place.forge!
       corner_cafe = place.tenants.sole
@@ -496,7 +496,7 @@ describe 'Association tracking capabilities' do
       expect(LaForge::DataEntry.where(record_type: 'OpeningHour')).to be_empty # noted: the opening hour was destroyed per `dependent: :destroy`
     end
 
-    it 'withdraws a source from the members it reported when it is withdrawn from the owner, and drops its settled reports', capability: 'C86' do
+    it 'withdraws a source from the members it listed when it is withdrawn from the owner, and destroys its member lists the forge empties', capability: 'C86' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low)
       place.forge!
       corner_cafe = place.tenants.sole
@@ -522,7 +522,7 @@ describe 'Association tracking capabilities' do
       expect(place.place_categories.map(&:position)).to eq([0, 1, 2])
     end
 
-    it "writes member order over a position recorded on the member, when the owner's report also gives it attributes", capability: 'C165' do
+    it "writes member order over a position recorded on the member, when the owner's member list also gives it attributes", capability: 'C165' do
       stub_const('ListingMock', Class.new(ActiveRecord::Base))
       ListingMock.table_name = 'active_record_mocks'
       ListingMock.has_many :children, -> { order(:count) }, class_name: 'ActiveRecordMock', foreign_key: :parent_id
@@ -587,7 +587,7 @@ describe 'Association tracking capabilities' do
       expect(harbor_books.reload.source_precedences.values.flat_map(&:keys)).not_to include(top) # a record says nothing about its attributes
     end
 
-    it 'keeps a custom precedence when the same source records again without one', capability: 'C42' do
+    it 'keeps a custom precedence when values from the same source are recorded again without one', capability: 'C42' do
       place.record_data_entries({ place_categories: categories(florist) }, high)
       place.record_data_entries({ place_categories: categories(cafe) }, low, precedence: 50)
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
@@ -708,7 +708,7 @@ describe 'Association tracking capabilities' do
       expect(detaching_place.parcel_links.map(&:parcel)).to eq([lot_12])
     end
 
-    it 'removes a member that an earlier unsaved forge removed, when a forge of the same report follows', capability: 'C124' do
+    it 'removes a member that an earlier unsaved forge removed, when the owner is forged again with the same member list', capability: 'C124' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
       place.forge!
       place.reload.record_data_entries({ place_categories: categories(cafe) }, low)
@@ -718,11 +718,11 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([cafe])
     end
 
-    it 'keeps a partial report that an earlier unsaved forge emptied, once the source includes a member again', capability: 'C126' do
+    it 'keeps a partial list that an earlier unsaved forge emptied, once the source includes a member again', capability: 'C126' do
       place.record_data_entries({ place_categories: categories(cafe) }, low, mode: :partial)
       place.forge!
       place.reload.record_data_entries({ place_categories: [] }, low, mode: :partial)
-      place.forge # withdraws the café and marks the emptied report for destruction, unsaved
+      place.forge # withdraws the café and marks the emptied member list for destruction, unsaved
       place.record_data_entries({ place_categories: categories(bakery) }, low, mode: :partial)
       place.forge!
 
@@ -750,7 +750,7 @@ describe 'Association tracking capabilities' do
       expect(place.reload.marker).to eq(marker) # the same row, not a replacement
     end
 
-    it 'creates owned records and updates the same row when a source reports the same key again', capability: 'C20' do
+    it 'creates owned records and updates the same row when a source lists the same key again', capability: 'C20' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
       place.forge!
       tenant_id = place.reload.tenants.first.id
@@ -792,7 +792,7 @@ describe 'Association tracking capabilities' do
       expect(corner_cafe.reload.name).to eq('Edited')
     end
 
-    it "reports edits made directly on an owned record in the owner's per-source values", capability: 'C25' do
+    it "shows edits made directly on an owned record in the owner's per-source values", capability: 'C25' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
       place.forge!
 
@@ -806,7 +806,7 @@ describe 'Association tracking capabilities' do
       )
     end
 
-    it "counts a source among an owned record's sources only when it records on the record, while the owner reports every source that lists it", capability: 'C68' do
+    it "counts a source among an owned record's sources only when it has entries on the record, while the owner shows every source that lists it", capability: 'C68' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
       place.forge!
       corner_cafe = place.tenants.first
@@ -817,13 +817,13 @@ describe 'Association tracking capabilities' do
       expect(corner_cafe.data_source?(top)).to be(false)
       expect(place.reload.member_sources(:tenants, id: corner_cafe.id)).to eq(membership: top, listed_by: [top, low], excluded_by: [], attributes: { 'external_id' => low, 'name' => low })
 
-      # As an orphan check for low sees it, no other source records on the tenant, but top still lists it
+      # As an orphan check for low sees it, no other source has entries on the tenant, but top still lists it
       corner_cafe.withdraw_source(low)
       expect(corner_cafe.data_entries.without_source(low)).to be_empty
       expect(place.member_sources(:tenants, id: corner_cafe.id)[:listed_by] - [low]).to eq([top])
     end
 
-    it 'leaves rows no report has named alone, even when a complete list leaves them out, and removes a member a complete list stops naming', capability: 'C69' do
+    it 'leaves alone the rows no member list has named, even when a complete list leaves them out, and removes a member a complete list stops naming', capability: 'C69' do
       added_by_hand = place.tenants.create!(name: 'Added By Hand') # as rows from before the association was tracked are
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Harbor Books')] }, low)
       expect(place.forge_diff['tenants']).to include(removed: [])
@@ -839,7 +839,7 @@ describe 'Association tracking capabilities' do
       place.forge!
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
       place.forge!
-      expect(place.reload.tenants.pluck(:name)).to eq(['Corner Café']) # once a report names a row, a complete list can remove it
+      expect(place.reload.tenants.pluck(:name)).to eq(['Corner Café']) # once a member list names a row, a complete list can remove it
     end
 
     it "records a member's attributes on the member as the source's entries, keeping only its key in the list", capability: 'C63' do
@@ -887,13 +887,13 @@ describe 'Association tracking capabilities' do
       expect { place.record_data_entries({ tenants: [Marker.create!(label: 'Pin')] }, low) }.to raise_error(LaForge::InvalidValue, /must be Tenant records/)
     end
 
-    it 'keeps member attributes in the report until a forge records them, so the owner can be saved and forged later', capability: 'C72' do
+    it 'keeps member attributes in the member list until a forge records them, so the owner can be saved and forged later', capability: 'C72' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
       place.save!
-      report = place.data_entries.with_source(low).with_attribute(:tenants).sole.value
-      expect(report).to match(
+      member_list = place.data_entries.with_source(low).with_attribute(:tenants).sole.value
+      expect(member_list).to match(
         'include' => [{ 'new' => String }], # a placeholder until the tenant exists
-        'pending' => [{ 'key' => { 'new' => report['include'].first['new'] }, 'attributes' => { 'external_id' => 'T-1', 'name' => 'Corner Café' }, 'recorded_at' => String }]
+        'pending' => [{ 'key' => { 'new' => member_list['include'].first['new'] }, 'attributes' => { 'external_id' => 'T-1', 'name' => 'Corner Café' }, 'recorded_at' => String }]
       )
 
       place.reload.forge!
@@ -923,7 +923,7 @@ describe 'Association tracking capabilities' do
       expect { place.record_data_entries({ tenants: [{ id: 0 }] }, low) }.to raise_error(LaForge::InvalidValue, /Tenant 0 is not one of/)
     end
 
-    it 'keeps what a report says about a member while membership excludes it, until the source reports it again or is withdrawn', capability: 'C78' do
+    it 'keeps what a member list says about a member while membership excludes it, until the source lists it again or is withdrawn', capability: 'C78' do
       harbor_books = place.tenants.create!(external_id: 'T-2', name: 'Harbor Books')
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Harbor Books')] }, low)
       place.record_data_entries({ tenants: [tenant('T-2')] }, high)
@@ -935,7 +935,7 @@ describe 'Association tracking capabilities' do
       place.save!
       expect(LaForge::MemberList.new(place.reload.data_entries.with_source(high).with_attribute(:tenants).sole.value).pending.map { |item| item['attributes'] }).to eq([{ 'name' => 'Harbor Books Ltd' }])
 
-      place.record_data_entries({ tenants: [{ id: harbor_books.id }] }, low) # its next report no longer lists T-1
+      place.record_data_entries({ tenants: [{ id: harbor_books.id }] }, low) # its next member list no longer includes T-1
       place.save!
       expect(pending.()).to be_empty
 
@@ -945,7 +945,7 @@ describe 'Association tracking capabilities' do
       expect(pending.()).to be_empty
     end
 
-    it 'does not let what an older report says about a member undo a newer value from the same source', capability: 'C79' do
+    it 'does not let what an older member list says about a member undo a newer value from the same source', capability: 'C79' do
       corner_cafe = travel_to(Time.utc(2025, 12, 1)) { place.tenants.create!(name: 'Corner Café') }
 
       travel_to(Time.utc(2026, 1, 1)) do # recorded, and the place saved without forging
@@ -986,8 +986,8 @@ describe 'Association tracking capabilities' do
       place.forge!
 
       expect { place.reload.record_data_entries({ place_categories: { forget: categories(cafe) } }, high, mode: :edit) }
-        .to raise_error(ArgumentError, /Place#place_categories: the source's report is a complete list, which has an opinion on every member, so forgetting category_id #{cafe.id} would exclude it rather than leave it to other sources. Record the list with mode: :partial first, or exclude the member/)
-      place.record_data_entries({ place_categories: { forget: categories(cafe) } }, top, mode: :edit) # a source with no report, or a partial one, can
+        .to raise_error(ArgumentError, /Place#place_categories: the source has a complete list, which covers every member, so forgetting category_id #{cafe.id} would exclude it rather than leave it to other sources. Record the member list with mode: :partial first, or exclude the member/)
+      place.record_data_entries({ place_categories: { forget: categories(cafe) } }, top, mode: :edit) # a source with no member list, or a partial one, can
     end
   end
 
@@ -1123,7 +1123,7 @@ describe 'Association tracking capabilities' do
       expect { place.record_data_entry(:tenants_attributes, [{ id: corner_cafe.id }], top) }.to raise_error(ArgumentError, /record it with mode: :edit/)
       expect(place.data_entries).to be_empty
 
-      place.record_data_entry(:tenants, [{ name: 'Harbor Books' }], top) # a tracked association is recorded as a report
+      place.record_data_entry(:tenants, [{ name: 'Harbor Books' }], top) # a tracked association is recorded as a member list
       place.forge!
       expect(place.reload.tenants.pluck(:name)).to contain_exactly('Corner Café', 'Harbor Books')
     end
@@ -1137,7 +1137,7 @@ describe 'Association tracking capabilities' do
       place.forge!
     end
 
-    it 'destroys an excluded member and keeps a tombstone that keeps it out when a lower source reports it again', capability: 'C92' do
+    it 'destroys an excluded member and keeps a tombstone that keeps it out when a lower source lists it again', capability: 'C92' do
       exclude_corner_cafe
       expect(Tenant.pluck(:name)).to eq(['Harbor Books'])
       tombstone = place.reload.data_entries.tombstones(:tenants).sole
@@ -1150,7 +1150,7 @@ describe 'Association tracking capabilities' do
       expect(place.reload.tenants.pluck(:name)).to eq(['Harbor Books'])
     end
 
-    it 'keeps a tombstone through the excluding source\'s later partial reports, and drops it when the source is withdrawn', capability: 'C93' do
+    it 'keeps a tombstone through the excluding source\'s later partial lists, and drops it when the source is withdrawn', capability: 'C93' do
       exclude_corner_cafe
       place.reload.record_data_entries({ tenants: [tenant('T-2')] }, top, mode: :partial)
       place.forge!
@@ -1218,8 +1218,8 @@ describe 'Association tracking capabilities' do
         copy.forge! { copy.record_data_entries({ name: 'Harbor Bldg' }, low) }
       end
 
-      report = LaForge.merge(place, duplicate)
-      expect(report).to include(entries_moved: 0, entries_conflicting: [{ attribute: 'name', source: low, kept: :duplicate }])
+      result = LaForge.merge(place, duplicate)
+      expect(result).to include(entries_moved: 0, entries_conflicting: [{ attribute: 'name', source: low, kept: :duplicate }])
       expect(place.data_entries.sole.value).to eq('Harbor Bldg')
       expect(duplicate.data_entries).to be_empty # left for the application to archive
 
@@ -1232,13 +1232,13 @@ describe 'Association tracking capabilities' do
       duplicate.update_attribute_source_precedence(:name, low, 50)
       duplicate.update_attribute_source_precedence(:name, high, 5)
 
-      report = LaForge.merge(place, duplicate)
+      result = LaForge.merge(place, duplicate)
 
-      expect(report).to include(precedence_rules_moved: 1, precedence_rules_conflicting: [{ attribute: 'name', source: low, kept: :duplicate }])
+      expect(result).to include(precedence_rules_moved: 1, precedence_rules_conflicting: [{ attribute: 'name', source: low, kept: :duplicate }])
       expect(place.source_precedences['name']).to eq(low => 50, high => 5)
     end
 
-    it 'moves owned members with their ids and what was recorded on them, combining each source\'s reports and tombstones', capability: 'C101' do
+    it 'moves owned members with their ids and what was recorded on them, combining each source\'s member lists and tombstones', capability: 'C101' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
       place.forge!
       duplicate.record_data_entries({ tenants: [tenant('T-2', name: 'Harbor Books', opening_hours: week('08:00', days: [1])), { name: 'Florist' }] }, low)
@@ -1247,11 +1247,11 @@ describe 'Association tracking capabilities' do
       duplicate.record_data_entries({ tenants: { exclude: [{ id: duplicate.tenants.find_by!(name: 'Florist').id }] } }, top, mode: :edit)
       duplicate.forge!
 
-      report = LaForge.merge(place, duplicate)
+      result = LaForge.merge(place, duplicate)
 
-      expect(report[:members_moved]).to eq('tenants' => [harbor_books.id])
-      low_report = LaForge::MemberList.new(place.data_entries.with_source(low).with_attribute(:tenants).sole.value)
-      expect(low_report.include.filter_map { |member| member['id'] }).to contain_exactly(place.tenants.find_by!(name: 'Corner Café').id, harbor_books.id)
+      expect(result[:members_moved]).to eq('tenants' => [harbor_books.id])
+      low_list = LaForge::MemberList.new(place.data_entries.with_source(low).with_attribute(:tenants).sole.value)
+      expect(low_list.include.filter_map { |member| member['id'] }).to contain_exactly(place.tenants.find_by!(name: 'Corner Café').id, harbor_books.id)
       place.forge!
       expect(place.reload.tenants.pluck(:name)).to contain_exactly('Corner Café', 'Harbor Books')
       expect(harbor_books.reload.opening_hours.pluck(:day)).to eq([1])
@@ -1263,17 +1263,17 @@ describe 'Association tracking capabilities' do
     end
 
     it 'merges a join row both records have into the survivor\'s, and moves the rest', capability: 'C102' do
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies, external_id: 'P-1')] }, low)
+      place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies, external_id: 'P-1')] }, low)
       place.forge!
-      duplicate.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies, external_id: 'D-1'), parcel_link(lot_14, leases)] }, low)
+      duplicate.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies, external_id: 'D-1'), parcel_link(lot_14, leases)] }, low)
       duplicate.forge!
       kept = parcel_link_row(place, lot_12, occupies)
       removed = parcel_link_row(duplicate, lot_12, occupies)
 
-      report = LaForge.merge(place, duplicate)
+      result = LaForge.merge(place, duplicate)
       place.forge!
 
-      expect(report[:members_merged]).to eq('reported_parcel_links' => [{ kept: kept.id, removed: removed.id }])
+      expect(result[:members_merged]).to eq('provided_parcel_links' => [{ kept: kept.id, removed: removed.id }])
       expect(place.reload.parcel_links.map { |row| [row.parcel, row.parcel_link_type, row.external_id] }).to contain_exactly([lot_12, occupies, 'D-1'], [lot_14, leases, nil])
       expect(ParcelLink.exists?(removed.id)).to be(false) # noted: the duplicate's row is destroyed once merged
       expect(duplicate.reload.parcel_links).to be_empty
@@ -1294,7 +1294,7 @@ describe 'Association tracking capabilities' do
       expect(Marker.where(markable_type: 'LabelledPlace', markable_id: survivor.id).count).to eq(1)
     end
 
-    it "raises before moving anything when a source's unforged has_one reports on both records name different members", capability: 'C158' do
+    it "raises before moving anything when a source's unforged member lists for a has_one on both records name different members", capability: 'C158' do
       stub_const('LabelledPlace', Class.new(ActiveRecord::Base))
       LabelledPlace.table_name = 'places'
       LabelledPlace.has_one :marker, as: :markable, dependent: :destroy
@@ -1305,7 +1305,7 @@ describe 'Association tracking capabilities' do
       copy.record_data_entries({ marker: { label: 'Quay' } }, low)
       copy.save!
 
-      expect { LaForge.merge(survivor, copy) }.to raise_error(ArgumentError, /Cannot merge LabelledPlace #{copy.id} into LabelledPlace #{survivor.id}: low's reports of their marker name label "Quay" and label "Harbor", and LabelledPlace#marker holds one. Remove one of the reports, or give the members the same key so the merge combines them, then merge again/)
+      expect { LaForge.merge(survivor, copy) }.to raise_error(ArgumentError, /Cannot merge LabelledPlace #{copy.id} into LabelledPlace #{survivor.id}: low's member lists for their marker name label "Quay" and label "Harbor", and LabelledPlace#marker holds one. Remove one of the member lists, or give the members the same key so the merge combines them, then merge again/)
       expect(copy.data_entries.reload.count).to eq(1)
       expect(survivor.data_entries.reload.count).to eq(1)
     end
@@ -1339,7 +1339,7 @@ describe 'Association tracking capabilities' do
   describe 'attribute groups and inactive sources on members' do
     it 'checks and resolves an attribute group on members as on the record', capability: 'C104' do
       expect { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', street: '1 Quay')] }, low) }
-        .to raise_error(ArgumentError, /Tenant members of Place#tenants: street, postcode are attribute group postal_address, which a source records together \(missing: postcode\)/)
+        .to raise_error(ArgumentError, /Tenant members of Place#tenants: street, postcode are attribute group postal_address, which a source provides together \(missing: postcode\)/)
 
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', street: '1 Quay', postcode: 'H1')] }, low)
       place.forge!
@@ -1406,8 +1406,8 @@ describe 'Association tracking capabilities' do
     end
   end
 
-  describe 'expiring reports' do
-    it 'leaves an expired report out of the next forge, so a member only it named stays, as a row no report names', capability: 'C181' do
+  describe 'expiring member lists' do
+    it 'leaves an expired member list out of the next forge, so a member only it named stays, as a row no member list names', capability: 'C181' do
       place.record_data_entries({ place_categories: categories(cafe) }, low)
       place.record_data_entries({ place_categories: categories(bakery) }, high, mode: :partial, expires_at: 1.week.from_now)
       place.forge!
@@ -1422,9 +1422,9 @@ describe 'Association tracking capabilities' do
       expect(place.data_entries.with_source(high).sole.value).to include('include' => categories(bakery).map(&:stringify_keys))
     end
 
-    it 'removes a member another report excludes once the expired report no longer keeps it in', capability: 'C182' do
+    it 'removes a member another member list excludes once the expired one no longer includes it', capability: 'C182' do
       place.record_data_entries({ place_categories: categories(bakery) }, low, mode: :partial)
-      place.record_data_entries({ place_categories: categories(cafe) }, high) # a complete report, which excludes the bakery
+      place.record_data_entries({ place_categories: categories(cafe) }, high) # a complete list, which excludes the bakery
       place.record_data_entries({ place_categories: categories(bakery) }, top, mode: :partial, expires_at: 1.week.from_now)
       place.forge!
       expect(categories_of(place)).to contain_exactly(cafe, bakery)
@@ -1433,7 +1433,7 @@ describe 'Association tracking capabilities' do
         place.reload.forge!
         expect(categories_of(place)).to eq([cafe])
 
-        place.reload.record_data_entries({ place_categories: categories(florist) }, top, mode: :edit) # an edit to an expired report starts afresh
+        place.reload.record_data_entries({ place_categories: categories(florist) }, top, mode: :edit) # an edit to an expired member list starts afresh
         place.forge!
       end
 
@@ -1460,23 +1460,25 @@ describe 'Association tracking capabilities' do
       end
     end
 
-    it 'expires a report the next time the source it expires on reports the association, whatever it reports', capability: 'C184' do
+    it 'expires a member list once the source it expires on provides a member list that covers a member differently', capability: 'C184' do
       place.record_data_entries({ place_categories: categories(bakery) }, low, mode: :partial)
       place.record_data_entries({ place_categories: categories(cafe) }, high)
       place.record_data_entries({ place_categories: categories(bakery) }, top, mode: :partial, expires_on: high)
       place.forge!
       place.reload.record_data_entries({ name: 'Harbor Building' }, high) # another attribute
       place.forge!
+      place.reload.record_data_entries({ place_categories: categories(cafe) }, high) # the same member list, as an import that runs again
+      place.forge!
       expect(categories_of(place)).to contain_exactly(cafe, bakery)
 
-      place.reload.record_data_entries({ place_categories: categories(cafe) }, high) # the same list
+      place.reload.record_data_entries({ place_categories: categories(cafe, florist) }, high)
       place.forge!
 
-      expect(categories_of(place)).to eq([cafe])
+      expect(categories_of(place)).to contain_exactly(cafe, florist)
       expect(place.data_entries.with_source(top).sole).to have_attributes(expires_at: be_within(1.minute).of(Time.current), expires_on_source: high)
     end
 
-    it 'records what an expiring report says about members with its expiry, so their attributes fall back with it', capability: 'C129' do
+    it 'records what an expiring member list says about members with its expiry, so their attributes fall back with it', capability: 'C129' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
       place.forge!
       place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café & Bakery')] }, high, mode: :partial, expires_at: 1.week.from_now)
@@ -1503,17 +1505,17 @@ describe 'Association tracking capabilities' do
       expect(name).to have_attributes(value: 'Corner Café & Bakery', expires_at: be_within(1.second).of(expires_at))
       expect(Tenant.sole.precedence_rules.find_by!(attribute_name: 'name')).to have_attributes(source_id: high.id, precedence: 5, expires_at: be_within(1.second).of(expires_at))
       expect(place.precedence_rules.find_by!(attribute_name: 'tenants')).to have_attributes(source_id: high.id, precedence: 5, expires_at: be_within(1.second).of(expires_at))
-      expect(place.data_entries.with_source(high).sole.expires_at).to be_nil # the report itself does not expire
+      expect(place.data_entries.with_source(high).sole.expires_at).to be_nil # the member list itself does not expire
 
       place.reload.record_data_entries({ place_categories: { include: [] } }, top, mode: :edit, precedence: 7, expires_on: low)
       expect(place.source_precedences['place_categories']).to eq(top => 7)
       expect(place.precedence_rules.find { |rule| rule.attribute_name == 'place_categories' }.expires_on_source_id).to eq(low.id)
     end
 
-    it "gives a complete or partial report's precedence and expiry to the rules it sets on members", capability: 'C132' do
+    it "gives a complete or partial list's precedence and expiry to the rules it sets on members", capability: 'C132' do
       expires_at = 1.week.from_now
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low, precedence: 5, expires_at: expires_at)
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies, external_id: 'P-1')] }, high, mode: :partial, precedence: 6, expires_at: expires_at)
+      place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies, external_id: 'P-1')] }, high, mode: :partial, precedence: 6, expires_at: expires_at)
       place.forge!
 
       expect(Tenant.sole.precedence_rules.find_by!(attribute_name: 'name')).to have_attributes(source_id: low.id, precedence: 5, expires_at: be_within(1.second).of(expires_at))
@@ -1521,36 +1523,36 @@ describe 'Association tracking capabilities' do
         .to have_attributes(source_id: high.id, precedence: 6, expires_at: be_within(1.second).of(expires_at))
     end
 
-    it 'expires a change on a source at a recording made after it, kept pending or not, but not at a report the source made before it', capability: 'C133' do
+    it 'expires a change on a source at a recording from it made after the change, kept pending or not, but not at one made before', capability: 'C133' do
       renamed = -> { Tenant.sole.data_entries.with_source(top).sole }
       travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) } }
       travel_to(Time.utc(2026, 2, 1)) { place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Cafe')] }, low) && place.save! } # kept pending
       travel_to(Time.utc(2026, 3, 1)) { Tenant.sole.then { |corner_cafe| corner_cafe.forge! { corner_cafe.record_data_entries({ name: 'Corner Café (renamed)' }, top, expires_on: low) } } }
-      travel_to(Time.utc(2026, 4, 1)) { place.reload.forge! } # records the pending report on the tenant
+      travel_to(Time.utc(2026, 4, 1)) { place.reload.forge! } # records the member list's pending items on the tenant
 
       expect(Tenant.sole.reload.name).to eq('Corner Café (renamed)')
       expect(renamed.call.expires_at).to be_nil
 
-      travel_to(Time.utc(2026, 5, 1)) { place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Cafe')] }, low) && place.save! } # after the change
+      travel_to(Time.utc(2026, 5, 1)) { place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Cafe & Bakery')] }, low) && place.save! } # after the change
       travel_to(Time.utc(2026, 6, 1)) { place.reload.forge! }
 
-      expect(Tenant.sole.reload.name).to eq('Corner Cafe')
+      expect(Tenant.sole.reload.name).to eq('Corner Cafe & Bakery')
       expect(renamed.call).to have_attributes(expires_at: Time.utc(2026, 5, 1), expires_on_source: low)
     end
 
-    it 'keeps the unexpired entry when merging, and adds nothing from an expired report', capability: 'C130' do
+    it 'keeps the unexpired entry when merging, and adds nothing from an expired member list', capability: 'C130' do
       duplicate = Place.create!(name: 'Harbor Bldg')
       place.forge! { place.record_data_entries({ name: 'Harbor Building', place_categories: categories(cafe) }, low) }
       duplicate.forge! { duplicate.record_data_entries({ name: 'Harbor Bldg', place_categories: categories(bakery) }, low, expires_at: 1.week.from_now) }
 
       travel 8.days do
-        report = LaForge.merge(place, duplicate)
-        expect(report[:entries_conflicting]).to eq([{ attribute: 'name', source: low, kept: :survivor }])
+        result = LaForge.merge(place, duplicate)
+        expect(result[:entries_conflicting]).to eq([{ attribute: 'name', source: low, kept: :survivor }])
         place.forge!
       end
 
       expect(place.reload.name).to eq('Harbor Building')
-      expect(categories_of(place)).to contain_exactly(cafe, bakery) # the duplicate's row moved, and no report names it
+      expect(categories_of(place)).to contain_exactly(cafe, bakery) # the duplicate's row moved, and no member list names it
       expect(place.data_entries.with_attribute(:place_categories).sole).to have_attributes(value: categories(cafe).map(&:stringify_keys), expires_at: nil)
     end
   end
@@ -1569,26 +1571,28 @@ describe 'Association tracking capabilities' do
 
       travel_to(Time.utc(2026, 1, 4)) { place.reload.forge! { place.record_data_entries({ tenants: [{ name: 'Bakery Pop-up' }] }, top, mode: :edit, expires_at: Time.utc(2026, 2, 1)) } }
       expect(tenant_names).to contain_exactly('Harbor Books', 'Florist', 'Bakery Pop-up')
-      expect(place.data_entries.with_source(top).sole.expires_at).to be_nil # an edit's expiry is its members', not the report's
+      expect(place.data_entries.with_source(top).sole.expires_at).to be_nil # an edit's expiry is its members', not the member list's
 
       travel_to(Time.utc(2026, 2, 2)) { import.call }
-      expect(tenant_names).to contain_exactly('Harbor Books', 'Florist') # the pop-up's inclusion has expired, so low's complete report excludes it
+      expect(tenant_names).to contain_exactly('Harbor Books', 'Florist') # the pop-up's inclusion has expired, so low's complete list excludes it
       expect(Tenant.find_by!(name: 'Harbor Books').unit).to eq('2B')
 
       travel_to(Time.utc(2026, 3, 2)) { import.call }
       expect(tenant_names).to contain_exactly('Corner Café', 'Harbor Books', 'Florist')
     end
 
-    it "expires a member's inclusion or exclusion on a source's next report, and replaces or clears it when the member is edited again", capability: 'C135' do
+    it "expires a member's inclusion or exclusion once the source it expires on covers the member differently, and replaces or clears it when the member is edited again", capability: 'C135' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low, mode: :partial)
       place.record_data_entries({ place_categories: { exclude: categories(bakery), include: categories(florist) } }, top, mode: :edit, expires_on: low)
       place.save!
       place.forge!
+      place.reload.record_data_entries({ place_categories: categories(cafe, bakery) }, low, mode: :partial) # the same member list
+      place.forge!
       expect(categories_of(place)).to contain_exactly(cafe, florist)
 
-      place.reload.record_data_entries({ place_categories: categories(cafe, bakery) }, low, mode: :partial) # the same report, after the edit
+      place.reload.record_data_entries({ place_categories: { include: categories(cafe, florist), exclude: categories(bakery) } }, low, mode: :partial)
       place.forge!
-      expect(categories_of(place)).to contain_exactly(cafe, bakery, florist) # no report keeps the florist in, and none excludes it
+      expect(categories_of(place)).to contain_exactly(cafe, florist) # low's own coverage decides the bakery and the florist
       expect(place.data_entries.membership_expiries(:place_categories).map { |item| item[:expires_at] }).to all(be_within(1.minute).of(Time.current))
 
       place.reload.record_data_entries({ place_categories: { exclude: categories(bakery) } }, top, mode: :edit, expires_at: 1.week.from_now)
@@ -1601,7 +1605,7 @@ describe 'Association tracking capabilities' do
       expect(place.data_entries.membership_expiries(:place_categories).map { |item| item[:key] }).to eq([{ 'category_id' => florist.id }])
     end
 
-    it 'records nothing an expired inclusion said about a member, and keeps it pending in the report', capability: 'C140' do
+    it 'records nothing an expired inclusion said about a member, and keeps it pending in the member list', capability: 'C140' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
       place.forge!
       place.reload.record_data_entries({ tenants: [tenant('T-1', unit: '1A')] }, top, mode: :edit, expires_at: 1.week.from_now)
@@ -1615,7 +1619,7 @@ describe 'Association tracking capabilities' do
       expect(place.data_entries.with_source(top).sole.value['pending'].sole['attributes']).to include('unit' => '1A')
     end
 
-    it "keeps a member's expiry when merging the report it is in", capability: 'C142' do
+    it "keeps a member's expiry when merging the member list it is in", capability: 'C142' do
       duplicate = Place.create!(name: 'Harbor Bldg')
       place.forge! { place.record_data_entries({ place_categories: categories(cafe, bakery) }, low, mode: :partial) }
       duplicate.forge! { duplicate.record_data_entries({ place_categories: { exclude: categories(bakery) } }, low, mode: :edit, expires_at: 1.week.from_now) }
@@ -1627,7 +1631,7 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([cafe])
     end
 
-    it "keeps a newer recording's expiry when a forge records the same value from an older report kept pending on the owner", capability: 'C144' do
+    it "keeps a newer recording's expiry when a forge records the same value from an older member list kept pending on the owner", capability: 'C144' do
       travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) } }
       corner_cafe = Tenant.sole
       travel_to(Time.utc(2026, 1, 2)) { place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) && place.save! } # kept pending
@@ -1648,8 +1652,8 @@ describe 'Association tracking capabilities' do
       expect(place.reload.data_entries.with_source(top).sole.expires_at).to be_nil
     end
 
-    it "expires a member's saved exclusion on a source's report though another member of the report was edited since", capability: 'C146' do
-      place.record_data_entries({ place_categories: categories(cafe, bakery) }, low, mode: :partial)
+    it "expires a member's saved exclusion on a source's member list though another member of the list was edited since", capability: 'C146' do
+      place.record_data_entries({ place_categories: categories(cafe) }, low, mode: :partial)
       place.record_data_entries({ place_categories: { exclude: categories(bakery) } }, top, mode: :edit, expires_on: low)
       place.save!
       place.record_data_entries({ place_categories: categories(florist) }, top, mode: :edit) # another member, not saved yet
@@ -1657,6 +1661,86 @@ describe 'Association tracking capabilities' do
       place.forge!
 
       expect(categories_of(place)).to contain_exactly(cafe, bakery, florist)
+    end
+
+    it "keeps a member's inclusion or exclusion while the source it expires on covers only other members differently", capability: 'C185' do
+      place.record_data_entries({ place_categories: categories(cafe, bakery) }, low, mode: :partial)
+      place.record_data_entries({ place_categories: { exclude: categories(bakery) } }, top, mode: :edit, expires_on: low)
+      place.forge!
+
+      place.reload.record_data_entries({ place_categories: categories(cafe, bakery, florist) }, low, mode: :partial) # now covers the florist, and covers nothing else differently
+      place.forge!
+
+      expect(categories_of(place)).to contain_exactly(cafe, florist)
+      expect(place.data_entries.membership_expiries(:place_categories).sole[:expires_at]).to be_nil
+    end
+
+    it "keeps a member's inclusion through a source's first member list when it doesn't cover that member", capability: 'C186' do
+      place.record_data_entries({ place_categories: { include: categories(bakery) } }, top, mode: :edit, expires_on: low)
+      place.forge!
+
+      place.reload.record_data_entries({ place_categories: categories(cafe) }, low, mode: :partial) # names only the cafe
+      place.forge!
+
+      expect(categories_of(place)).to contain_exactly(cafe, bakery)
+      expect(place.data_entries.membership_expiries(:place_categories).sole[:expires_at]).to be_nil
+    end
+
+    it "expires a member's inclusion on a source's first member list when it is complete and leaves that member out", capability: 'C187' do
+      place.record_data_entries({ place_categories: { include: categories(bakery) } }, top, mode: :edit, expires_on: low)
+      place.forge!
+
+      place.reload.record_data_entries({ place_categories: [] }, low)
+      place.forge!
+
+      expect(categories_of(place)).to be_empty
+      expect(place.data_entries.membership_expiries(:place_categories).sole[:expires_at]).to be_within(1.minute).of(Time.current)
+    end
+
+    it "keeps a member's exclusion while the source it expires on provides the removed member again, by a tombstone it matches", capability: 'C188' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Harbor Books')] }, low)
+      place.forge!
+      place.record_data_entries({ tenants: { exclude: [{ id: Tenant.find_by!(name: 'Corner Café').id }] } }, top, mode: :edit, expires_on: low)
+      place.forge!
+
+      place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Harbor Books')] }, low) # unchanged, but with no id for the removed row
+      place.forge!
+
+      expect(place.reload.tenants.pluck(:name)).to eq(['Harbor Books'])
+      expect(place.data_entries.membership_expiries(:tenants).sole[:expires_at]).to be_nil
+    end
+
+    it "keeps a member list through a source's first member list when that list covers no member", capability: 'C189' do
+      place.record_data_entries({ place_categories: categories(bakery) }, top, mode: :partial, expires_on: low)
+      place.forge!
+
+      place.reload.record_data_entries({ place_categories: [] }, low, mode: :partial)
+      place.save!
+
+      expect(place.data_entries.with_source(top).sole.expires_at).to be_nil
+    end
+
+    it 'counts a member a partial list both includes and excludes as included when comparing coverage', capability: 'C190' do
+      config = Place.laforge.association(:tenants)
+      both = LaForge::MemberList.new(LaForge::MemberList::Partial.value(include: [{ 'id' => 1 }], exclude: [{ 'id' => 1 }]))
+      included = LaForge::MemberList.new(LaForge::MemberList::Partial.value(include: [{ 'id' => 1 }]))
+
+      expect(both.same_recorded_coverage?(config, included)).to be(true)
+    end
+
+    it "matches a removed member to its tombstone before expiring the member list that holds the tombstone", capability: 'C191' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Harbor Books')] }, low)
+      place.forge!
+      corner_cafe = { id: Tenant.find_by!(name: 'Corner Café').id }
+      place.record_data_entries({ tenants: { include: [corner_cafe] } }, high, mode: :edit, expires_on: low)
+      place.record_data_entries({ tenants: { exclude: [corner_cafe] } }, top, mode: :partial, expires_on: low)
+      place.forge!
+
+      place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Harbor Books'), tenant('T-3', name: 'Bay Books')] }, low) # a new tenant, and the removed one again
+      place.save!
+
+      expect(place.data_entries.with_source(top).sole.expires_at).to be_within(1.minute).of(Time.current)
+      expect(place.data_entries.membership_expiries(:tenants).find { |item| item[:source_id] == high.id }[:expires_at]).to be_nil
     end
 
     it 'gives a Rails form row its own settings when it is wrapped, included or destroyed', capability: 'C147' do
@@ -1703,7 +1787,7 @@ describe 'Association tracking capabilities' do
       expect([corner_cafe.data_entries.with_source(top).sole.expires_at, corner_cafe.precedence_rules.sole.expires_at]).to eq([nil, nil])
     end
 
-    it "expires a change recorded from a pending report on the source's later report, both replayed by one forge", capability: 'C149' do
+    it "expires a change recorded from a member list's pending items on the source's later list, both replayed by one forge", capability: 'C149' do
       travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) } }
       travel_to(Time.utc(2026, 1, 2)) { place.reload.record_data_entries({ tenants: [tenant('T-1', unit: LaForge.with_settings('1A', expires_on: low))] }, high, mode: :partial) && place.save! }
       travel_to(Time.utc(2026, 1, 3)) { place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '2B')] }, low) && place.save! }
@@ -1713,7 +1797,7 @@ describe 'Association tracking capabilities' do
       expect(Tenant.sole.unit).to eq('2B')
     end
 
-    it "expires a precedence recorded from a pending report on the source's later report, both replayed by one forge", capability: 'C152' do
+    it "expires a precedence recorded from a member list's pending items on the source's later list, both replayed by one forge", capability: 'C152' do
       travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) } }
       travel_to(Time.utc(2026, 1, 2)) { place.reload.record_data_entries({ tenants: [tenant('T-1', unit: LaForge.with_settings('1A', precedence: 100, expires_on: low))] }, high, mode: :partial) && place.save! }
       travel_to(Time.utc(2026, 1, 3)) { place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '2B')] }, low) && place.save! }
@@ -1722,19 +1806,19 @@ describe 'Association tracking capabilities' do
       expect(Tenant.sole.precedence_rules.find_by!(attribute_name: 'unit', source: high).expires_at).to eq(Time.utc(2026, 1, 3))
     end
 
-    it "expires a saved report on the source's recording though an unsaved forge since cleared what it kept pending", capability: 'C154' do
+    it "expires a saved member list on a recording from the source it expires on, though an unsaved forge since cleared what it kept pending", capability: 'C154' do
       travel_to(Time.utc(2026, 1, 1)) { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, high, expires_on: low) && place.save! }
       travel_to(Time.utc(2026, 1, 2)) do
-        place.reload.forge # records Corner Café on its member and clears it from the report, without saving
+        place.reload.forge # records Corner Café's pending item on the tenant and clears it from the member list, without saving
         place.record_data_entries({ tenants: [tenant('T-2', name: 'Harbor Books')] }, low)
         place.forge!
       end
 
       expect(place.data_entries.with_source(high).sole.expires_at).to eq(Time.utc(2026, 1, 2))
-      expect(place.reload.tenants.map(&:name)).to include('Harbor Books') # high's complete report has expired, so it does not exclude it
+      expect(place.reload.tenants.map(&:name)).to include('Harbor Books') # high's complete list has expired, so it does not exclude it
     end
 
-    it "expires a change recorded from a pending report, and saved, on the source's report made after it and replayed by a later forge", capability: 'C155' do
+    it "expires a change recorded from a member list's pending items, and saved, on the source's list made after it and replayed by a later forge", capability: 'C155' do
       travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) } }
       travel_to(Time.utc(2026, 1, 2)) { place.reload.record_data_entries({ tenants: [tenant('T-1', unit: LaForge.with_settings('1A', expires_on: low))] }, high, mode: :partial) && place.save! }
       travel_to(Time.utc(2026, 1, 3)) { place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '2B')] }, low) && place.save! }
@@ -1744,14 +1828,14 @@ describe 'Association tracking capabilities' do
       end
       travel_to(Time.utc(2026, 1, 5)) do
         low.update!(active: true)
-        place.reload.forge! # records low's report of January 3
+        place.reload.forge! # records low's member list of January 3
       end
 
       expect(Tenant.sole.data_entries.with_source(high).with_attribute(:unit).sole.expires_at).to eq(Time.utc(2026, 1, 3))
       expect(Tenant.sole.unit).to eq('2B')
     end
 
-    it "expires a precedence recorded from a pending report, and saved, on the source's report made after it and replayed by a later forge", capability: 'C174' do
+    it "expires a precedence recorded from a member list's pending items, and saved, on the source's list made after it and replayed by a later forge", capability: 'C174' do
       travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) } }
       travel_to(Time.utc(2026, 1, 2)) { place.reload.record_data_entries({ tenants: [tenant('T-1', unit: LaForge.with_settings('1A', precedence: 100, expires_on: low))] }, high, mode: :partial) && place.save! }
       travel_to(Time.utc(2026, 1, 3)) { place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '2B')] }, low) && place.save! }
@@ -1761,14 +1845,14 @@ describe 'Association tracking capabilities' do
       end
       travel_to(Time.utc(2026, 1, 5)) do
         low.update!(active: true)
-        place.reload.forge! # records low's report of January 3
+        place.reload.forge! # records low's member list of January 3
       end
 
       expect(Tenant.sole.data_entries.with_source(high).with_attribute(:unit).sole.expires_at).to eq(Time.utc(2026, 1, 3))
       expect(Tenant.sole.precedence_rules.find_by!(attribute_name: 'unit', source: high)).to have_attributes(recorded_at: Time.utc(2026, 1, 2), expires_at: Time.utc(2026, 1, 3))
     end
 
-    it "expires a change recorded from a pending report on the source's recording on the member made after the report and saved before the forge", capability: 'C177' do
+    it "expires a change recorded from a member list's pending items on a recording from the source on the member, made after the list and saved before the forge", capability: 'C177' do
       travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low) } }
       corner_cafe = Tenant.sole
       travel_to(Time.utc(2026, 1, 2)) do
@@ -1785,7 +1869,7 @@ describe 'Association tracking capabilities' do
       expect(corner_cafe.data_entries.with_source(low).with_attribute(:unit).sole).to have_attributes(value: '2B', recorded_at: Time.utc(2026, 1, 3))
     end
 
-    it "expires a saved exclusion on the source's recording though an unsaved forge since renamed its member to a tombstone", capability: 'C178' do
+    it "expires a saved exclusion on a recording from the source it expires on, though an unsaved forge since renamed its member to a tombstone", capability: 'C178' do
       travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) } }
       travel_to(Time.utc(2026, 1, 2)) { place.reload.record_data_entries({ tenants: { exclude: [Tenant.sole] } }, top, mode: :edit, expires_on: low) && place.save! }
       travel_to(Time.utc(2026, 1, 3)) do
@@ -1811,7 +1895,7 @@ describe 'Association tracking capabilities' do
       expect(Tenant.find_by!(external_id: 'T-1').opening_hours.pluck(:day, :opens_at)).to eq([[1, '08:00'], [2, '09:00']])
     end
 
-    it 'forges a pending report whose expiry names a source deleted since, keeping the expiry at a time', capability: 'C180' do
+    it "forges a member list's pending items whose expiry names a source deleted since, keeping the expiry at a time", capability: 'C180' do
       geocoder = LaForge::DataSource.create!(name: 'geocoder', precedence: 5)
       expires_at = 1.week.from_now
       unit = LaForge.with_settings('1A', precedence: 100, expires_on: geocoder, expires_at: expires_at)
@@ -1827,7 +1911,7 @@ describe 'Association tracking capabilities' do
       expect(corner_cafe.precedence_rules.sole).to have_attributes(precedence: 100, expires_at: be_within(1.second).of(expires_at), expires_on_source_id: nil)
     end
 
-    it "expires the precedence of a nested list edit recorded from a pending report, empty or not, on the source's later report, both replayed by one forge", capability: 'C175' do
+    it "expires the precedence of a nested list edit recorded from a member list's pending items, empty or not, on the source's later list, both replayed by one forge", capability: 'C175' do
       travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Harbor Books')] }, low) } }
       travel_to(Time.utc(2026, 1, 2)) do
         hours = ->(list) { LaForge.with_settings(list, precedence: 100, expires_on: low) }
@@ -1850,11 +1934,11 @@ describe 'Association tracking capabilities' do
       expect { place.record_data_entries({ category_ids: LaForge.with_settings([cafe.id], expires_at: 1.week.from_now) }, top, mode: :edit) }.not_to raise_error
     end
 
-    it 'raises for an exclusion with an expiry from a source whose report is a complete list', capability: 'C136' do
+    it 'raises for an exclusion with an expiry from a source with a complete list', capability: 'C136' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
 
       expect { place.record_data_entries({ place_categories: { exclude: categories(bakery) } }, low, mode: :edit, expires_at: 1.week.from_now) }
-        .to raise_error(ArgumentError, /the source's report is a complete list, so excluding category_id #{bakery.id} drops it from the list, which cannot expire. Record the list with mode: :partial/)
+        .to raise_error(ArgumentError, /the source has a complete list, which excludes category_id #{bakery.id} by leaving it out, and leaving a member out cannot expire. Record the member list with mode: :partial/)
     end
   end
 
@@ -1896,7 +1980,7 @@ describe 'Association tracking capabilities' do
       expect(snapshot(place).last.map(&:second)).to contain_exactly(x, y)
     end
 
-    it 'gives a nested list and a member attribute their own settings, through the report kept pending on the owner', capability: 'C138' do
+    it 'gives a nested list and a member attribute their own settings, through the member list kept pending on the owner', capability: 'C138' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: LaForge.with_settings('1A', expires_at: 1.week.from_now),
                                                    opening_hours: LaForge.with_settings(week('08:00', days: [1]), expires_on: high))] }, low)
       place.save!
@@ -1929,13 +2013,13 @@ describe 'Association tracking capabilities' do
       expect { place.record_data_entries({ tenants: { exclude: [LaForge.with_settings({ id: corner_cafe.id }, precedence: 9)] } }, top, mode: :edit) }
         .to raise_error(ArgumentError, /Place#tenants: LaForge.with_settings\(precedence:\) around id #{corner_cafe.id}, which has no attributes, would rank the source for the whole association/)
       expect { place.record_data_entries({ tenants: [{ name: 'Florist', street: LaForge.with_settings('1 Quay', expires_at: later), postcode: 'H1' }] }, top, mode: :edit) }
-        .to raise_error(ArgumentError, /Tenant members of Place#tenants: street, postcode are attribute group postal_address, which a source records together with the same settings/)
+        .to raise_error(ArgumentError, /Tenant members of Place#tenants: street, postcode are attribute group postal_address, whose values from a source are recorded together with the same settings/)
       expect { place.record_data_entries({ place_categories: [{ category_id: LaForge.with_settings(cafe.id, expires_at: later) }] }, top) }
         .to raise_error(ArgumentError, /Place#place_categories: LaForge.with_settings around category_id, part of a member's key, which cannot carry settings; wrap the whole member instead/)
       expect { place.record_data_entries({ name: ['Harbor', LaForge.with_settings('Building', expires_at: later)] }, top) }
         .to raise_error(ArgumentError, /Recording Place#name: LaForge.with_settings can wrap an attribute's whole value, a member or a nested list, not part of a value/)
       expect { place.record_data_entries({ name: LaForge.with_settings('Harbor Building', expires_on: top) }, top) }
-        .to raise_error(ArgumentError, /Recording Place: LaForge.with_settings\(expires_on:\) names the source recording/)
+        .to raise_error(ArgumentError, /Recording Place: LaForge.with_settings\(expires_on:\) names the source this value comes from/)
       expect { place.record_data_entries({ tenants: { include: LaForge.with_settings([{ name: 'Florist' }], expires_at: later) } }, top, mode: :edit) }
         .to raise_error(ArgumentError, /Place#tenants: LaForge.with_settings can wrap each member, or the association's whole value, not the include list/)
       expect { place.record_data_entries({ tenants: { forget: [LaForge.with_settings({ id: corner_cafe.id }, expires_at: later)] } }, top, mode: :edit) }
@@ -1944,7 +2028,7 @@ describe 'Association tracking capabilities' do
       expect { LaForge.with_settings('Harbor Building', expires_at: '2030-01-01') }.to raise_error(ArgumentError, /LaForge.with_settings: expires_at: must be a time/)
     end
 
-    it 'raises for a recorded hash using the key LaForge reserves for settings in a pending report', capability: 'C153' do
+    it "raises for a recorded hash using the key LaForge reserves for settings in a member list's pending items", capability: 'C153' do
       reserved = { '_laforge_settings' => {}, 'value' => 'Harbor Hall', 'other' => 1 }
 
       expect { place.record_data_entry(:name, reserved, top) }.to raise_error(ArgumentError, /Recording Place: _laforge_settings is a key LaForge reserves/)
@@ -1955,7 +2039,7 @@ describe 'Association tracking capabilities' do
   end
 
   describe 'has_one' do
-    it 'forges the single member from every source that reports it, updating the same row on later runs', capability: 'C57' do
+    it 'forges the single member from every source that lists it, updating the same row on later runs', capability: 'C57' do
       place.record_data_entries({ marker: { label: 'Harbor', icon: 'pin' } }, low)
       place.record_data_entries({ marker: { label: 'Harbor Building' } }, high)
       place.forge!
@@ -1968,7 +2052,7 @@ describe 'Association tracking capabilities' do
       expect(place.reload.marker).to have_attributes(id: marker_id, label: 'Harbor Building', icon: 'star')
     end
 
-    it 'removes the member when the winning source reports none, writing nothing until the owner is saved', capability: 'C58' do
+    it 'removes the member when the winning source lists none, writing nothing until the owner is saved', capability: 'C58' do
       place.record_data_entries({ marker: { label: 'Harbor' } }, low)
       place.forge!
 
@@ -2010,7 +2094,7 @@ describe 'Association tracking capabilities' do
       expect(Tenant.count).to eq(0)
     end
 
-    it 'rejects more than one member and partial reports', capability: 'C59' do
+    it 'rejects more than one member and partial lists', capability: 'C59' do
       expect { place.record_data_entries({ marker: [{}, {}] }, low) }.to raise_error(ArgumentError)
       expect { place.record_data_entries({ marker: { label: 'A' } }, low, mode: :partial) }.to raise_error(ArgumentError)
     end
@@ -2028,7 +2112,7 @@ describe 'Association tracking capabilities' do
     it 'never touches rows outside the scope of a tracked scoped association', capability: 'C26' do
       computed_row = place.parcel_links.create!(parcel: lot_14, parcel_link_type: computed)
 
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies)] }, low)
+      place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies)] }, low)
       place.forge!
 
       expect(computed_row.reload).to have_attributes(active: true)
@@ -2101,11 +2185,11 @@ describe 'Association tracking capabilities' do
     end
 
     it "returns only members the tracked association's scope includes", capability: 'C118' do
-      link = ParcelLink.create!(place: place, parcel: lot_12, parcel_link_type: computed) # outside reported_parcel_links
+      link = ParcelLink.create!(place: place, parcel: lot_12, parcel_link_type: computed) # outside provided_parcel_links
       link.record_data_entries({ external_id: 'C-1' }, low)
       link.save!
 
-      expect(place.source_values(:reported_parcel_links)).to eq({})
+      expect(place.source_values(:provided_parcel_links)).to eq({})
     end
 
     it "returns each source's members for many records in a constant number of queries", capability: 'C32' do
@@ -2123,35 +2207,35 @@ describe 'Association tracking capabilities' do
       expect(Place.source_values(:place_categories, records: places).keys).to match_array(places.map(&:id))
     end
 
-    it 'reports which list decided a membership and which source supplied each member attribute', capability: 'C33' do
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies, active: false)] }, low)
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies, external_id: 'H-1')] }, high)
+    it "shows which source's member list decided a member's membership, and which source provided each member attribute", capability: 'C33' do
+      place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies, active: false)] }, low)
+      place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies, external_id: 'H-1')] }, high)
       place.forge!
 
-      provenance = place.member_sources(:reported_parcel_links, parcel_id: lot_12.id, parcel_link_type_id: occupies.id)
+      provenance = place.member_sources(:provided_parcel_links, parcel_id: lot_12.id, parcel_link_type_id: occupies.id)
 
       expect(provenance[:membership]).to eq(high)
       expect(provenance[:listed_by]).to contain_exactly(low, high)
       expect(provenance[:attributes]).to eq('active' => low, 'external_id' => high)
     end
 
-    it 'reports added, removed and changed members in forge_diff without writing', capability: 'C34' do
-      place.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies, active: false), parcel_link(lot_14, occupies)] }, low)
+    it 'shows added, removed and changed members in forge_diff without writing', capability: 'C34' do
+      place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies, active: false), parcel_link(lot_14, occupies)] }, low)
       place.forge!
 
-      place.reload.record_data_entries({ reported_parcel_links: [parcel_link(lot_12, occupies, active: false, external_id: 'H-1'), parcel_link(lot_12, leases)] }, low)
-      diff = place.forge_diff['reported_parcel_links']
+      place.reload.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies, active: false, external_id: 'H-1'), parcel_link(lot_12, leases)] }, low)
+      diff = place.forge_diff['provided_parcel_links']
 
       expect(diff[:added]).to eq([{ 'parcel_id' => lot_12.id, 'parcel_link_type_id' => leases.id }])
       expect(diff[:removed]).to eq([{ 'parcel_id' => lot_14.id, 'parcel_link_type_id' => occupies.id }])
       expect(diff[:changed]).to eq([{ 'parcel_id' => lot_12.id, 'parcel_link_type_id' => occupies.id, 'external_id' => [nil, 'H-1'] }])
-      expect(place.reported_parcel_links.flat_map { |row| row.data_entries.target }.map { |entry| [entry.attribute_name, entry.value, entry.changed?] }).to eq([['active', false, false]])
+      expect(place.provided_parcel_links.flat_map { |row| row.data_entries.target }.map { |entry| [entry.attribute_name, entry.value, entry.changed?] }).to eq([['active', false, false]])
       expect(place.reload.parcel_links.count).to eq(2)
     end
   end
 
   describe 'integration with attribute tracking' do
-    it "leaves no precedence rule behind on a member after forge_diff previews a report's precedence", capability: 'C109' do
+    it "leaves no precedence rule behind on a member after forge_diff previews a member list's precedence", capability: 'C109' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
       place.forge!
       place.reload.record_data_entries({ tenants: [tenant('T-1', unit: '2B')] }, low, precedence: 50)
@@ -2172,7 +2256,7 @@ describe 'Association tracking capabilities' do
       expect(place.forge_diff(attributes: :place_categories).keys).to eq(['place_categories'])
     end
 
-    it "leaves a member's waiting expiries as they were after forge_diff previews a report from the source they expire on", capability: 'C143' do
+    it "leaves a member's waiting expiries as they were after forge_diff previews a member list from the source they expire on", capability: 'C143' do
       travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) } }
       travel_to(Time.utc(2026, 1, 2)) do
         corner_cafe = Tenant.sole
@@ -2183,7 +2267,7 @@ describe 'Association tracking capabilities' do
       waiting = -> { [Tenant.sole.data_entries.with_source(top).sole.expires_at, Tenant.sole.precedence_rules.sole.expires_at] }
 
       travel_to(Time.utc(2026, 1, 3)) do
-        place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
+        place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Cafe')] }, low)
         place.forge_diff
         place.update!(name: 'Harbor Building, renamed') # a save without forging
         expect(waiting.call).to eq([nil, nil])
@@ -2263,7 +2347,7 @@ describe 'Association tracking capabilities' do
         numbered_place.record_data_entries({ tenants: [{ external_id: 'T-1', name: 'Corner Café' }] }, low)
         numbered_place.forge!
         corner_cafe = numbered_place.tenants.sole
-        corner_cafe.record_data_entries({ unit: '2B' }, high) # a source with entries on the member and no report
+        corner_cafe.record_data_entries({ unit: '2B' }, high) # a source with entries on the member and no member list
         corner_cafe.save!
 
         values = numbered_place.reload.source_values(:tenants)
@@ -2284,7 +2368,7 @@ describe 'Association tracking capabilities' do
 
     it 'derives join model keys from the association reflection', capability: 'C39' do
       expect(Place.laforge.association(:place_categories).key).to eq(%w[category_id])
-      expect(Place.laforge.association(:reported_parcel_links).key).to eq(%w[parcel_id parcel_link_type_id])
+      expect(Place.laforge.association(:provided_parcel_links).key).to eq(%w[parcel_id parcel_link_type_id])
     end
 
     it 'raises for a method the model already defines that would hide LaForge\'s, and lets one defined after it wrap LaForge\'s', capability: 'C98' do

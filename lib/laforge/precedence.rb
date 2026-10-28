@@ -1,5 +1,6 @@
 module LaForge
-  # Used to set and read the precedence rules of a laforged record and, in the class methods, of its model
+  # `Precedence` is used to set and read the precedence rules of a laforged record and, in the class methods, of its
+  # model
   module Precedence
     extend ActiveSupport::Concern
 
@@ -7,8 +8,8 @@ module LaForge
     CLASS_API = %i[update_attribute_source_precedence update_source_precedence update_precedence_order precedence_order source_precedences].freeze
 
     # Set the precedence of a source for one attribute, or one attribute group, of this record, whether or not the
-    # source has recorded it yet. Saved immediately on a persisted record, otherwise with the record. Pass nil to remove
-    # it. Raises for an attribute in a group, whose precedence is set on the group, and for a `ruleset:`, since a
+    # source has an entry for it yet. Saved immediately on a persisted record, otherwise with the record. Pass nil to
+    # remove it. Raises for an attribute in a group, whose precedence is set on the group, and for a `ruleset:`, since a
     # record's own rules apply whatever its ruleset.
     # `expires_at:` and `expires_on:` expire the precedence (see Expiring). Setting it again replaces the expiry,
     # leaving them out clears it, and passing either with a nil precedence raises.

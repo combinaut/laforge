@@ -1,5 +1,5 @@
 module LaForge
-  # Used to forge a laforged record's attributes and tracked associations from its data entries
+  # `Forging` is used to forge a laforged record's attributes and tracked associations from its data entries
   module Forging
     extend ActiveSupport::Concern
 
@@ -48,7 +48,8 @@ module LaForge
     # entries for the whole group.
     # Entries marked for destruction are left out, so each of their attributes takes the value of the next entry, and an
     # attribute with no other entry is left out of the hash.
-    # An attribute of a group is nil when the source that supplies the group has no entry for it.
+    # A group's attributes all come from one source, so an attribute that source has no entry for is nil rather than
+    # falling back to another source's value.
     def forge_attributes(attributes: nil, sources: nil, except_sources: nil)
       # Each forge selects the ruleset and reads the model-wide and global rules again (see PrecedenceCache)
       reset_resolver_unless_held
@@ -74,15 +75,15 @@ module LaForge
     end
 
     # @api private
-    # Returns `forge_diff` as it would be once `reported` is recorded on the record, then restores the record's entries
-    # and rules. `reported` is what its owner's reports say about it, as
+    # Returns `forge_diff` as it would be once `pending` is recorded on the record, then restores the record's entries
+    # and rules. `pending` is what its owner's member lists keep pending for it, as
     # [[source id, attributes, recorded_at, edit, settings], ...].
-    def forge_diff_with(reported)
+    def forge_diff_with(pending)
       entries = record.data_entries.to_a
       values = entries.to_h { |entry| [entry, [entry.attributes.slice('value', 'recorded_at', 'expires_at', 'expires_on_source_id'), entry.remade_state, entry.marked_for_destruction?]] }
       rules = record.precedence_rules.to_a # recording builds, changes and expires rules, which the owner's next save writes
       settings = rules.to_h { |rule| [rule, [rule.attributes.slice('precedence', 'recorded_at', 'expires_at', 'expires_on_source_id'), rule.remade_state, rule.marked_for_destruction?]] }
-      reported.each { |source_id, attributes, recorded_at, edit, item_settings| record_reported(attributes, source_id, recorded_at, edit: edit, settings: item_settings) }
+      pending.each { |source_id, attributes, recorded_at, edit, item_settings| record_pending(attributes, source_id, recorded_at, edit: edit, settings: item_settings) }
       forge_diff
     ensure
       record.data_entries.target.replace(entries)
@@ -105,9 +106,9 @@ module LaForge
     end
 
     # @api private
-    # Returns the association's entries in precedence order, each paired with its report (see MemberList). Inactive
+    # Returns the association's entries in precedence order, each paired with its member list (see MemberList). Inactive
     # sources' entries and expired entries are left out unless `inactive` is true.
-    def association_reports(config, inactive: false)
+    def association_member_lists(config, inactive: false)
       entries = inactive ? filter_data_entries_in_memory(attributes: config.name) : forging_entries(attributes: config.name)
       by_precedence(entries).map { |data_entry| [data_entry, MemberList.new(data_entry.value, marked: data_entry.marked_for_destruction?)] }
     end

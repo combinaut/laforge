@@ -4,10 +4,10 @@ module LaForge
   NOT_GIVEN = Object.new.freeze
 
   # Used to carry a recording's settings, the precedence and expiry it gives everything it records, however its payload
-  # is split. That covers attributes, attribute groups, belongs_to columns, association reports, nested member lists,
-  # edits, and the pending items reports keep for members until their owner is forged. The settings are built once
-  # where recording starts, passed down as they are, and applied where an entry is written and where the record's
-  # precedence rule for it is set.
+  # is split. That covers attributes, attribute groups, belongs_to columns, member lists at every level, edits, and the
+  # pending items member lists keep for members until their owner is forged. The settings are
+  # built once where recording starts, passed down as they are, and applied where an entry is written and where the
+  # record's precedence rule for it is set.
   #
   # A wrapper is a part of a payload given settings of its own with `LaForge.with_settings`. It takes them in place of
   # the call's, for everything recorded from it (see `for`). A stored wrapper is a wrapper kept in a pending item, as a
@@ -40,8 +40,8 @@ module LaForge
 
     # Returns pending `items` (see MemberList) without each 'expires_on_source_id' that names a source deleted since, in
     # an item and in the stored wrappers in its attributes, so restoring the settings gives no expiry on a source, and
-    # 'expires_at' is kept. Deleting a source nulls the columns that name it, but not the ids in a report's value, which
-    # would then fail the foreign key where they are recorded. Looks the ids up in one query, when there are any.
+    # 'expires_at' is kept. Deleting a source nulls the columns that name it, but not the ids in a member list's value,
+    # which would then fail the foreign key where they are recorded. Looks the ids up in one query, when there are any.
     def self.without_deleted_sources(items)
       ids = items.flat_map { |item| [item['expires_on_source_id'], *stored_source_ids(item['attributes'])] }.compact.uniq
       return items if ids.empty?
@@ -75,19 +75,20 @@ module LaForge
     end
 
     # Raises ArgumentError, naming `where`, when anywhere in `value`:
-    # - a wrapper expires on `source_id`, the source recording, whose next recording replaces what it wraps anyway
+    # - a wrapper expires on `source_id`, the source of the values. The next values recorded from it replace what it
+    #   wraps anyway.
     # - a hash has the STORED key, which would read back as a stored wrapper
     def self.assert_wrappers_valid!(value, source_id, where:)
       case value
       when WithSettings
         if value.settings.expiry && value.settings.expiry[:expires_on_source_id] == source_id
-          raise ArgumentError, "#{where}: LaForge.with_settings(expires_on:) names the source recording, whose next recording replaces this one and its expiry anyway. " \
-                               'Pass the source whose next report should end the change'
+          raise ArgumentError, "#{where}: LaForge.with_settings(expires_on:) names the source this value comes from, and the next values recorded from it replace it and its expiry anyway. " \
+                               'Pass another source, whose different values should end the change'
         end
         assert_wrappers_valid!(value.value, source_id, where: where)
       when Hash
         if value.key?(STORED) || value.key?(STORED.to_sym)
-          raise ArgumentError, "#{where}: #{STORED} is a key LaForge reserves for the settings it keeps with a value in a pending report, so a recorded hash cannot use it. " \
+          raise ArgumentError, "#{where}: #{STORED} is a key LaForge reserves for the settings it keeps with a value in a member list's pending items, so a recorded hash cannot use it. " \
                                'Rename the key, or give the value settings with LaForge.with_settings'
         end
         value.each_value { |item| assert_wrappers_valid!(item, source_id, where: where) }
@@ -107,8 +108,8 @@ module LaForge
     end
 
     # Raises ArgumentError, naming `where`, unless the attributes of each of `model`'s attribute groups in `values`,
-    # `{ attribute name => value }`, are all wrapped with equal settings or all unwrapped, since a source records a
-    # group together
+    # `{ attribute name => value }`, are all wrapped with equal settings or all unwrapped, since a group's values from a
+    # source are recorded together
     def self.assert_groups_alike!(model, values, where:)
       return unless model.respond_to?(:laforge)
 
@@ -117,13 +118,13 @@ module LaForge
         settings = attributes.select { |attribute| values.key?(attribute) }.map { |attribute| settings_of(values[attribute]) }.uniq
         next if settings.size < 2
 
-        raise ArgumentError, "#{where}: #{attributes.join(', ')} are attribute group #{group}, which a source records together with the same settings; " \
+        raise ArgumentError, "#{where}: #{attributes.join(', ')} are attribute group #{group}, whose values from a source are recorded together with the same settings; " \
                              'wrap all of them with the same LaForge.with_settings, or none'
       end
     end
 
     # Returns `value` with each wrapper and stored wrapper replaced by the value it wraps, at every level. For example,
-    # `{ 'name' => LaForge.with_settings('Harbour Café', expires_at: time) }` becomes `{ 'name' => 'Harbour Café' }`.
+    # `{ 'name' => LaForge.with_settings('Harbor Café', expires_at: time) }` becomes `{ 'name' => 'Harbor Café' }`.
     def self.strip(value)
       case value
       when WithSettings then strip(value.value)

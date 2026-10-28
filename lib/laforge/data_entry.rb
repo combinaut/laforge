@@ -1,4 +1,6 @@
 module LaForge
+  # `DataEntry` is a data entry, one source's recorded value for one attribute of one record. A source's entry for a
+  # tracked association holds its member list (see `MemberList`).
   class DataEntry < ActiveRecord::Base
     self.table_name = "laforge_data_entries"
     include Expiring

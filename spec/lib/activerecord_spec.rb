@@ -440,7 +440,7 @@ describe 'ActiveRecordExtensions' do
       record.save!
     end
 
-    it 'returns each source that supplied a data_entry, once' do
+    it 'returns each source with a data entry on the record, once' do
       expect(record.reload.data_sources).to contain_exactly(data_source, data_source2)
     end
 

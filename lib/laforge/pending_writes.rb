@@ -1,9 +1,9 @@
 module LaForge
-  # Used to hold a laforged record's pending writes, and to make them once the record is saved. Pending writes are the
-  # writes forges of the record have decided on but left for its next save to make:
+  # `PendingWrites` is used to hold a laforged record's pending writes, and to make them once the record is saved.
+  # Pending writes are the writes forges of the record have decided on but left for its next save to make:
   # - removing the members they no longer include, per the association's dependent option
   # - destroying the entries they withdrew from the record's members
-  # - naming the members they created by their new ids in the reports
+  # - naming the members they created by their new ids in the member lists
   # A member a forge removes stays in the pending writes until the save, so a later forge can include it again.
   class PendingWrites
     def initialize(record)
@@ -59,7 +59,7 @@ module LaForge
     end
 
     # Makes the pending writes, once the record is saved:
-    # - names the members forges created by their new ids in the reports
+    # - names the members forges created by their new ids in the member lists
     # - deletes the entries they withdrew from members, publishing `DataEntry::CHANGED` for each
     # - removes the members they replaced or dropped, per the association's dependent option, skipping any never saved
     def write!

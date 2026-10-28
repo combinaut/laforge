@@ -1,12 +1,19 @@
 module LaForge
-  # Used to let a change to one record expire. A change is a data entry, or a precedence rule on one record. A
-  # recording makes the change when it creates the row, and makes it again when it changes the row's value, precedence
-  # or expiry. A save that changes none of them, such as a forge's bookkeeping, does not make the change again.
+  # `Expiring` is used to let a change to one record expire. A change is a data entry, or a precedence rule on one
+  # record. A recording makes the change when it creates the row, and makes it again when it changes the row's value,
+  # precedence or expiry. A save that changes none of them, such as a forge's bookkeeping, does not make the change
+  # again.
   #
   # A change expires at a time, its `expires_at`, or on a source, its `expires_on_source`. An expiry on a source fires
-  # the first time that source records the same attribute, attribute group or association for the record after the
-  # change was made (see `changed_at`), whatever it reports. It sets `expires_at` to when the source recorded, and keeps
-  # the source, so the row still names what ended the change.
+  # the first time a value from that source is recorded, after the change was made (see `changed_at`), that differs
+  # from the source's own entry for the attribute, or for any attribute of its group:
+  # - an attribute's value differs as it is stored. The record's forged value is not compared.
+  # - a member list covers some member differently. An expiry on one member of an edit fires only when that member's
+  #   coverage changes.
+  # - a source with no entry for it yet provides one. For a tracked association, a first member list counts only when
+  #   it covers some member.
+  # Recording the same value from the source again leaves the change as it is. The expiry sets `expires_at` to when
+  # the different value was recorded, and keeps the source, so the row still names what ended the change.
   #
   # Forging leaves an expired row out, as it leaves out an inactive source's, and the row is kept, so it can still be
   # read. An expiry takes effect when the record is next forged. Forging records on time, and removing expired rows,
@@ -31,8 +38,8 @@ module LaForge
       scope :expired, ->(at = Time.current) { where(arel_table[:expires_at].lteq(at)) }
       scope :unexpired, ->(at = Time.current) { where(expires_at: nil).or(where(arel_table[:expires_at].gt(at))) }
       # `expiring` returns the rows whose `expires_at` is before `before`, those already expired included, such as to
-      # forge their records on time. A row that expires on a source has no `expires_at` until the source records, so it
-      # is left out until then.
+      # forge their records on time. A row that expires on a source has no `expires_at` until a different value from the
+      # source is recorded, so it is left out until then.
       scope :expiring, ->(before:) { where(arel_table[:expires_at].lt(before)) }
     end
 
@@ -42,8 +49,8 @@ module LaForge
     # - `removing` is given. It describes what was passed that removes the change, such as "a nil precedence", which
     #   leaves nothing to expire.
     # - `expires_at` is not a time
-    # - `expires_on` is `source`, the source recording the change, whose next recording replaces the change and its
-    #   expiry anyway
+    # - `expires_on` is `source`, the source the change comes from. The next values recorded from it replace the change
+    #   and its expiry anyway.
     def self.columns(expires_at, expires_on, where:, source: nil, removing: nil)
       return NONE if expires_at.nil? && expires_on.nil?
 
@@ -52,8 +59,8 @@ module LaForge
 
       expires_on_source_id = expires_on && DataSource.normalize_source_id(expires_on)
       if expires_on_source_id && source && expires_on_source_id == DataSource.normalize_source_id(source)
-        raise ArgumentError, "#{where}: expires_on: names the source recording, whose next recording replaces this one and its expiry anyway. " \
-                             'Pass the source whose next report should end the change'
+        raise ArgumentError, "#{where}: expires_on: names the source these values come from, and the next values recorded from it replace these and their expiry anyway. " \
+                             'Pass another source, whose different values should end the change'
       end
 
       { expires_at: expires_at, expires_on_source_id: expires_on_source_id }
