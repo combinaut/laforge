@@ -5,9 +5,15 @@ module LaForge
   # again.
   #
   # A change expires at a time, its `expires_at`, or on a source, its `expires_on_source`. An expiry on a source fires
-  # the first time a value from that source is recorded for the same attribute, attribute group or association of the
-  # record after the change was made (see `changed_at`), whatever the source provides. It sets `expires_at` to when that
-  # value was recorded, and keeps the source, so the row still names what ended the change.
+  # the first time a value from that source is recorded, after the change was made (see `changed_at`), that differs
+  # from the source's own entry for the attribute, or for any attribute of its group:
+  # - an attribute's value differs as it is stored. The record's forged value is not compared.
+  # - a member list covers some member differently. An expiry on one member of an edit fires only when that member's
+  #   coverage changes.
+  # - a source with no entry for it yet provides one. For a tracked association, a first member list counts only when
+  #   it covers some member.
+  # Recording the same value from the source again leaves the change as it is. The expiry sets `expires_at` to when
+  # the different value was recorded, and keeps the source, so the row still names what ended the change.
   #
   # Forging leaves an expired row out, as it leaves out an inactive source's, and the row is kept, so it can still be
   # read. An expiry takes effect when the record is next forged. Forging records on time, and removing expired rows,
@@ -32,8 +38,8 @@ module LaForge
       scope :expired, ->(at = Time.current) { where(arel_table[:expires_at].lteq(at)) }
       scope :unexpired, ->(at = Time.current) { where(expires_at: nil).or(where(arel_table[:expires_at].gt(at))) }
       # `expiring` returns the rows whose `expires_at` is before `before`, those already expired included, such as to
-      # forge their records on time. A row that expires on a source has no `expires_at` until a value from the source is
-      # recorded, so it is left out until then.
+      # forge their records on time. A row that expires on a source has no `expires_at` until a different value from the
+      # source is recorded, so it is left out until then.
       scope :expiring, ->(before:) { where(arel_table[:expires_at].lt(before)) }
     end
 
@@ -54,7 +60,7 @@ module LaForge
       expires_on_source_id = expires_on && DataSource.normalize_source_id(expires_on)
       if expires_on_source_id && source && expires_on_source_id == DataSource.normalize_source_id(source)
         raise ArgumentError, "#{where}: expires_on: names the source these values come from, and the next values recorded from it replace these and their expiry anyway. " \
-                             'Pass another source, whose next values should end the change'
+                             'Pass another source, whose different values should end the change'
       end
 
       { expires_at: expires_at, expires_on_source_id: expires_on_source_id }

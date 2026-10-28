@@ -83,7 +83,7 @@ module LaForge
       when WithSettings
         if value.settings.expiry && value.settings.expiry[:expires_on_source_id] == source_id
           raise ArgumentError, "#{where}: LaForge.with_settings(expires_on:) names the source this value comes from, and the next values recorded from it replace it and its expiry anyway. " \
-                               'Pass another source, whose next values should end the change'
+                               'Pass another source, whose different values should end the change'
         end
         assert_wrappers_valid!(value.value, source_id, where: where)
       when Hash

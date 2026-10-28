@@ -1460,19 +1460,21 @@ describe 'Association tracking capabilities' do
       end
     end
 
-    it 'expires a member list the next time the association is recorded from the source it expires on, whatever that source provides', capability: 'C184' do
+    it 'expires a member list once the source it expires on provides a member list that covers a member differently', capability: 'C184' do
       place.record_data_entries({ place_categories: categories(bakery) }, low, mode: :partial)
       place.record_data_entries({ place_categories: categories(cafe) }, high)
       place.record_data_entries({ place_categories: categories(bakery) }, top, mode: :partial, expires_on: high)
       place.forge!
       place.reload.record_data_entries({ name: 'Harbor Building' }, high) # another attribute
       place.forge!
+      place.reload.record_data_entries({ place_categories: categories(cafe) }, high) # the same member list, as an import that runs again
+      place.forge!
       expect(categories_of(place)).to contain_exactly(cafe, bakery)
 
-      place.reload.record_data_entries({ place_categories: categories(cafe) }, high) # the same list
+      place.reload.record_data_entries({ place_categories: categories(cafe, florist) }, high)
       place.forge!
 
-      expect(categories_of(place)).to eq([cafe])
+      expect(categories_of(place)).to contain_exactly(cafe, florist)
       expect(place.data_entries.with_source(top).sole).to have_attributes(expires_at: be_within(1.minute).of(Time.current), expires_on_source: high)
     end
 
@@ -1531,10 +1533,10 @@ describe 'Association tracking capabilities' do
       expect(Tenant.sole.reload.name).to eq('Corner Café (renamed)')
       expect(renamed.call.expires_at).to be_nil
 
-      travel_to(Time.utc(2026, 5, 1)) { place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Cafe')] }, low) && place.save! } # after the change
+      travel_to(Time.utc(2026, 5, 1)) { place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Cafe & Bakery')] }, low) && place.save! } # after the change
       travel_to(Time.utc(2026, 6, 1)) { place.reload.forge! }
 
-      expect(Tenant.sole.reload.name).to eq('Corner Cafe')
+      expect(Tenant.sole.reload.name).to eq('Corner Cafe & Bakery')
       expect(renamed.call).to have_attributes(expires_at: Time.utc(2026, 5, 1), expires_on_source: low)
     end
 
@@ -1579,16 +1581,18 @@ describe 'Association tracking capabilities' do
       expect(tenant_names).to contain_exactly('Corner Café', 'Harbor Books', 'Florist')
     end
 
-    it "expires a member's inclusion or exclusion on the next recording from a source, and replaces or clears it when the member is edited again", capability: 'C135' do
+    it "expires a member's inclusion or exclusion once the source it expires on covers the member differently, and replaces or clears it when the member is edited again", capability: 'C135' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low, mode: :partial)
       place.record_data_entries({ place_categories: { exclude: categories(bakery), include: categories(florist) } }, top, mode: :edit, expires_on: low)
       place.save!
       place.forge!
+      place.reload.record_data_entries({ place_categories: categories(cafe, bakery) }, low, mode: :partial) # the same member list
+      place.forge!
       expect(categories_of(place)).to contain_exactly(cafe, florist)
 
-      place.reload.record_data_entries({ place_categories: categories(cafe, bakery) }, low, mode: :partial) # the same member list, after the edit
+      place.reload.record_data_entries({ place_categories: { include: categories(cafe, florist), exclude: categories(bakery) } }, low, mode: :partial)
       place.forge!
-      expect(categories_of(place)).to contain_exactly(cafe, bakery, florist) # no member list includes the florist, and none excludes it
+      expect(categories_of(place)).to contain_exactly(cafe, florist) # low's own coverage decides the bakery and the florist
       expect(place.data_entries.membership_expiries(:place_categories).map { |item| item[:expires_at] }).to all(be_within(1.minute).of(Time.current))
 
       place.reload.record_data_entries({ place_categories: { exclude: categories(bakery) } }, top, mode: :edit, expires_at: 1.week.from_now)
@@ -1649,7 +1653,7 @@ describe 'Association tracking capabilities' do
     end
 
     it "expires a member's saved exclusion on a source's member list though another member of the list was edited since", capability: 'C146' do
-      place.record_data_entries({ place_categories: categories(cafe, bakery) }, low, mode: :partial)
+      place.record_data_entries({ place_categories: categories(cafe) }, low, mode: :partial)
       place.record_data_entries({ place_categories: { exclude: categories(bakery) } }, top, mode: :edit, expires_on: low)
       place.save!
       place.record_data_entries({ place_categories: categories(florist) }, top, mode: :edit) # another member, not saved yet
@@ -1657,6 +1661,86 @@ describe 'Association tracking capabilities' do
       place.forge!
 
       expect(categories_of(place)).to contain_exactly(cafe, bakery, florist)
+    end
+
+    it "keeps a member's inclusion or exclusion while the source it expires on covers only other members differently", capability: 'C185' do
+      place.record_data_entries({ place_categories: categories(cafe, bakery) }, low, mode: :partial)
+      place.record_data_entries({ place_categories: { exclude: categories(bakery) } }, top, mode: :edit, expires_on: low)
+      place.forge!
+
+      place.reload.record_data_entries({ place_categories: categories(cafe, bakery, florist) }, low, mode: :partial) # now covers the florist, and covers nothing else differently
+      place.forge!
+
+      expect(categories_of(place)).to contain_exactly(cafe, florist)
+      expect(place.data_entries.membership_expiries(:place_categories).sole[:expires_at]).to be_nil
+    end
+
+    it "keeps a member's inclusion through a source's first member list when it doesn't cover that member", capability: 'C186' do
+      place.record_data_entries({ place_categories: { include: categories(bakery) } }, top, mode: :edit, expires_on: low)
+      place.forge!
+
+      place.reload.record_data_entries({ place_categories: categories(cafe) }, low, mode: :partial) # names only the cafe
+      place.forge!
+
+      expect(categories_of(place)).to contain_exactly(cafe, bakery)
+      expect(place.data_entries.membership_expiries(:place_categories).sole[:expires_at]).to be_nil
+    end
+
+    it "expires a member's inclusion on a source's first member list when it is complete and leaves that member out", capability: 'C187' do
+      place.record_data_entries({ place_categories: { include: categories(bakery) } }, top, mode: :edit, expires_on: low)
+      place.forge!
+
+      place.reload.record_data_entries({ place_categories: [] }, low)
+      place.forge!
+
+      expect(categories_of(place)).to be_empty
+      expect(place.data_entries.membership_expiries(:place_categories).sole[:expires_at]).to be_within(1.minute).of(Time.current)
+    end
+
+    it "keeps a member's exclusion while the source it expires on provides the removed member again, by a tombstone it matches", capability: 'C188' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Harbor Books')] }, low)
+      place.forge!
+      place.record_data_entries({ tenants: { exclude: [{ id: Tenant.find_by!(name: 'Corner Café').id }] } }, top, mode: :edit, expires_on: low)
+      place.forge!
+
+      place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Harbor Books')] }, low) # unchanged, but with no id for the removed row
+      place.forge!
+
+      expect(place.reload.tenants.pluck(:name)).to eq(['Harbor Books'])
+      expect(place.data_entries.membership_expiries(:tenants).sole[:expires_at]).to be_nil
+    end
+
+    it "keeps a member list through a source's first member list when that list covers no member", capability: 'C189' do
+      place.record_data_entries({ place_categories: categories(bakery) }, top, mode: :partial, expires_on: low)
+      place.forge!
+
+      place.reload.record_data_entries({ place_categories: [] }, low, mode: :partial)
+      place.save!
+
+      expect(place.data_entries.with_source(top).sole.expires_at).to be_nil
+    end
+
+    it 'counts a member a partial list both includes and excludes as included when comparing coverage', capability: 'C190' do
+      config = Place.laforge.association(:tenants)
+      both = LaForge::MemberList.new(LaForge::MemberList::Partial.value(include: [{ 'id' => 1 }], exclude: [{ 'id' => 1 }]))
+      included = LaForge::MemberList.new(LaForge::MemberList::Partial.value(include: [{ 'id' => 1 }]))
+
+      expect(both.same_recorded_coverage?(config, included)).to be(true)
+    end
+
+    it "matches a removed member to its tombstone before expiring the member list that holds the tombstone", capability: 'C191' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Harbor Books')] }, low)
+      place.forge!
+      corner_cafe = { id: Tenant.find_by!(name: 'Corner Café').id }
+      place.record_data_entries({ tenants: { include: [corner_cafe] } }, high, mode: :edit, expires_on: low)
+      place.record_data_entries({ tenants: { exclude: [corner_cafe] } }, top, mode: :partial, expires_on: low)
+      place.forge!
+
+      place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Harbor Books'), tenant('T-3', name: 'Bay Books')] }, low) # a new tenant, and the removed one again
+      place.save!
+
+      expect(place.data_entries.with_source(top).sole.expires_at).to be_within(1.minute).of(Time.current)
+      expect(place.data_entries.membership_expiries(:tenants).find { |item| item[:source_id] == high.id }[:expires_at]).to be_nil
     end
 
     it 'gives a Rails form row its own settings when it is wrapped, included or destroyed', capability: 'C147' do
@@ -2183,7 +2267,7 @@ describe 'Association tracking capabilities' do
       waiting = -> { [Tenant.sole.data_entries.with_source(top).sole.expires_at, Tenant.sole.precedence_rules.sole.expires_at] }
 
       travel_to(Time.utc(2026, 1, 3)) do
-        place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
+        place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Cafe')] }, low)
         place.forge_diff
         place.update!(name: 'Harbor Building, renamed') # a save without forging
         expect(waiting.call).to eq([nil, nil])

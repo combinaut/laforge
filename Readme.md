@@ -424,10 +424,10 @@ In a tracked association, an inactive source's member lists are left out too. Me
 
 ### Expiring a change
 
-A change to one record can be made to expire, so the record goes back to what its sources say without it and no one has to remember to undo it. A recorded value, a record's precedence order, a single precedence, or several of them in one save, take `expires_at:` (a time) or `expires_on:` (a source, so the change expires the next time a value from that source is recorded for the same attribute or association of the record, whatever that source provides, which sets `expires_at` to when it was recorded).
+A change to one record can be made to expire, so the record goes back to what its sources say without it and no one has to remember to undo it. A recorded value, a record's precedence order, a single precedence, or several of them in one save, take `expires_at:` (a time) or `expires_on:` (a source). An expiry on a source holds the change until the source provides a different value, as when an editor corrects a value until the source fixes it. It fires at the first value recorded from that source that differs from the source's own entry for the attribute, and sets `expires_at` to when that value was recorded. Recording the same value from the source again, as an import does each time it runs, leaves the change in place.
 
   ```ruby
-    # Rename the place until the next cadastre import
+    # Rename the place until the cadastre's name for it changes
     place.record_data_entries({ name: 'Harbor Building (temporary)' }, map_editor, expires_on: cadastre)
 
     # Rank the business registry first for the name for a month
@@ -450,9 +450,11 @@ A change to one record can be made to expire, so the record goes back to what it
 
 LaForge publishes nothing when a change expires by time, and the forge writes nothing because of an expiry, since an expiry is not new data. The event that recorded the change carries its expiry, so the application's change tracking can note when it will expire and decide what to do (see [Following changes](#following-changes)). An expiry on a source that fires sets `expires_at` on the waiting entry, which is published when the entry is saved.
 
-#### Which recordings end an expiry on a source
+#### Which values end an expiry on a source
 
-Only a recording made after the change counts, so a member list recorded from the source earlier, kept pending on an owner until the owner is forged, does not end it. A value can't expire on the source it comes from, since the next recording from that source replaces it anyway.
+A value from the source ends the expiry when it differs from the source's own entry for the attribute, not from the record's forged value, so a source that comes to provide the editor's value ends it too. For an attribute group, a different value for any of the group's attributes ends it. For a tracked association, a member list ends it when it covers some member differently from the source's previous member list, and an expiry given to one member by an edit ends only when the source's coverage of that member changes. What a member list says about a member besides its key counts on the member's own entries once a forge records it there. A member the source lists again after a forge removed it is the same member when the tombstone matcher recognizes it. A source that had no entry for the attribute ends the expiry with its first value. A source with no member list covers no member, so its first member list ends an expiry only when it covers some member, and a member's expiry only when it covers that member.
+
+Only a value recorded after the change counts, so a member list recorded from the source earlier, kept pending on an owner until the owner is forged, does not end it. A value can't expire on the source it comes from, since the next recording from that source replaces it anyway.
 
 A change kept pending on an owner is made when its member list was recorded, so a recording from the source made after that and before the owner is forged ends it, whether that is a later member list forged with it or a recording on the member itself. A recording on the member shows only in the entries it changed, so one that changed nothing there does not end the change. If the source is deleted before the owner is forged, the change keeps only its expiry at a time, when it has one.
 
@@ -471,7 +473,7 @@ In an edit (`mode: :edit`), the expiry is given to each member the edit includes
   ```
 
 - **A partial list no longer covers a member whose inclusion or exclusion has expired**, as an expired member list covers none. An expired inclusion no longer keeps the member in, so a complete list from another source that leaves it out removes it, and an expired exclusion or its tombstone stops keeping the member out. A complete list's own inclusion that has expired excludes the member, as the list no longer lists it. What an expired inclusion said about the member is not recorded on it.
-- **An expiry on a source** fires the next time the association is recorded from that source for the record, under the same rule as for a row, so only a recording made after the edit counts.
+- **An expiry on a source** fires once the source covers that member differently from its previous member list, and only for a member list recorded after the edit (see [Which values end an expiry on a source](#which-values-end-an-expiry-on-a-source)).
 - **A complete list can't exclude a member with an expiry.** Excluding from it drops the member from the list. Record the source's list with `mode: :partial`, or exclude from another source.
 - **Edits don't change the member list's own expiry.** A member list recorded whole with an expiry expires as a whole, edits since included. An edit over a member list whose expiry has passed starts a new member list, which does not expire. A `precedence:` passed with an edit takes its expiry, as everything else it sets does.
 - **The `expiring` scopes can't see these expiries**, which are kept in the member list's value. `place.data_entries.membership_expiries(:tenants)` lists them, as `[{ source_id:, key:, expires_at:, expires_on_source_id: }]`.

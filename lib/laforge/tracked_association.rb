@@ -218,13 +218,15 @@ module LaForge
     end
 
     # Expires at `recorded_at` the inclusions and exclusions in other sources' member lists on the owner that expire on
-    # `source_id` and were made before `recorded_at` (see MemberList#expired_on)
-    def expire_members_on(source_id, recorded_at)
+    # `source_id` and were made before `recorded_at` (see MemberList#expired_on). Given `lists`, the source's member
+    # lists before and after a recording, only those for a member the two cover differently.
+    def expire_members_on(source_id, recorded_at, lists = nil)
+      coverage_changed = lists && ->(key) { lists.map { |list| list.recorded_coverage(config, config.key_of(key)) }.uniq.size > 1 }
       owner.laforge.filter_data_entries_in_memory(attributes: config.name).each do |entry|
         next if entry.source_id == source_id || entry.marked_for_destruction?
 
         saved = entry.new_record? ? [] : MemberList.new(entry.attribute_in_database('value')).expiries
-        value = MemberList.new(entry.value).expired_on(source_id, recorded_at, saved: saved)
+        value = MemberList.new(entry.value).expired_on(source_id, recorded_at, saved: saved, coverage_changed: coverage_changed)
         entry.value = value if value
       end
     end
@@ -309,6 +311,14 @@ module LaForge
       member_lists.reject { |entry, _| entry.marked_for_destruction? }
              .flat_map { |entry, list| list.counting_tombstones(config).map { |item| Tombstone.new(owner, config, entry.source_id, item) } }
              .uniq(&:token)
+    end
+
+    # Returns `list` with each new member the tombstone matcher matches to a tombstone named by that tombstone's key,
+    # as the next forge names it (see `recognize_tombstones`)
+    def recognized(list)
+      known = config.tombstone_matcher ? tombstones : []
+      names = known.empty? ? {} : tombstone_names(list, known)
+      names.empty? ? list : MemberList.new(list.renamed(config, names))
     end
 
     # Returns an unsaved member pointing at the owner, with the association scope's attributes and the member model's
@@ -421,17 +431,23 @@ module LaForge
       @member_lists = member_lists.map do |entry, list|
         next [entry, list] if entry.marked_for_destruction?
 
-        names = list.pending.each_with_object({}) do |item, result|
-          next unless config.new_member?(item['key'])
-
-          found = match_tombstone(unsaved_member(item['attributes']), known)
-          result[config.key_of(item['key'])] = found.key if found
-        end
+        names = tombstone_names(list, known)
         next [entry, list] if names.empty?
 
         value = list.renamed(config, names)
         entry.value = value if save
         [entry, MemberList.new(value)]
+      end
+    end
+
+    # Returns { placeholder key => tombstone key hash } for each new member of `list` whose pending item the tombstone
+    # matcher matches to one of `known`
+    def tombstone_names(list, known)
+      list.pending.each_with_object({}) do |item, result|
+        next unless config.new_member?(item['key'])
+
+        found = match_tombstone(unsaved_member(item['attributes']), known)
+        result[config.key_of(item['key'])] = found.key if found
       end
     end
 

@@ -104,14 +104,16 @@ module LaForge
     # before `recorded_at` expiring at `recorded_at`, or nil when no item changes. An item that already expires by then
     # is left as it is. An item not among `saved`, the items as the member list was last saved, was made now. An item
     # whose key a forge has renamed since, as to a tombstone, is still the saved one, since it matches a saved item
-    # whose key the member list no longer names in everything but the key.
-    def expired_on(source_id, recorded_at, saved: [])
+    # whose key the member list no longer names in everything but the key. Given `coverage_changed`, a predicate on an
+    # item's key, only the items it is true for.
+    def expired_on(source_id, recorded_at, saved: [], coverage_changed: nil)
       keys = self.expiries.map { |item| item['key'] }
       renamed = saved.reject { |item| keys.include?(item['key']) }.map { |item| item.except('key') }
       changed = false
       expiries = self.expiries.map do |item|
         made_at = saved.include?(item) || renamed.include?(item.except('key')) ? Time.iso8601(item['recorded_at']) : Time.current
         next item unless item['expires_on_source_id'] == source_id && recorded_at > made_at
+        next item if coverage_changed && !coverage_changed.(item['key'])
         next item if item['expires_at'] && Time.iso8601(item['expires_at']) <= recorded_at
 
         changed = true
@@ -157,6 +159,22 @@ module LaForge
 
     def withdrew?(config, key)
       withdrawn.any? { |member| config.key_of(member) == key }
+    end
+
+    # Returns :include or :exclude for the member with the given key as this member list was recorded, or nil when it
+    # doesn't cover the member. An inclusion or exclusion that has expired still counts. A complete list excludes every
+    # member it does not include.
+    def recorded_coverage(config, key)
+      return :include if includes?(config, key)
+      return :exclude unless partial? && exclude.none? { |member| config.key_of(member) == key }
+    end
+
+    # Returns whether `other` covers every member as this member list does (see `recorded_coverage`). A member in both
+    # the include and exclude lists counts as included.
+    def same_recorded_coverage?(config, other)
+      keys = ->(members) { members.map { |member| config.key_of(member) }.to_set }
+      excluded = ->(list) { keys.(list.exclude) - keys.(list.include) }
+      partial? == other.partial? && keys.(include) == keys.(other.include) && excluded.(self) == excluded.(other)
     end
 
     def listed_keys(config)
