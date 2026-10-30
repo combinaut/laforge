@@ -8,9 +8,9 @@ describe 'The precedence rules migration' do
     Module.new.tap { |namespace| namespace.module_eval(ERB.new(template).result(binding)) }.const_get(migration_class_name).new
   end
 
-  def sources(missing: [], orphaned: [], shared: [], conflicting: [])
+  def sources(missing: [], orphaned: [], shared: [], conflicting: [], outranked: [])
     allow(migration).to receive(:select_values).and_return(missing, orphaned)
-    allow(migration).to receive(:select_rows).and_return(shared, conflicting)
+    allow(migration).to receive(:select_rows).and_return(shared, conflicting, outranked)
   end
 
   it 'raises, naming the sources, before creating anything when a source has no priority' do
@@ -38,7 +38,14 @@ describe 'The precedence rules migration' do
     sources(conflicting: [['Place', 12, 'name', 3]])
     expect(migration).not_to receive(:create_table)
 
-    expect { migration.up }.to raise_error(RuntimeError, /LaForge data entries for the same record, attribute and source have different priorities \(Place 12 name from source 3\). One precedence rule replaces them/)
+    expect { migration.up }.to raise_error(RuntimeError, /LaForge data entries for the same record, attribute and source have different priorities, or a priority on some and none on others \(Place 12 name from source 3\). One precedence rule replaces them/)
+  end
+
+  it 'raises, naming them and the source they rank below, before creating anything when an entry has a priority below that of another source whose entry has none' do
+    sources(outranked: [['Place', 12, 'name', 3, 5], ['Place', 14, 'name', 3, 5]])
+    expect(migration).not_to receive(:create_table)
+
+    expect { migration.up }.to raise_error(RuntimeError, /LaForge data entries have a priority below the priority of another source whose entry for the same record and attribute has none \(Place 12 name from source 3, below source 5; Place 14 name from source 3, below source 5\)\. .*give the other source's entries for that record and attribute their source's priority/)
   end
 
   it 'goes on to create the table when every check passes' do
