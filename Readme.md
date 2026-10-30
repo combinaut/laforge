@@ -527,15 +527,15 @@ It costs every write, so add it only where those counts are needed.
 When two records turn out to be the same, merge what LaForge holds for the duplicate into the survivor, then forge the survivor.
 
   ```ruby
-    result = LaForge.merge(survivor, duplicate)          # on a conflict, the duplicate's entry wins, as the argument does in Hash#merge
-    result = LaForge.reverse_merge(survivor, duplicate)  # on a conflict, the survivor's entry wins
+    result = LaForge.merge(survivor, duplicate)          # on a conflict, the duplicate's entry is kept, as the argument's is in Hash#merge
+    result = LaForge.reverse_merge(survivor, duplicate)  # on a conflict, the survivor's entry is kept
     survivor.forge!
     duplicate.archive!                                   # the duplicate is left to the application
   ```
 
 - **Attribute entries and per-record precedence rules** move to the survivor. Where both records have one for the same attribute and source, that's a conflict, and the function decides which is kept, unless only one of them has expired, in which case the one that still counts is kept. The other is destroyed.
 - **Members of tracked associations** move to the survivor with their ids and everything recorded on them. Where both records have a member with the same key, as two join rows naming the same category do, the survivor's row is kept, and the duplicate's row is merged into it the same way, forged, and destroyed. Where both have a has_one member with different keys, such as markers with different labels, the merge raises `ArgumentError` before anything moves, since the survivor can hold only one. Remove one of them, or give them the same key, then merge again. The same goes for one source's has_one lists on both records that name members with different keys, as before either record is forged.
-- **Each source's member lists** on the two records are combined, so the survivor's list names every member either named, and keeps both records' tombstones. Where the lists cover a member differently, the winner's coverage of it is kept.
+- **Each source's member lists** on the two records are combined, so the survivor's list names every member either named, and keeps both records' tombstones. Where the lists cover a member differently, the preferred member list's coverage of it is kept, which is the duplicate's for `merge` and the survivor's for `reverse_merge`.
 - **Not touched:** associations LaForge doesn't track, and the duplicate itself, which is left with no LaForge data for the application to archive or destroy.
 
 The result says what moved and what conflicted, as `{ entries_moved:, entries_conflicting: [{ attribute:, source:, kept: }], precedence_rules_moved:, precedence_rules_conflicting: [...], members_moved: { 'tenants' => [ids] }, members_merged: { 'place_categories' => [{ kept:, removed: }] } }`. Both records must be saved, of the same model, and have no unsaved entries or rules. The merge runs in a transaction and is saved immediately.
