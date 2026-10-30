@@ -33,7 +33,7 @@ describe 'Usage' do
   # An importer records every attribute it assigns on its own source, forges once the row has been assigned, and saves
   # the record itself afterwards
   describe 'an importer recording each attribute it assigns' do
-    it 'applies the winning value of each attribute and persists the entries with the record' do
+    it 'applies the value each attribute resolves to and persists the entries with the record' do
       record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
       record.record_data_entries({ name: 'From Map Editor' }, map_editor)
       record.forge
@@ -51,7 +51,7 @@ describe 'Usage' do
       expect(record.reload).to have_attributes(name: 'From Cadastre', count: 9)
     end
 
-    it 'lets a higher source win over a value the importer assigned and recorded in the same run' do
+    it "resolves to a higher source's value over one the importer assigned and recorded in the same run" do
       # Assign, then record what was assigned, then forge
       record.record_data_entries({ name: 'From Map Editor' }, map_editor)
       record.save!
@@ -62,7 +62,7 @@ describe 'Usage' do
       expect(record.name).to eq('From Map Editor')
     end
 
-    it 'returns the winning value of every recorded attribute, so changes can be tracked before saving' do
+    it 'returns the value every recorded attribute resolves to, so changes can be tracked before saving' do
       record.record_data_entries({ name: 'From Cadastre', active: false }, cadastre)
       record.record_data_entries({ name: 'From Business Directory' }, business_directory)
 
@@ -526,7 +526,7 @@ describe 'Usage' do
       expect(record.reload.count).to eq(0)
     end
 
-    it "lets the next source's value win once the outranking source's entries are deleted" do
+    it "resolves to the next source's value once the outranking source's entries are deleted" do
       LaForge::DataEntry.with_source('Business Directory').where(record_type: 'ActiveRecordMock', record_id: record.id, attribute_name: 'name').delete_all
       record.reload.forge!
 
@@ -547,7 +547,7 @@ describe 'Usage' do
     let(:parent) { ActiveRecordMock.create!(name: 'Parent') }
     let(:other_parent) { ActiveRecordMock.create!(name: 'Other Parent') }
 
-    it 'records the foreign key and forges the association from the winning source' do
+    it 'records the foreign key and forges the association from the highest-ranked source' do
       record.record_data_entries({ parent: parent }, cadastre)
       record.record_data_entries({ parent: other_parent }, business_directory)
       record.forge!
@@ -579,7 +579,7 @@ describe 'Usage' do
       expect(counted.reload.subject).to eq(parent)
     end
 
-    it 'clears the association when the winning source provides nil' do
+    it 'clears the association when the highest-ranked source provides nil' do
       record.record_data_entries({ parent: parent }, cadastre)
       record.record_data_entries({ parent: nil }, business_directory)
       record.forge!
@@ -665,7 +665,7 @@ describe 'Usage' do
       expect(grouped.reload).to have_attributes(name: 'From Map Editor', count: nil)
     end
 
-    it 'blanks an attribute the winning source has no entry for' do
+    it "blanks an attribute the group's highest-ranked source has no entry for" do
       grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
       LaForge::DataEntry.create!(record: grouped, source: map_editor, attribute_name: 'name', value: 'From Map Editor') # recorded before the group was declared
       grouped.reload.forge!

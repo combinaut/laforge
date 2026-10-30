@@ -5,8 +5,8 @@
 # - a source with no priority, which would have no global rule
 # - two sources sharing a priority, which would collide in the unique index on global precedences and leave the
 #   migration half done
-# - entries for the same record, attribute and source with different priorities, which one rule cannot keep, so which
-#   entry wins would change
+# - entries for the same record, attribute and source with different priorities, which one rule cannot keep, so the
+#   entry the attribute resolves to would change
 # - entries with a priority whose source no longer exists, which no rule can reference
 class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
   def up

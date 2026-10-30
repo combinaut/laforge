@@ -169,7 +169,7 @@ describe 'ActiveRecordExtensions' do
       expect(record.data_entries).to be_empty
     end
 
-    it 'falls back to the next source when a block is passed that removes the winning data entry' do
+    it 'falls back to the next source when a block is passed that removes the resolved data entry' do
       LaForge::DataEntry.create!(record: record, source_id: data_source.id, attribute_name: "name", value: "Article")
       higher = LaForge::DataSource.find_or_create_by!(name: "guardian") { |source| source.precedence = 2 }
       LaForge::DataEntry.create!(record: record, source_id: higher.id, attribute_name: "name", value: "Story")
@@ -271,7 +271,7 @@ describe 'ActiveRecordExtensions' do
       expect(record.reload.forge_attributes).to eq({ "name" => "Newer" })
     end
 
-    it 'resolves the same winner whatever order the entries are loaded in' do
+    it 'resolves to the same entry whatever order the entries are loaded in' do
       data_entry.update(attribute_name: "name", value: "From the lower source")
       preceding_data_entry.update(attribute_name: "name", value: "From the higher source")
       record.update_attribute_source_precedence(:name, data_source, 2)
@@ -320,7 +320,7 @@ describe 'ActiveRecordExtensions' do
       expect(record.forge_attributes.keys).to eq(%w[count active name])
     end
 
-    it 'lists attributes highest precedence first, whichever entry wins each' do
+    it 'lists attributes highest precedence first, whichever entry each resolves to' do
       higher_source = LaForge::DataSource.find_or_create_by!(name: "guardian") { |source| source.precedence = 2 }
       record.record_data_entries({count: 3}, higher_source.name)
 

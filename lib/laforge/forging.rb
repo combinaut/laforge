@@ -56,7 +56,7 @@ module LaForge
       forged_attrs = {}
       attributes = self.class.with_groups(attributes) unless attributes.nil?
       data_entries = forging_entries(attributes: attributes, sources: sources, except_sources: except_sources).reject { |data_entry| data_entry.marked_for_destruction? || associations.key?(data_entry.attribute_name) }
-      winners = winning_entries(data_entries)
+      resolved = resolve_entries(data_entries)
 
       # The hash's key order is the order `forge` calls the setters, which matters when one setter
       # resets another attribute. It is by the rank of each attribute's highest-ranked entry, highest first,
@@ -67,8 +67,7 @@ module LaForge
       assignment_order.each do |attribute_name|
         next unless record.respond_to?("#{attribute_name}=")
 
-        data_entry = winners.fetch(attribute_name).last
-        forged_attrs[attribute_name] = data_entry&.value
+        forged_attrs[attribute_name] = resolved.fetch(attribute_name).last&.value
       end
 
       return forged_attrs
@@ -114,19 +113,19 @@ module LaForge
     end
 
     # @api private
-    # Returns { attribute_name => [winning entry, the attribute's entry from the winning source] } for `entries`. They
-    # are the same entry for an attribute outside a group. For a group, the winner is the highest-ranked entry for any
-    # of its attributes, and each attribute takes that source's entry, or nil when it has none.
-    def winning_entries(entries)
+    # Returns { attribute_name => [deciding entry, resolved entry] } for `entries`. They are the same entry for an
+    # attribute outside a group. A group's deciding entry is the highest-ranked entry for any of its attributes, and
+    # each attribute resolves to that source's entry, or nil when it has none.
+    def resolve_entries(entries)
       entries = by_precedence(entries)
-      entries.each_with_object({}) do |entry, winners|
-        next if winners.key?(entry.attribute_name)
+      entries.each_with_object({}) do |entry, resolved|
+        next if resolved.key?(entry.attribute_name)
 
         group = self.class.group_of(entry.attribute_name)
-        next winners[entry.attribute_name] = [entry, entry] unless group
+        next resolved[entry.attribute_name] = [entry, entry] unless group
 
         attribute_groups.fetch(group).each do |attribute_name|
-          winners[attribute_name] = [entry, entries.find { |candidate| candidate.attribute_name == attribute_name && candidate.source_id == entry.source_id }]
+          resolved[attribute_name] = [entry, entries.find { |candidate| candidate.attribute_name == attribute_name && candidate.source_id == entry.source_id }]
         end
       end
     end
