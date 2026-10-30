@@ -502,6 +502,71 @@ describe 'Usage' do
     end
   end
 
+  # A screen showing which source each value comes from
+  describe 'the resolved entry of an attribute' do
+    include ActiveSupport::Testing::TimeHelpers
+
+    before do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.record_data_entries({ name: 'From Business Directory' }, business_directory)
+    end
+
+    it 'returns the entry forging takes, unsaved ones included, and its source' do
+      expect(record.resolved_entry(:name)).to have_attributes(value: 'From Business Directory', source: business_directory, new_record?: true)
+      expect(record.resolved_source(:name)).to eq(business_directory)
+      expect(record.resolved_source(:count)).to eq(cadastre)
+    end
+
+    it 'returns the resolved entry of every attribute a source provides, or of the given attributes' do
+      expect(record.resolved_entries.transform_values(&:value)).to eq('name' => 'From Business Directory', 'count' => 5)
+      expect(record.resolved_entries(attributes: %i[count active])).to match('count' => have_attributes(source: cadastre), 'active' => nil)
+    end
+
+    it 'returns nil for an attribute no source provides' do
+      expect(record.resolved_entry(:active)).to be_nil
+      expect(record.resolved_source(:active)).to be_nil
+    end
+
+    it "ranks by the record's own rules, unsaved ones included" do
+      record.update_precedence_order(:name, [cadastre])
+
+      expect(record.resolved_source(:name)).to eq(cadastre)
+    end
+
+    it 'leaves out expired entries, entries marked for destruction and the entries of inactive sources, as a forge does' do
+      record.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor, expires_at: 1.week.from_now)
+      record.save!
+      expect(record.resolved_source(:name)).to eq(map_editor)
+
+      travel 8.days do
+        expect(record.resolved_source(:name)).to eq(business_directory)
+        record.remove_data_entries(attribute_names: :name, sources: business_directory)
+        expect(record.resolved_source(:name)).to eq(cadastre)
+        cadastre.update!(active: false)
+        expect(record.resolved_entry(:name)).to be_nil
+      end
+    end
+
+    it "returns the entry of the source that decided the group for an attribute in a group, which is nil when that source has none" do
+      grouped_model = Class.new(ActiveRecordMock) do
+        def self.name = 'ActiveRecordMock'
+
+        laforged attribute_groups: { listing: %i[name count] }
+      end
+      grouped = grouped_model.create!(name: 'Original')
+      grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      LaForge::DataEntry.create!(record: grouped, source: map_editor, attribute_name: 'name', value: 'From Map Editor') # recorded before the group was declared
+      grouped.save!
+      grouped.reload
+
+      expect(grouped.resolved_entry(:name)).to have_attributes(value: 'From Map Editor')
+      expect(grouped.resolved_entry(:count)).to be_nil
+      expect(grouped.resolved_source(:count)).to eq(map_editor)
+      expect(grouped.resolved_entries).to match('name' => have_attributes(value: 'From Map Editor'), 'count' => nil)
+      expect(grouped.forge_attributes).to include('name' => 'From Map Editor', 'count' => nil)
+    end
+  end
+
   # Data migrations that delete a source's entries so that a value written to the column directly, or another source's
   # value, is not overwritten by the next forge
   describe "deleting a source's entries outside an import" do

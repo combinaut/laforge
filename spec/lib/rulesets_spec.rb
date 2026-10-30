@@ -62,6 +62,19 @@ describe 'Rulesets' do
       expect(forged_name(north_place)).to eq('From Map Editor') # nil chooses the base rules
     end
 
+    it "returns the resolved entry and source by the record's ruleset, raising for a tracked association" do
+      LaForge.ruleset_selector = :region
+      north_place.record_data_entries({ place_categories: [{ category_id: Category.create!(name: 'Café').id }] }, cadastre)
+      north_place.save!
+
+      expect(north_place.reload.resolved_source(:name)).to eq(cadastre)
+      expect(north_place.resolved_entry(:name)).to have_attributes(value: 'From Cadastre')
+      expect(north_place.resolved_entries.keys).to eq(['name']) # leaving out the tracked association
+      expect(south_place.reload.resolved_source(:name)).to eq(map_editor)
+      expect { north_place.resolved_entries(attributes: %i[name place_categories]) }.to raise_error(ArgumentError, /Place#place_categories is a tracked association/)
+      expect { north_place.resolved_source(:place_categories) }.to raise_error(ArgumentError, /Place#place_categories is a tracked association, whose membership is decided member by member\. Ask which sources decide a member with member_sources\(:place_categories, \.\.\.\)/)
+    end
+
     it "uses a model's own selector in place of the app-wide one, and false for the base rules" do
       LaForge.ruleset_selector = ->(_record) { 'north' }
       stub_const('RegionalPlace', Class.new(ActiveRecord::Base))

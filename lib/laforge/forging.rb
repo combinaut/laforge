@@ -3,7 +3,7 @@ module LaForge
   module Forging
     extend ActiveSupport::Concern
 
-    API = %i[forge! forge forge_associations forge_diff forge_attributes].freeze
+    API = %i[forge! forge forge_associations forge_diff forge_attributes resolved_entries resolved_entry resolved_source].freeze
 
     # Assign attributes and save the record based on the data entries
     def forge!(**forge_options, &block)
@@ -89,6 +89,36 @@ module LaForge
       end
 
       return forged_attrs
+    end
+
+    # Returns the entry `forge` takes for the attribute, or nil (see `resolved_entries`)
+    def resolved_entry(attribute)
+      resolved_entries(attributes: attribute)[attribute.to_s]
+    end
+
+    # Returns the source of the entry `forge` takes for the attribute, or the source that decided its group, or nil
+    # when it takes none (see `resolved_entries`)
+    def resolved_source(attribute)
+      resolved_entries(attributes: self.class.with_groups(attribute)).values.compact.first&.source
+    end
+
+    # Returns { attribute_name => resolved entry } for `attributes`, or for every attribute a source provides and the
+    # rest of its group when `attributes` is nil. An attribute resolves to the entry `forge` takes for it, or to nil
+    # when it takes none. Inactive sources, expired entries and entries marked for destruction are left out, and unsaved
+    # entries count, as in `forge`. An attribute in a group resolves to the entry of the source that decided the group,
+    # which is nil when that source has none. Raises for a tracked association in `attributes`, whose membership is
+    # decided member by member, and leaves tracked associations out when `attributes` is nil.
+    def resolved_entries(attributes: nil)
+      names = attributes&.then { |given| Array.wrap(given).map(&:to_s) }
+      if (association = names&.find { |name| associations.key?(name) })
+        raise ArgumentError, "#{record.class.name}##{association} is a tracked association, whose membership is decided member by member. " \
+                             "Ask which sources decide a member with member_sources(:#{association}, ...)"
+      end
+
+      reset_resolver_unless_held # selects the ruleset and reads the rules again, as a forge does
+      entries = forging_entries(attributes: names && self.class.with_groups(names)).reject { |entry| entry.marked_for_destruction? || associations.key?(entry.attribute_name) }
+      resolved = resolve_entries(entries).transform_values(&:last)
+      names ? names.index_with { |name| resolved[name] } : resolved
     end
 
     # @api private

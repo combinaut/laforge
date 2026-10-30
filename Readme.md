@@ -382,6 +382,11 @@ Whether another source still has entries on the record tells whether anything el
     place.data_source_names(attributes: :parcel_number)  # => ['Cadastre']
     place.data_source?(map_editor)                       # => false
 
+    # The entry forging takes for an attribute, its resolved entry, and its source
+    place.resolved_entry(:name)                          # => #<LaForge::DataEntry attribute_name: "name", value: "Harbor Building", ...>
+    place.resolved_source(:name)                         # => business_directory
+    place.resolved_entries                               # => { 'name' => #<LaForge::DataEntry ...>, 'parcel_number' => ... }
+
     # An attribute's entries, resolved entry first
     LaForge::DataEntry.in_precedence_order(place.data_entries.select { |entry| entry.attribute_name == 'name' }, record: place)
 
@@ -391,6 +396,8 @@ Whether another source still has entries on the record tells whether anything el
     # What would be forged without a source, such as the import value an edit replaced
     place.forge_attributes(attributes: :name, except_sources: map_editor)
   ```
+
+`resolved_entries`, `resolved_entry` and `resolved_source` rank as `forge` does, by the record's ruleset and its unsaved entries and rules, leaving out inactive sources and expired entries. They return `nil` for an attribute no source provides. `resolved_entries` covers every attribute a source provides, leaving out tracked associations, or the attributes passed as `attributes:`.
 
 `effective_precedence` on an entry is the precedence of its most specific rule. Since sources rank by level first, compare entries with `in_precedence_order` rather than by that number.
 
@@ -409,6 +416,7 @@ Some attributes only make sense from one source together, such as the lines of a
 - **Forging** takes every attribute of the group from the source whose entry for any of them ranks highest. An attribute that source has no entry for is `nil` rather than falling back to another source's value.
 - **Recording** some of a group's attributes but not all of them raises, naming the missing ones, in every mode and for members recorded through an owner. Pass `nil` for a value the source doesn't have.
 - **Precedence** is set on the group, as `place.update_precedence_order(:postal_address, [...])`. A rule on one of its attributes raises, naming the group. `precedence:` given while recording goes to the group.
+- **Inspecting** an attribute of a group with `resolved_source(:street)` returns the source that decided the group, and `resolved_entry(:street)` returns that source's entry for `street`, which is `nil` when it has none.
 - **Removing and forging** one attribute of a group, with `remove_data_entries(attribute_names:)` or `forge_attributes(attributes:)`, covers the whole group.
 
 ### Deactivating a source
