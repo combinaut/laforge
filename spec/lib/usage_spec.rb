@@ -924,8 +924,8 @@ describe 'Usage' do
       record.forge!
 
       expect(record.reload).to have_attributes(name: 'From Cadastre', count: 9)
-      expect(record.precedence_order(:name).map { |item| [item[:source], item[:level]] }.first(3))
-        .to eq([[cadastre, :record], [map_editor, :global], [business_directory, :global]])
+      expect(record.precedence_order(:name).map { |item| item.values_at(:source, :level, :precedence) }.first(3))
+        .to eq([[cadastre, :record, 1], [map_editor, :global, 33], [business_directory, :global, 32]])
     end
 
     it 'replaces the order at that level, and removes it given nil' do
@@ -956,22 +956,22 @@ describe 'Usage' do
       record.reload.forge
 
       expect(record).to have_attributes(name: 'From Business Directory', count: 5)
-      expect(ActiveRecordMock.precedence_order(attribute: :count).map { |item| [item[:source], item[:level]] }.first(3))
-        .to eq([[cadastre, :attribute], [business_directory, :model], [map_editor, :global]])
+      expect(ActiveRecordMock.precedence_order(attribute: :count).map { |item| item.values_at(:source, :level, :precedence) }.first(3))
+        .to eq([[cadastre, :attribute, 1], [business_directory, :model, 2], [map_editor, :global, 33]])
     end
 
     it 'lists the model-wide order as the model level when asked for no attribute' do
       ActiveRecordMock.update_source_precedence(cadastre, 5)
 
-      expect(ActiveRecordMock.precedence_order.first).to eq(source: cadastre, level: :model, ruleset: nil)
-      expect(ActiveRecordMock.precedence_order(attribute: :name).first).to eq(source: cadastre, level: :model, ruleset: nil)
+      expect(ActiveRecordMock.precedence_order.first).to eq(source: cadastre, level: :model, precedence: 5, ruleset: nil)
+      expect(ActiveRecordMock.precedence_order(attribute: :name).first).to eq(source: cadastre, level: :model, precedence: 5, ruleset: nil)
     end
 
     it 'lists a source with no global precedence last, with no level' do
       # As for a source whose rules were deleted with it, while its entries, which have no foreign key, stayed
       LaForge::PrecedenceRule.global.where(source_id: cadastre.id).delete_all
 
-      expect(ActiveRecordMock.precedence_order.last).to include(source: cadastre, level: nil)
+      expect(ActiveRecordMock.precedence_order.last).to include(source: cadastre, level: nil, precedence: nil)
     ensure
       cadastre.update!(precedence: 31) # specs in other files expect every source to have a global precedence
     end
@@ -1092,7 +1092,7 @@ describe 'Usage' do
       travel 8.days do
         record.reload.forge!
         expect(record.reload.name).to eq('From Business Directory')
-        expect(record.precedence_order(:name).first).to eq(source: map_editor, level: :global, ruleset: nil)
+        expect(record.precedence_order(:name).first).to eq(source: map_editor, level: :global, precedence: 33, ruleset: nil)
         expect(record.source_precedences).to eq({})
         expect(record.precedence_rules.size).to eq(2) # both expired rules are kept
       end

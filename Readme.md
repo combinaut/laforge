@@ -189,11 +189,11 @@ To set the order of sources as a settings screen shows it, pass the order and le
     LaForge.update_precedence_order([source2, source1])             # the global order; renumbers every source, saved now
 
     foo.precedence_order(:height)
-    # => [{ source: source2, level: :record }, { source: source1, level: :global }]
+    # => [{ source: source2, level: :record, precedence: 1, ruleset: nil }, { source: source1, level: :global, precedence: 40, ruleset: nil }]
     MyModel.precedence_order(attribute: :height) # the same, for records with no rules of their own
   ```
 
-`precedence_order` lists the active sources in rank order, each with the most specific level it has a rule at: `:record`, `:attribute`, `:model` or `:global`, and the ruleset the rules at that level come from, `nil` for the base rules (see [Rulesets](#rulesets)). `LaForge::PrecedenceRule.for_records(MyModel)` lists the rules records of a model have of their own.
+`precedence_order` lists the active sources in rank order, each with the most specific level it has a rule at, `:record`, `:attribute`, `:model` or `:global`, the precedence of its rule at that level, and the ruleset the rules at that level come from, `nil` for the base rules (see [Rulesets](#rulesets)). Precedences compare only within a level, so show each with its level, as "record 1 · global 40", rather than ranking sources by the number. `LaForge::PrecedenceRule.for_records(MyModel)` lists the rules records of a model have of their own.
 
 #### Rulesets
 
@@ -390,7 +390,7 @@ Whether another source still has entries on the record tells whether anything el
     # An attribute's entries, resolved entry first
     LaForge::DataEntry.in_precedence_order(place.data_entries.select { |entry| entry.attribute_name == 'name' }, record: place)
 
-    # The sources in the order they rank for an attribute, and the level that ranks each
+    # The sources in the order they rank for an attribute, and the level and precedence that rank each
     place.precedence_order(:name)
 
     # What would be forged without a source, such as the import value an edit replaced
@@ -399,7 +399,7 @@ Whether another source still has entries on the record tells whether anything el
 
 `resolved_entries`, `resolved_entry` and `resolved_source` rank as `forge` does, by the record's ruleset and its unsaved entries and rules, leaving out inactive sources and expired entries. They return `nil` for an attribute no source provides. `resolved_entries` covers every attribute a source provides, leaving out tracked associations, or the attributes passed as `attributes:`.
 
-`effective_precedence` on an entry is the precedence of its most specific rule. Since sources rank by level first, compare entries with `in_precedence_order` rather than by that number.
+`effective_precedence` on an entry is the precedence of its most specific rule. Since sources rank by level first, compare entries with `in_precedence_order` rather than by that number, and show a source's precedence with its level, as `precedence_order` gives them.
 
 A source that lists a member of a tracked association without saying anything about it has no entries on the member, so it isn't among the member's sources; `member_sources` on the owner names it (see [Inspecting associations](#inspecting-associations)).
 
