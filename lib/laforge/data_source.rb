@@ -32,6 +32,22 @@ module LaForge
       PrecedenceRule.global.maximum(:precedence)
     end
 
+    # @api private
+    # Returns the active sources highest-ranked first by `resolver` for the attribute on `record`, or on a record with
+    # no rules of its own when `record` is nil, as [{ source:, level:, ruleset: }]. A source's level is the most
+    # specific one it has a rule at, and its ruleset is `resolver.ruleset` below the record level, else nil. Sources
+    # that rank equally come in id order. A source with no rule at any level, such as one without a global precedence,
+    # comes last with a nil level.
+    def self.precedence_order(attribute, resolver:, record: nil)
+      levels = %i[record attribute model global]
+      ranked = active.to_a.map { |source| [source, resolver.rank(record, attribute.to_s, source.id)] }.sort_by { |source, rank| rank.map(&:-@) + [source.id] }
+      ranked.map do |source, rank|
+        index = rank.index { |precedence| precedence != -Float::INFINITY }
+        level = index && levels[index]
+        { source: source, level: level, ruleset: (resolver.ruleset if level && level != :record) }
+      end
+    end
+
     # Returns the source's global precedence, or nil when it has none
     def precedence
       global_precedence_rule&.precedence

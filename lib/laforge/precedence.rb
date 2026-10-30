@@ -46,7 +46,7 @@ module LaForge
     def precedence_order(attribute)
       # Not the last forge's resolver, so the ruleset and rules as they are now count
       resolver = PrecedenceRule::Resolver.new(record.class, ruleset: LaForge.ruleset_for(record))
-      LaForge::ActiveRecord.order_by_rank(resolver, record, attribute)
+      DataSource.precedence_order(attribute, resolver: resolver, record: record)
     end
 
     # Returns `{ attribute_name => { source => precedence } }` for this record's own rules, unsaved ones included and
@@ -182,7 +182,7 @@ module LaForge
       # by, nil for the base rules, for a ruleset not in use, or with a nil level.
       def precedence_order(attribute: nil, ruleset: nil)
         resolver = PrecedenceRule::Resolver.new(model, ruleset: PrecedenceRule.ruleset_name(ruleset, where: "#{model.name}.precedence_order"))
-        LaForge::ActiveRecord.order_by_rank(resolver, nil, attribute)
+        DataSource.precedence_order(attribute, resolver: resolver)
       end
 
       # Returns `{ attribute_name => { source => precedence } }` for this model's model-wide rules, in the base rules or
