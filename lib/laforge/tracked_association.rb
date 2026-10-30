@@ -252,7 +252,7 @@ module LaForge
       discard_created
       records = included_records + undecided.map { |key| existing.delete(key) } # one an earlier forge removed stays in the owner's pending writes
       forge_members(records)
-      write_order(records) # after the members' forges, so list order wins over a position recorded on a member
+      write_order(records) # after the members' forges, so list order replaces a position recorded on a member
       clear_pending
       prune_withdrawn
       entomb if config.tombstone_matcher
@@ -339,7 +339,7 @@ module LaForge
         membership: (deciding[0].source if deciding && deciding[1].decision(config, key) == :include),
         listed_by: member_lists.select { |_, list| list.decision(config, key) == :include }.map { |entry, _| entry.source },
         excluded_by: member_lists.select { |_, list| list.partial? && list.decision(config, key) == :exclude }.map { |entry, _| entry.source },
-        attributes: record ? record.laforge.winning_entries(candidates).transform_values { |winner, _| winner.source } : {}
+        attributes: record ? record.laforge.resolve_entries(candidates).transform_values { |deciding, _| deciding.source } : {}
       }
     end
 

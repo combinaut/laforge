@@ -40,13 +40,14 @@ module LaForge
     end
 
     # Returns the active sources in the order they rank for one attribute of this record, as
-    # [{ source:, level:, ruleset: }]. An attribute in a group ranks as its group. The level is the most specific one
-    # the source has a rule at, :record, :attribute, :model or :global, or nil when it has none. The ruleset is the one
-    # ranked by, nil for the base rules, at the :record level, or with a nil level.
+    # [{ source:, level:, precedence:, ruleset: }]. An attribute in a group ranks as its group. The level is the most
+    # specific one the source has a rule at, :record, :attribute, :model or :global, or nil when it has none, and the
+    # precedence is that rule's, or nil with a nil level. The ruleset is the one ranked by, nil for the base rules, at
+    # the :record level, or with a nil level.
     def precedence_order(attribute)
       # Not the last forge's resolver, so the ruleset and rules as they are now count
       resolver = PrecedenceRule::Resolver.new(record.class, ruleset: LaForge.ruleset_for(record))
-      LaForge::ActiveRecord.order_by_rank(resolver, record, attribute)
+      DataSource.precedence_order(attribute, resolver: resolver, record: record)
     end
 
     # Returns `{ attribute_name => { source => precedence } }` for this record's own rules, unsaved ones included and
@@ -177,12 +178,13 @@ module LaForge
 
       # Returns the active sources in the order they rank for one attribute, or for every attribute when `attribute` is
       # nil, on a record of this model with no rules of its own, by the base rules or by a ruleset, as
-      # [{ source:, level:, ruleset: }]. An attribute in a group ranks as its group. The level is the most specific one
-      # the source has a rule at, :attribute, :model or :global, or nil when it has none. The ruleset is the one ranked
-      # by, nil for the base rules, for a ruleset not in use, or with a nil level.
+      # [{ source:, level:, precedence:, ruleset: }]. An attribute in a group ranks as its group. The level is the most
+      # specific one the source has a rule at, :attribute, :model or :global, or nil when it has none, and the
+      # precedence is that rule's, or nil with a nil level. The ruleset is the one ranked by, nil for the base rules,
+      # for a ruleset not in use, or with a nil level.
       def precedence_order(attribute: nil, ruleset: nil)
         resolver = PrecedenceRule::Resolver.new(model, ruleset: PrecedenceRule.ruleset_name(ruleset, where: "#{model.name}.precedence_order"))
-        LaForge::ActiveRecord.order_by_rank(resolver, nil, attribute)
+        DataSource.precedence_order(attribute, resolver: resolver)
       end
 
       # Returns `{ attribute_name => { source => precedence } }` for this model's model-wide rules, in the base rules or

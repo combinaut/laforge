@@ -98,4 +98,17 @@ describe 'The upgrade migrations' do
     expect(connection.select_rows('SELECT name, priority FROM laforge_data_sources ORDER BY id')).to eq([['Cadastre', 10], ['Map Editor', 20]]) # not the ruleset's 5
     expect(connection.select_rows('SELECT source_id, priority FROM laforge_data_entries ORDER BY id')).to eq([[1, 30], [2, nil]])
   end
+
+  it 'raises before creating anything when an entry has a priority below that of another source whose entry for the same record and attribute has none' do
+    migrate(alpha_migration, :up)
+    connection.execute("INSERT INTO laforge_data_sources (id, name, priority, created_at, updated_at) VALUES (1, 'Cadastre', 10, NOW(), NOW()), (2, 'Map Editor', 20, NOW(), NOW())")
+    connection.execute(<<~SQL)
+      INSERT INTO laforge_data_entries (record_type, record_id, attribute_name, source_id, value, priority, created_at, updated_at)
+      VALUES ('Place', 1, 'name', 1, '"Harbor Building"', 15, NOW(), NOW()), ('Place', 1, 'name', 2, '"Harbour Building"', NULL, NOW(), NOW())
+    SQL
+
+    expect { migrate(migration('precedence_rules_migration', 'MoveLaforgePrioritiesToPrecedenceRules'), :up) }
+      .to raise_error(/\(Place 1 name from source 1, below source 2\)/)
+    expect(connection.table_exists?(:laforge_precedence_rules)).to be(false)
+  end
 end

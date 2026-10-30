@@ -189,11 +189,11 @@ To set the order of sources as a settings screen shows it, pass the order and le
     LaForge.update_precedence_order([source2, source1])             # the global order; renumbers every source, saved now
 
     foo.precedence_order(:height)
-    # => [{ source: source2, level: :record }, { source: source1, level: :global }]
+    # => [{ source: source2, level: :record, precedence: 1, ruleset: nil }, { source: source1, level: :global, precedence: 40, ruleset: nil }]
     MyModel.precedence_order(attribute: :height) # the same, for records with no rules of their own
   ```
 
-`precedence_order` lists the active sources in rank order, each with the most specific level it has a rule at: `:record`, `:attribute`, `:model` or `:global`, and the ruleset the rules at that level come from, `nil` for the base rules (see [Rulesets](#rulesets)). `LaForge::PrecedenceRule.for_records(MyModel)` lists the rules records of a model have of their own.
+`precedence_order` lists the active sources in rank order, each with the most specific level it has a rule at, `:record`, `:attribute`, `:model` or `:global`, the precedence of its rule at that level, and the ruleset the rules at that level come from, `nil` for the base rules (see [Rulesets](#rulesets)). Precedences compare only within a level, so show each with its level, as "record 1 · global 40", rather than ranking sources by the number. `LaForge::PrecedenceRule.for_records(MyModel)` lists the rules records of a model have of their own.
 
 #### Rulesets
 
@@ -285,7 +285,7 @@ Each import run records everything the source currently says about a record, the
     place.forge!
   ```
 
-To see what an import would change before saving, use `forge_attributes` (the winning value of every recorded attribute) or `forge_diff` (only those that differ from the record).
+To see what an import would change before saving, use `forge_attributes` (the value every recorded attribute resolves to) or `forge_diff` (only those that differ from the record).
 
   ```ruby
     place.record_data_entries({ land_use: 'Mixed Use' }, cadastre)
@@ -296,7 +296,7 @@ Recorded attributes do not have to be columns. Any attribute with a setter can b
 
 ### Editor overrides
 
-An edit made in the map editor is recorded on the highest precedence source, so it wins over every importer and survives their later runs. Pass `attributes:` to forge only the edited attribute.
+An edit made in the map editor is recorded on the highest precedence source, so it outranks every importer and survives their later runs. Pass `attributes:` to forge only the edited attribute.
 
   ```ruby
     place.record_data_entry(:name, 'Harbor Building', map_editor)
@@ -324,7 +324,7 @@ To drop an override so the next source's value takes over, remove its entries.
 
 Destroying the entries, as `place.data_entries.with_source(map_editor).with_attribute(:name).destroy_all`, has the same effect from the next forge.
 
-Entries keep being applied at every forge until they are deleted. To make a value written directly to a column stick, or to let a lower source's value win, delete the outranking entries.
+Entries keep being applied at every forge until they are deleted. To make a value written directly to a column stick, or to let an attribute resolve to a lower source's value, delete the outranking entries.
 
   ```ruby
     LaForge::DataEntry.with_source(business_directory).where(record_type: 'Place', record_id: place_ids, attribute_name: 'name').delete_all
@@ -382,17 +382,24 @@ Whether another source still has entries on the record tells whether anything el
     place.data_source_names(attributes: :parcel_number)  # => ['Cadastre']
     place.data_source?(map_editor)                       # => false
 
-    # An attribute's entries, winning entry first
+    # The entry forging takes for an attribute, its resolved entry, and its source
+    place.resolved_entry(:name)                          # => #<LaForge::DataEntry attribute_name: "name", value: "Harbor Building", ...>
+    place.resolved_source(:name)                         # => business_directory
+    place.resolved_entries                               # => { 'name' => #<LaForge::DataEntry ...>, 'parcel_number' => ... }
+
+    # An attribute's entries, resolved entry first
     LaForge::DataEntry.in_precedence_order(place.data_entries.select { |entry| entry.attribute_name == 'name' }, record: place)
 
-    # The sources in the order they rank for an attribute, and the level that ranks each
+    # The sources in the order they rank for an attribute, and the level and precedence that rank each
     place.precedence_order(:name)
 
     # What would be forged without a source, such as the import value an edit replaced
     place.forge_attributes(attributes: :name, except_sources: map_editor)
   ```
 
-`effective_precedence` on an entry is the precedence of its most specific rule. Since sources rank by level first, compare entries with `in_precedence_order` rather than by that number.
+`resolved_entries`, `resolved_entry` and `resolved_source` rank as `forge` does, by the record's ruleset and its unsaved entries and rules, leaving out inactive sources and expired entries. They return `nil` for an attribute no source provides. `resolved_entries` covers every attribute a source provides, leaving out tracked associations, or the attributes passed as `attributes:`.
+
+`effective_precedence` on an entry is the precedence of its most specific rule. Since sources rank by level first, compare entries with `in_precedence_order` rather than by that number, and show a source's precedence with its level, as `precedence_order` gives them.
 
 A source that lists a member of a tracked association without saying anything about it has no entries on the member, so it isn't among the member's sources; `member_sources` on the owner names it (see [Inspecting associations](#inspecting-associations)).
 
@@ -409,6 +416,7 @@ Some attributes only make sense from one source together, such as the lines of a
 - **Forging** takes every attribute of the group from the source whose entry for any of them ranks highest. An attribute that source has no entry for is `nil` rather than falling back to another source's value.
 - **Recording** some of a group's attributes but not all of them raises, naming the missing ones, in every mode and for members recorded through an owner. Pass `nil` for a value the source doesn't have.
 - **Precedence** is set on the group, as `place.update_precedence_order(:postal_address, [...])`. A rule on one of its attributes raises, naming the group. `precedence:` given while recording goes to the group.
+- **Inspecting** an attribute of a group with `resolved_source(:street)` returns the source that decided the group, and `resolved_entry(:street)` returns that source's entry for `street`, which is `nil` when it has none.
 - **Removing and forging** one attribute of a group, with `remove_data_entries(attribute_names:)` or `forge_attributes(attributes:)`, covers the whole group.
 
 ### Deactivating a source
@@ -527,15 +535,15 @@ It costs every write, so add it only where those counts are needed.
 When two records turn out to be the same, merge what LaForge holds for the duplicate into the survivor, then forge the survivor.
 
   ```ruby
-    result = LaForge.merge(survivor, duplicate)          # on a conflict, the duplicate's entry wins, as the argument does in Hash#merge
-    result = LaForge.reverse_merge(survivor, duplicate)  # on a conflict, the survivor's entry wins
+    result = LaForge.merge(survivor, duplicate)          # on a conflict, the duplicate's entry is kept, as the argument's is in Hash#merge
+    result = LaForge.reverse_merge(survivor, duplicate)  # on a conflict, the survivor's entry is kept
     survivor.forge!
     duplicate.archive!                                   # the duplicate is left to the application
   ```
 
 - **Attribute entries and per-record precedence rules** move to the survivor. Where both records have one for the same attribute and source, that's a conflict, and the function decides which is kept, unless only one of them has expired, in which case the one that still counts is kept. The other is destroyed.
 - **Members of tracked associations** move to the survivor with their ids and everything recorded on them. Where both records have a member with the same key, as two join rows naming the same category do, the survivor's row is kept, and the duplicate's row is merged into it the same way, forged, and destroyed. Where both have a has_one member with different keys, such as markers with different labels, the merge raises `ArgumentError` before anything moves, since the survivor can hold only one. Remove one of them, or give them the same key, then merge again. The same goes for one source's has_one lists on both records that name members with different keys, as before either record is forged.
-- **Each source's member lists** on the two records are combined, so the survivor's list names every member either named, and keeps both records' tombstones. Where the lists cover a member differently, the winner's coverage of it is kept.
+- **Each source's member lists** on the two records are combined, so the survivor's list names every member either named, and keeps both records' tombstones. Where the lists cover a member differently, the preferred member list's coverage of it is kept, which is the duplicate's for `merge` and the survivor's for `reverse_merge`.
 - **Not touched:** associations LaForge doesn't track, and the duplicate itself, which is left with no LaForge data for the application to archive or destroy.
 
 The result says what moved and what conflicted, as `{ entries_moved:, entries_conflicting: [{ attribute:, source:, kept: }], precedence_rules_moved:, precedence_rules_conflicting: [...], members_moved: { 'tenants' => [ids] }, members_merged: { 'place_categories' => [{ kept:, removed: }] } }`. Both records must be saved, of the same model, and have no unsaved entries or rules. The merge runs in a transaction and is saved immediately.
@@ -567,7 +575,7 @@ Tracking a `has_many` or `has_one` association is about which members (Rails' as
 - Other records, such as tenants, are identified by their primary key. A source names an existing member by its `id`, and a new member by its attributes alone (see [Naming members](#naming-members)).
 - `key:` names other columns instead, for a natural key such as a weekday, or an identifier every source shares. It also overrides a derived key, as `key: :id` does for an owned model that happens to belong to another record.
 - A `has_one` with no key has a single member, which every source lists.
-- Member order is written to the integer column the association's scope orders by, such as `position` for `-> { order(:position) }`, in the scope's direction, unless that column identifies the member or its owner. `order_column:` names the column instead, written ascending, which a scope ordering by an expression such as `Arel.sql(...)` needs, and `order_column: false` writes no order. The list's order wins over a position recorded on the member itself.
+- Member order is written to the integer column the association's scope orders by, such as `position` for `-> { order(:position) }`, in the scope's direction, unless that column identifies the member or its owner. `order_column:` names the column instead, written ascending, which a scope ordering by an expression such as `Arel.sql(...)` needs, and `order_column: false` writes no order. The list's order replaces a position recorded on the member itself.
 - `tombstone_matcher:` recognizes a member a source excluded when a source lists it again (see [Removed members that sources list again](#removed-members-that-sources-list-again)).
 
   ```ruby
@@ -705,7 +713,7 @@ One member at a time is the same call with one member in it.
 
 #### Several edits before a forge
 
-Edits made before a forge add up. Each keeps what it said about a member, and the forge records them in order, so a later edit of the same attribute wins and an edit of another attribute keeps the first. Excluding or forgetting a member drops what earlier edits said about it.
+Edits made before a forge add up. Each keeps what it said about a member, and the forge records them in order, so a later edit of the same attribute replaces the earlier one and an edit of another attribute keeps the first. Excluding or forgetting a member drops what earlier edits said about it.
 
 #### What an edit can't do
 
@@ -782,7 +790,7 @@ A `precedence:` given while recording covers everything the payload says, as it 
 
 - **A member passed as a saved record** says nothing about its attributes, so the precedence covers only its membership.
 - **Everything in the hash gets it.** To make a source authoritative for one attribute only, record that attribute in its own call, or use a rule.
-- **It writes one rule per member and attribute.** For "this source always wins this attribute", one model-wide rule is the better fit.
+- **It writes one rule per member and attribute.** For "this source always outranks the others on this attribute", one model-wide rule is the better fit.
 
   ```ruby
     Tenant.update_attribute_source_precedence(:registration_number, business_registry, 100)

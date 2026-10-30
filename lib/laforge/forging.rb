@@ -3,7 +3,7 @@ module LaForge
   module Forging
     extend ActiveSupport::Concern
 
-    API = %i[forge! forge forge_associations forge_diff forge_attributes].freeze
+    API = %i[forge! forge forge_associations forge_diff forge_attributes resolved_entries resolved_entry resolved_source].freeze
 
     # Assign attributes and save the record based on the data entries
     def forge!(**forge_options, &block)
@@ -32,6 +32,24 @@ module LaForge
       self.associations.slice(*names).each_value { |config| TrackedAssociation.new(record, config).forge }
     end
 
+    # @api private
+    # Returns `forge_diff` as it would be once `pending` is recorded on the record, then restores the record's entries
+    # and rules. `pending` is what its owner's member lists keep pending for it, as
+    # [[source id, attributes, recorded_at, edit, settings], ...].
+    def forge_diff_with(pending)
+      entries = record.data_entries.to_a
+      values = entries.to_h { |entry| [entry, [entry.attributes.slice('value', 'recorded_at', 'expires_at', 'expires_on_source_id'), entry.remade_state, entry.marked_for_destruction?]] }
+      rules = record.precedence_rules.to_a # recording builds, changes and expires rules, which the owner's next save writes
+      settings = rules.to_h { |rule| [rule, [rule.attributes.slice('precedence', 'recorded_at', 'expires_at', 'expires_on_source_id'), rule.remade_state, rule.marked_for_destruction?]] }
+      pending.each { |source_id, attributes, recorded_at, edit, item_settings| record_pending(attributes, source_id, recorded_at, edit: edit, settings: item_settings) }
+      forge_diff
+    ensure
+      record.data_entries.target.replace(entries)
+      values.each { |entry, (attributes, remade, marked)| entry.assign_attributes(attributes); entry.remade_state = remade; LaForge::ActiveRecord.set_marked_for_destruction(entry, marked) }
+      record.precedence_rules.target.replace(rules)
+      settings.each { |rule, (attributes, remade, marked)| rule.assign_attributes(attributes); rule.remade_state = remade; LaForge::ActiveRecord.set_marked_for_destruction(rule, marked) }
+    end
+
     # Returns a hash of the attribute changes between the saved record and the data entries, selecting the ruleset once
     # as `forge` does
     def forge_diff(**forge_options)
@@ -56,7 +74,7 @@ module LaForge
       forged_attrs = {}
       attributes = self.class.with_groups(attributes) unless attributes.nil?
       data_entries = forging_entries(attributes: attributes, sources: sources, except_sources: except_sources).reject { |data_entry| data_entry.marked_for_destruction? || associations.key?(data_entry.attribute_name) }
-      winners = winning_entries(data_entries)
+      resolved = resolve_entries(data_entries)
 
       # The hash's key order is the order `forge` calls the setters, which matters when one setter
       # resets another attribute. It is by the rank of each attribute's highest-ranked entry, highest first,
@@ -67,29 +85,40 @@ module LaForge
       assignment_order.each do |attribute_name|
         next unless record.respond_to?("#{attribute_name}=")
 
-        data_entry = winners.fetch(attribute_name).last
-        forged_attrs[attribute_name] = data_entry&.value
+        forged_attrs[attribute_name] = resolved.fetch(attribute_name).last&.value
       end
 
       return forged_attrs
     end
 
-    # @api private
-    # Returns `forge_diff` as it would be once `pending` is recorded on the record, then restores the record's entries
-    # and rules. `pending` is what its owner's member lists keep pending for it, as
-    # [[source id, attributes, recorded_at, edit, settings], ...].
-    def forge_diff_with(pending)
-      entries = record.data_entries.to_a
-      values = entries.to_h { |entry| [entry, [entry.attributes.slice('value', 'recorded_at', 'expires_at', 'expires_on_source_id'), entry.remade_state, entry.marked_for_destruction?]] }
-      rules = record.precedence_rules.to_a # recording builds, changes and expires rules, which the owner's next save writes
-      settings = rules.to_h { |rule| [rule, [rule.attributes.slice('precedence', 'recorded_at', 'expires_at', 'expires_on_source_id'), rule.remade_state, rule.marked_for_destruction?]] }
-      pending.each { |source_id, attributes, recorded_at, edit, item_settings| record_pending(attributes, source_id, recorded_at, edit: edit, settings: item_settings) }
-      forge_diff
-    ensure
-      record.data_entries.target.replace(entries)
-      values.each { |entry, (attributes, remade, marked)| entry.assign_attributes(attributes); entry.remade_state = remade; LaForge::ActiveRecord.set_marked_for_destruction(entry, marked) }
-      record.precedence_rules.target.replace(rules)
-      settings.each { |rule, (attributes, remade, marked)| rule.assign_attributes(attributes); rule.remade_state = remade; LaForge::ActiveRecord.set_marked_for_destruction(rule, marked) }
+    # Returns the entry `forge` takes for the attribute, or nil (see `resolved_entries`)
+    def resolved_entry(attribute)
+      resolved_entries(attributes: attribute)[attribute.to_s]
+    end
+
+    # Returns the source of the entry `forge` takes for the attribute, or the source that decided its group, or nil
+    # when it takes none (see `resolved_entries`)
+    def resolved_source(attribute)
+      resolved_entries(attributes: self.class.with_groups(attribute)).values.compact.first&.source
+    end
+
+    # Returns { attribute_name => resolved entry } for `attributes`, or for every attribute a source provides and the
+    # rest of its group when `attributes` is nil. An attribute resolves to the entry `forge` takes for it, or to nil
+    # when it takes none. Inactive sources, expired entries and entries marked for destruction are left out, and unsaved
+    # entries count, as in `forge`. An attribute in a group resolves to the entry of the source that decided the group,
+    # which is nil when that source has none. Raises for a tracked association in `attributes`, whose membership is
+    # decided member by member, and leaves tracked associations out when `attributes` is nil.
+    def resolved_entries(attributes: nil)
+      names = attributes&.then { |given| Array.wrap(given).map(&:to_s) }
+      if (association = names&.find { |name| associations.key?(name) })
+        raise ArgumentError, "#{record.class.name}##{association} is a tracked association, whose membership is decided member by member. " \
+                             "Ask which sources decide a member with member_sources(:#{association}, ...)"
+      end
+
+      reset_resolver_unless_held # selects the ruleset and reads the rules again, as a forge does
+      entries = forging_entries(attributes: names && self.class.with_groups(names)).reject { |entry| entry.marked_for_destruction? || associations.key?(entry.attribute_name) }
+      resolved = resolve_entries(entries).transform_values(&:last)
+      names ? names.index_with { |name| resolved[name] } : resolved
     end
 
     # @api private
@@ -114,19 +143,19 @@ module LaForge
     end
 
     # @api private
-    # Returns { attribute_name => [winning entry, the attribute's entry from the winning source] } for `entries`. They
-    # are the same entry for an attribute outside a group. For a group, the winner is the highest-ranked entry for any
-    # of its attributes, and each attribute takes that source's entry, or nil when it has none.
-    def winning_entries(entries)
+    # Returns { attribute_name => [deciding entry, resolved entry] } for `entries`. They are the same entry for an
+    # attribute outside a group. A group's deciding entry is the highest-ranked entry for any of its attributes, and
+    # each attribute resolves to that source's entry, or nil when it has none.
+    def resolve_entries(entries)
       entries = by_precedence(entries)
-      entries.each_with_object({}) do |entry, winners|
-        next if winners.key?(entry.attribute_name)
+      entries.each_with_object({}) do |entry, resolved|
+        next if resolved.key?(entry.attribute_name)
 
         group = self.class.group_of(entry.attribute_name)
-        next winners[entry.attribute_name] = [entry, entry] unless group
+        next resolved[entry.attribute_name] = [entry, entry] unless group
 
         attribute_groups.fetch(group).each do |attribute_name|
-          winners[attribute_name] = [entry, entries.find { |candidate| candidate.attribute_name == attribute_name && candidate.source_id == entry.source_id }]
+          resolved[attribute_name] = [entry, entries.find { |candidate| candidate.attribute_name == attribute_name && candidate.source_id == entry.source_id }]
         end
       end
     end

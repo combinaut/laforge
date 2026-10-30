@@ -33,7 +33,7 @@ describe 'Usage' do
   # An importer records every attribute it assigns on its own source, forges once the row has been assigned, and saves
   # the record itself afterwards
   describe 'an importer recording each attribute it assigns' do
-    it 'applies the winning value of each attribute and persists the entries with the record' do
+    it 'applies the value each attribute resolves to and persists the entries with the record' do
       record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
       record.record_data_entries({ name: 'From Map Editor' }, map_editor)
       record.forge
@@ -51,7 +51,7 @@ describe 'Usage' do
       expect(record.reload).to have_attributes(name: 'From Cadastre', count: 9)
     end
 
-    it 'lets a higher source win over a value the importer assigned and recorded in the same run' do
+    it "resolves to a higher source's value over one the importer assigned and recorded in the same run" do
       # Assign, then record what was assigned, then forge
       record.record_data_entries({ name: 'From Map Editor' }, map_editor)
       record.save!
@@ -62,7 +62,7 @@ describe 'Usage' do
       expect(record.name).to eq('From Map Editor')
     end
 
-    it 'returns the winning value of every recorded attribute, so changes can be tracked before saving' do
+    it 'returns the value every recorded attribute resolves to, so changes can be tracked before saving' do
       record.record_data_entries({ name: 'From Cadastre', active: false }, cadastre)
       record.record_data_entries({ name: 'From Business Directory' }, business_directory)
 
@@ -502,6 +502,71 @@ describe 'Usage' do
     end
   end
 
+  # A screen showing which source each value comes from
+  describe 'the resolved entry of an attribute' do
+    include ActiveSupport::Testing::TimeHelpers
+
+    before do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.record_data_entries({ name: 'From Business Directory' }, business_directory)
+    end
+
+    it 'returns the entry forging takes, unsaved ones included, and its source' do
+      expect(record.resolved_entry(:name)).to have_attributes(value: 'From Business Directory', source: business_directory, new_record?: true)
+      expect(record.resolved_source(:name)).to eq(business_directory)
+      expect(record.resolved_source(:count)).to eq(cadastre)
+    end
+
+    it 'returns the resolved entry of every attribute a source provides, or of the given attributes' do
+      expect(record.resolved_entries.transform_values(&:value)).to eq('name' => 'From Business Directory', 'count' => 5)
+      expect(record.resolved_entries(attributes: %i[count active])).to match('count' => have_attributes(source: cadastre), 'active' => nil)
+    end
+
+    it 'returns nil for an attribute no source provides' do
+      expect(record.resolved_entry(:active)).to be_nil
+      expect(record.resolved_source(:active)).to be_nil
+    end
+
+    it "ranks by the record's own rules, unsaved ones included" do
+      record.update_precedence_order(:name, [cadastre])
+
+      expect(record.resolved_source(:name)).to eq(cadastre)
+    end
+
+    it 'leaves out expired entries, entries marked for destruction and the entries of inactive sources, as a forge does' do
+      record.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor, expires_at: 1.week.from_now)
+      record.save!
+      expect(record.resolved_source(:name)).to eq(map_editor)
+
+      travel 8.days do
+        expect(record.resolved_source(:name)).to eq(business_directory)
+        record.remove_data_entries(attribute_names: :name, sources: business_directory)
+        expect(record.resolved_source(:name)).to eq(cadastre)
+        cadastre.update!(active: false)
+        expect(record.resolved_entry(:name)).to be_nil
+      end
+    end
+
+    it "returns the entry of the source that decided the group for an attribute in a group, which is nil when that source has none" do
+      grouped_model = Class.new(ActiveRecordMock) do
+        def self.name = 'ActiveRecordMock'
+
+        laforged attribute_groups: { listing: %i[name count] }
+      end
+      grouped = grouped_model.create!(name: 'Original')
+      grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      LaForge::DataEntry.create!(record: grouped, source: map_editor, attribute_name: 'name', value: 'From Map Editor') # recorded before the group was declared
+      grouped.save!
+      grouped.reload
+
+      expect(grouped.resolved_entry(:name)).to have_attributes(value: 'From Map Editor')
+      expect(grouped.resolved_entry(:count)).to be_nil
+      expect(grouped.resolved_source(:count)).to eq(map_editor)
+      expect(grouped.resolved_entries).to match('name' => have_attributes(value: 'From Map Editor'), 'count' => nil)
+      expect(grouped.forge_attributes).to include('name' => 'From Map Editor', 'count' => nil)
+    end
+  end
+
   # Data migrations that delete a source's entries so that a value written to the column directly, or another source's
   # value, is not overwritten by the next forge
   describe "deleting a source's entries outside an import" do
@@ -526,7 +591,7 @@ describe 'Usage' do
       expect(record.reload.count).to eq(0)
     end
 
-    it "lets the next source's value win once the outranking source's entries are deleted" do
+    it "resolves to the next source's value once the outranking source's entries are deleted" do
       LaForge::DataEntry.with_source('Business Directory').where(record_type: 'ActiveRecordMock', record_id: record.id, attribute_name: 'name').delete_all
       record.reload.forge!
 
@@ -547,7 +612,7 @@ describe 'Usage' do
     let(:parent) { ActiveRecordMock.create!(name: 'Parent') }
     let(:other_parent) { ActiveRecordMock.create!(name: 'Other Parent') }
 
-    it 'records the foreign key and forges the association from the winning source' do
+    it 'records the foreign key and forges the association from the highest-ranked source' do
       record.record_data_entries({ parent: parent }, cadastre)
       record.record_data_entries({ parent: other_parent }, business_directory)
       record.forge!
@@ -579,7 +644,7 @@ describe 'Usage' do
       expect(counted.reload.subject).to eq(parent)
     end
 
-    it 'clears the association when the winning source provides nil' do
+    it 'clears the association when the highest-ranked source provides nil' do
       record.record_data_entries({ parent: parent }, cadastre)
       record.record_data_entries({ parent: nil }, business_directory)
       record.forge!
@@ -665,7 +730,7 @@ describe 'Usage' do
       expect(grouped.reload).to have_attributes(name: 'From Map Editor', count: nil)
     end
 
-    it 'blanks an attribute the winning source has no entry for' do
+    it "blanks an attribute the group's highest-ranked source has no entry for" do
       grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
       LaForge::DataEntry.create!(record: grouped, source: map_editor, attribute_name: 'name', value: 'From Map Editor') # recorded before the group was declared
       grouped.reload.forge!
@@ -859,8 +924,8 @@ describe 'Usage' do
       record.forge!
 
       expect(record.reload).to have_attributes(name: 'From Cadastre', count: 9)
-      expect(record.precedence_order(:name).map { |item| [item[:source], item[:level]] }.first(3))
-        .to eq([[cadastre, :record], [map_editor, :global], [business_directory, :global]])
+      expect(record.precedence_order(:name).map { |item| item.values_at(:source, :level, :precedence) }.first(3))
+        .to eq([[cadastre, :record, 1], [map_editor, :global, 33], [business_directory, :global, 32]])
     end
 
     it 'replaces the order at that level, and removes it given nil' do
@@ -891,22 +956,22 @@ describe 'Usage' do
       record.reload.forge
 
       expect(record).to have_attributes(name: 'From Business Directory', count: 5)
-      expect(ActiveRecordMock.precedence_order(attribute: :count).map { |item| [item[:source], item[:level]] }.first(3))
-        .to eq([[cadastre, :attribute], [business_directory, :model], [map_editor, :global]])
+      expect(ActiveRecordMock.precedence_order(attribute: :count).map { |item| item.values_at(:source, :level, :precedence) }.first(3))
+        .to eq([[cadastre, :attribute, 1], [business_directory, :model, 2], [map_editor, :global, 33]])
     end
 
     it 'lists the model-wide order as the model level when asked for no attribute' do
       ActiveRecordMock.update_source_precedence(cadastre, 5)
 
-      expect(ActiveRecordMock.precedence_order.first).to eq(source: cadastre, level: :model, ruleset: nil)
-      expect(ActiveRecordMock.precedence_order(attribute: :name).first).to eq(source: cadastre, level: :model, ruleset: nil)
+      expect(ActiveRecordMock.precedence_order.first).to eq(source: cadastre, level: :model, precedence: 5, ruleset: nil)
+      expect(ActiveRecordMock.precedence_order(attribute: :name).first).to eq(source: cadastre, level: :model, precedence: 5, ruleset: nil)
     end
 
     it 'lists a source with no global precedence last, with no level' do
       # As for a source whose rules were deleted with it, while its entries, which have no foreign key, stayed
       LaForge::PrecedenceRule.global.where(source_id: cadastre.id).delete_all
 
-      expect(ActiveRecordMock.precedence_order.last).to include(source: cadastre, level: nil)
+      expect(ActiveRecordMock.precedence_order.last).to include(source: cadastre, level: nil, precedence: nil)
     ensure
       cadastre.update!(precedence: 31) # specs in other files expect every source to have a global precedence
     end
@@ -1027,7 +1092,7 @@ describe 'Usage' do
       travel 8.days do
         record.reload.forge!
         expect(record.reload.name).to eq('From Business Directory')
-        expect(record.precedence_order(:name).first).to eq(source: map_editor, level: :global, ruleset: nil)
+        expect(record.precedence_order(:name).first).to eq(source: map_editor, level: :global, precedence: 33, ruleset: nil)
         expect(record.source_precedences).to eq({})
         expect(record.precedence_rules.size).to eq(2) # both expired rules are kept
       end

@@ -11,9 +11,9 @@ How LaForge's README, code comments, spec descriptions, error messages, commit m
 | a source **provides** a value | A data source has a value for an attribute. Nil is a value too, so a source that provides nil provides the attribute, and one that leaves the attribute out doesn't. The application records what a source provides, so a source never records or updates. | reports, supplies, sends, records, updates, has an opinion |
 | **record** a value | Store values from a source. Importers, editors, forms and forges are application code, so they record. One call that records values from a source is **a recording** from the source. | report, import, save, the source records, the source's recording |
 | **data entry**, or **entry** | One source's recorded value for one attribute of one record. | report, datum |
-| **forge** | Combine a record's entries into its attributes and its tracked associations' membership. | build, sync, resolve |
-| **precedence** | How sources rank against each other. A higher precedence wins. | priority, weight, source of truth |
-| **wins**, **outranks** | A value wins when forging takes it. A source outranks another when its precedence is higher. | overrides, beats |
+| **forge** | Combine a record's entries into its attributes and its tracked associations' membership. | build, sync |
+| **precedence** | How sources rank against each other. A source with a higher precedence outranks one with a lower. | priority, weight, source of truth |
+| **resolves**, **resolved entry**, **outranks** | Forging resolves an attribute to one source's entry, its resolved entry, whose value the attribute takes. A source outranks another when its precedence is higher. | wins, winner, overrides, beats |
 | **precedence rule** | A source's precedence at one level. | override, setting |
 | **level** | One attribute of one record, one attribute of a model, a whole model, or global. | scope, tier |
 | **precedence order** | The sources in order at one level. | ranking, priority list |

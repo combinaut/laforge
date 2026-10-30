@@ -5,9 +5,12 @@
 # - a source with no priority, which would have no global rule
 # - two sources sharing a priority, which would collide in the unique index on global precedences and leave the
 #   migration half done
-# - entries for the same record, attribute and source with different priorities, which one rule cannot keep, so which
-#   entry wins would change
+# - entries for the same record, attribute and source with different priorities, or with a priority on some and none
+#   on others, which one rule cannot keep, so the entry the attribute resolves to would change
 # - entries with a priority whose source no longer exists, which no rule can reference
+# - an entry with a priority below the priority of another source whose entry for the same record and attribute has no
+#   priority of its own. The entry's priority becomes a rule for that record, which outranks every global rule, so
+#   the entry the attribute resolves to would change
 class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
   def up
     assert_priorities_migratable!
@@ -41,7 +44,8 @@ class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version
   end
 
   # Raises, naming the sources or entries, unless every source has a priority, no two share one, entries with a priority
-  # belong to sources that exist, and entries for the same record, attribute and source agree on theirs
+  # belong to sources that exist, entries for the same record, attribute and source agree on theirs, and no entry's
+  # priority is below the priority of another source whose entry for the same record and attribute has none
   def assert_priorities_migratable!
     missing = select_values("SELECT name FROM laforge_data_sources WHERE priority IS NULL ORDER BY name")
     raise "Give these LaForge data sources a priority before migrating, as each becomes the source's global precedence: #{missing.join(', ')}" if missing.any?
@@ -64,11 +68,26 @@ class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version
       HAVING COUNT(priority) > 0 AND (COUNT(DISTINCT priority) > 1 OR COUNT(priority) < COUNT(*))
       ORDER BY record_type, record_id, attribute_name, source_id LIMIT 10
     SQL
-    return if conflicting.empty?
+    if conflicting.any?
+      described = conflicting.map { |type, id, attribute, source_id| "#{type} #{id} #{attribute} from source #{source_id}" }
+      raise "LaForge data entries for the same record, attribute and source have different priorities, or a priority on some and none on others (#{described.join('; ')}#{', and maybe more' if conflicting.size == 10}). " \
+            'One precedence rule replaces them, so give them the same priority, or delete the duplicates, before migrating'
+    end
 
-    described = conflicting.map { |type, id, attribute, source_id| "#{type} #{id} #{attribute} from source #{source_id}" }
-    raise "LaForge data entries for the same record, attribute and source have different priorities (#{described.join('; ')}#{', and maybe more' if conflicting.size == 10}). " \
-          'One precedence rule replaces them, so give them the same priority, or delete the duplicates, before migrating'
+    outranked = select_rows(<<~SQL)
+      SELECT DISTINCT entries.record_type, entries.record_id, entries.attribute_name, entries.source_id, others.source_id FROM laforge_data_entries entries
+      JOIN laforge_data_entries others ON others.record_type = entries.record_type AND others.record_id = entries.record_id
+        AND others.attribute_name = entries.attribute_name AND others.source_id <> entries.source_id AND others.priority IS NULL
+      JOIN laforge_data_sources other_sources ON other_sources.id = others.source_id
+      WHERE entries.priority IS NOT NULL AND other_sources.priority > entries.priority
+      ORDER BY entries.record_type, entries.record_id, entries.attribute_name, entries.source_id, others.source_id LIMIT 10
+    SQL
+    return if outranked.empty?
+
+    described = outranked.map { |type, id, attribute, source_id, other_source_id| "#{type} #{id} #{attribute} from source #{source_id}, below source #{other_source_id}" }
+    raise "LaForge data entries have a priority below the priority of another source whose entry for the same record and attribute has none (#{described.join('; ')}#{', and maybe more' if outranked.size == 10}). " \
+          "Each entry's priority becomes a rule for that record, which outranks the other source's global rule. To keep the entry each attribute resolves to, give the other source's entries " \
+          "for that record and attribute their source's priority before migrating"
   end
 
   def down

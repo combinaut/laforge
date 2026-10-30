@@ -140,7 +140,7 @@ describe 'Association tracking capabilities' do
       expect(categories_of(place)).to eq([bakery])
     end
 
-    it "falls back to the next source's list when the winning source is withdrawn, and keeps the members only it named when its entry is destroyed", capability: 'C08' do
+    it "falls back to the next source's list when the highest-ranked source is withdrawn, and keeps the members only it named when its entry is destroyed", capability: 'C08' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, low)
       place.record_data_entries({ place_categories: categories(florist) }, high)
       place.forge!
@@ -206,7 +206,7 @@ describe 'Association tracking capabilities' do
       OpeningHour.clear_validators!
     end
 
-    it 'treats an empty list as a value that wins like any other', capability: 'C12' do
+    it "treats an empty list as a value that outranks a lower source's list like any other", capability: 'C12' do
       place.record_data_entries({ place_categories: categories(cafe) }, low)
       place.record_data_entries({ place_categories: [] }, high)
       place.forge!
@@ -409,7 +409,7 @@ describe 'Association tracking capabilities' do
       expect(parcel_link_row(place, lot_12, occupies)).to have_attributes(active: false, external_id: 'CR-1')
     end
 
-    it 'resolves each attribute of a member independently, including from sources whose list did not win', capability: 'C15' do
+    it 'resolves each attribute of a member independently, including from sources whose list is outranked', capability: 'C15' do
       place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies, active: false, external_id: 'L-1')] }, low)
       place.record_data_entries({ provided_parcel_links: [parcel_link(lot_12, occupies, external_id: 'H-1')] }, high)
       place.forge!
@@ -513,7 +513,7 @@ describe 'Association tracking capabilities' do
   end
 
   describe 'ordering' do
-    it 'orders members as the winning list orders them', capability: 'C19' do
+    it 'orders members as the highest-ranked list orders them', capability: 'C19' do
       place.record_data_entries({ place_categories: categories(cafe, bakery, bookstore) }, low)
       place.record_data_entries({ place_categories: categories(bookstore, bakery, florist) }, high)
       place.forge!
@@ -768,7 +768,7 @@ describe 'Association tracking capabilities' do
       expect(place.reload.tenants.first.opening_hours.pluck(:day, :opens_at)).to eq([[1, '08:00']])
     end
 
-    it "removes owned records that drop out of the winning list as the association's dependent option dictates", capability: 'C22' do
+    it "removes owned records that drop out of the highest-ranked list as the association's dependent option dictates", capability: 'C22' do
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café'), tenant('T-2', name: 'Corner Bakery')] }, low)
       place.forge!
 
@@ -2052,7 +2052,7 @@ describe 'Association tracking capabilities' do
       expect(place.reload.marker).to have_attributes(id: marker_id, label: 'Harbor Building', icon: 'star')
     end
 
-    it 'removes the member when the winning source lists none, writing nothing until the owner is saved', capability: 'C58' do
+    it 'removes the member when the highest-ranked source lists none, writing nothing until the owner is saved', capability: 'C58' do
       place.record_data_entries({ marker: { label: 'Harbor' } }, low)
       place.forge!
 
