@@ -32,6 +32,24 @@ module LaForge
       self.associations.slice(*names).each_value { |config| TrackedAssociation.new(record, config).forge }
     end
 
+    # @api private
+    # Returns `forge_diff` as it would be once `pending` is recorded on the record, then restores the record's entries
+    # and rules. `pending` is what its owner's member lists keep pending for it, as
+    # [[source id, attributes, recorded_at, edit, settings], ...].
+    def forge_diff_with(pending)
+      entries = record.data_entries.to_a
+      values = entries.to_h { |entry| [entry, [entry.attributes.slice('value', 'recorded_at', 'expires_at', 'expires_on_source_id'), entry.remade_state, entry.marked_for_destruction?]] }
+      rules = record.precedence_rules.to_a # recording builds, changes and expires rules, which the owner's next save writes
+      settings = rules.to_h { |rule| [rule, [rule.attributes.slice('precedence', 'recorded_at', 'expires_at', 'expires_on_source_id'), rule.remade_state, rule.marked_for_destruction?]] }
+      pending.each { |source_id, attributes, recorded_at, edit, item_settings| record_pending(attributes, source_id, recorded_at, edit: edit, settings: item_settings) }
+      forge_diff
+    ensure
+      record.data_entries.target.replace(entries)
+      values.each { |entry, (attributes, remade, marked)| entry.assign_attributes(attributes); entry.remade_state = remade; LaForge::ActiveRecord.set_marked_for_destruction(entry, marked) }
+      record.precedence_rules.target.replace(rules)
+      settings.each { |rule, (attributes, remade, marked)| rule.assign_attributes(attributes); rule.remade_state = remade; LaForge::ActiveRecord.set_marked_for_destruction(rule, marked) }
+    end
+
     # Returns a hash of the attribute changes between the saved record and the data entries, selecting the ruleset once
     # as `forge` does
     def forge_diff(**forge_options)
@@ -71,24 +89,6 @@ module LaForge
       end
 
       return forged_attrs
-    end
-
-    # @api private
-    # Returns `forge_diff` as it would be once `pending` is recorded on the record, then restores the record's entries
-    # and rules. `pending` is what its owner's member lists keep pending for it, as
-    # [[source id, attributes, recorded_at, edit, settings], ...].
-    def forge_diff_with(pending)
-      entries = record.data_entries.to_a
-      values = entries.to_h { |entry| [entry, [entry.attributes.slice('value', 'recorded_at', 'expires_at', 'expires_on_source_id'), entry.remade_state, entry.marked_for_destruction?]] }
-      rules = record.precedence_rules.to_a # recording builds, changes and expires rules, which the owner's next save writes
-      settings = rules.to_h { |rule| [rule, [rule.attributes.slice('precedence', 'recorded_at', 'expires_at', 'expires_on_source_id'), rule.remade_state, rule.marked_for_destruction?]] }
-      pending.each { |source_id, attributes, recorded_at, edit, item_settings| record_pending(attributes, source_id, recorded_at, edit: edit, settings: item_settings) }
-      forge_diff
-    ensure
-      record.data_entries.target.replace(entries)
-      values.each { |entry, (attributes, remade, marked)| entry.assign_attributes(attributes); entry.remade_state = remade; LaForge::ActiveRecord.set_marked_for_destruction(entry, marked) }
-      record.precedence_rules.target.replace(rules)
-      settings.each { |rule, (attributes, remade, marked)| rule.assign_attributes(attributes); rule.remade_state = remade; LaForge::ActiveRecord.set_marked_for_destruction(rule, marked) }
     end
 
     # @api private
