@@ -230,15 +230,15 @@ module LaForge
     end
 
     # Returns whether `value`, recorded from a source for `attribute_name`, differs from `previous`, the value of the
-    # source's entry for it before. Values are compared as they are stored, so `:open` and `'open'` are the same. For a
-    # tracked association, the two member lists differ when they cover some member differently (see
-    # `MemberList#same_recorded_coverage?`), whatever else they hold.
+    # source's entry for it before, which is when they don't match (see ValueMatcher). For a tracked association, the two
+    # member lists differ when they cover some member differently (see `MemberList#same_recorded_coverage?`), whatever
+    # else they hold.
     def provides_another_value?(attribute_name, previous, value)
       if (config = associations[attribute_name.to_s])
         before, after = compared_member_lists(attribute_name.to_s, previous, value)
         !before.same_recorded_coverage?(config, after)
       else
-        as_stored(previous) != as_stored(value)
+        !self.class.value_matcher(attribute_name).matches?(previous, value)
       end
     end
 
@@ -250,11 +250,6 @@ module LaForge
       association = TrackedAssociation.new(record, associations[name])
       before = previous.nil? ? MemberList.none : MemberList.new(previous)
       [association.recognized(before), association.recognized(MemberList.new(current))]
-    end
-
-    # Returns `value` as an entry's value reads once it is saved and loaded again
-    def as_stored(value)
-      ActiveSupport::JSON.decode(ActiveSupport::JSON.encode(value))
     end
 
     # Expires at `recorded_at` each change for the attribute, attribute group or association `rule_name` that expires on

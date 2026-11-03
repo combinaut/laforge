@@ -462,9 +462,30 @@ LaForge publishes nothing when a change expires by time, and the forge writes no
 
 A value from the source ends the expiry when it differs from the source's own entry for the attribute, not from the record's forged value, so a source that comes to provide the editor's value ends it too. For an attribute group, a different value for any of the group's attributes ends it. For a tracked association, a member list ends it when it covers some member differently from the source's previous member list, and an expiry given to one member by an edit ends only when the source's coverage of that member changes. What a member list says about a member besides its key counts on the member's own entries once a forge records it there. A member the source lists again after a forge removed it is the same member when the tombstone matcher recognizes it. A source that had no entry for the attribute ends the expiry with its first value. A source with no member list covers no member, so its first member list ends an expiry only when it covers some member, and a member's expiry only when it covers that member.
 
+An attribute's values are compared as an entry's value reads once saved and loaded again, so `:open` and `'open'` are the same value (see [Matching values](#matching-values)).
+
 Only a value recorded after the change counts, so a member list recorded from the source earlier, kept pending on an owner until the owner is forged, does not end it. A value can't expire on the source it comes from, since the next recording from that source replaces it anyway.
 
 A change kept pending on an owner is made when its member list was recorded, so a recording from the source made after that and before the owner is forged ends it, whether that is a later member list forged with it or a recording on the member itself. A recording on the member shows only in the entries it changed, so one that changed nothing there does not end the change. If the source is deleted before the owner is forged, the change keeps only its expiry at a time, when it has one.
+
+#### Matching values
+
+Two values of an attribute match when they read the same once saved and loaded again, so a value recorded for the first time compares as it will after a round trip, and `nil` matches only `nil`. A model can give an attribute its own match value with `match_by:`, a proc that takes one value in that stored form and returns what to compare. Two values match when their match values are equal.
+
+  ```ruby
+    class Place < ApplicationRecord
+      laforged match_by: { name: ->(value) { value&.strip&.downcase } }
+    end
+
+    LaForge::ValueMatcher.for(place, :name).matches?('Harbor Building', 'harbor building ')  # => true
+    LaForge::ValueMatcher.for(Place, :name).match_value('Harbor Building')                   # => "harbor building"
+  ```
+
+- **`match_by:` never changes what is recorded or forged.** It only decides whether two values are the same, so the cadastre going from `'Harbor Building'` to `'harbor building '` ends no expiry on it.
+- **`nil` reaches the proc**, which decides how `nil` matches, so write it to accept `nil`.
+- **An application can use the same matcher**, as a screen can to compare two values before offering a choice. `ValueMatcher.for` takes a record, a model, or anything else that names the model, such as its name or a data entry. `matches?` compares two values and nothing else, so a source with no entry has to be checked for first.
+- **`match_by:` covers one attribute.** Declaring it raises for a tracked association, whose members are identified by `key:` and `tombstone_matcher:`, and for an attribute group, which is declared on each of the group's attributes. A `belongs_to` is declared on its foreign key.
+- **Declaring `match_by:` never touches the database**, so an app can boot without one, as for an asset precompile. An attribute the model doesn't have raises at the model's first matcher instead, from `ValueMatcher.for` or from a recording that compares values.
 
 #### Expiring a member list
 

@@ -7,7 +7,7 @@ module LaForge
   # A change expires at a time, its `expires_at`, or on a source, its `expires_on_source`. An expiry on a source fires
   # the first time a value from that source is recorded, after the change was made (see `changed_at`), that differs
   # from the source's own entry for the attribute, or for any attribute of its group:
-  # - an attribute's value differs as it is stored. The record's forged value is not compared.
+  # - an attribute's value doesn't match the entry's (see ValueMatcher). The record's forged value is not compared.
   # - a member list covers some member differently. An expiry on one member of an edit fires only when that member's
   #   coverage changes.
   # - a source with no entry for it yet provides one. For a tracked association, a first member list counts only when

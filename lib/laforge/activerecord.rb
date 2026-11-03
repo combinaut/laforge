@@ -9,10 +9,13 @@ module LaForge
     # - attribute_groups: { name => [attributes] }, the model's attribute groups (see AttributeGroups)
     # - ruleset_selector: the model's own ruleset selector, in place of `LaForge.ruleset_selector`. It is a method name
     #   (Symbol), a Proc given the record, or false for the base rules.
-    def laforged(associations: {}, attribute_groups: {}, ruleset_selector: nil)
+    # - match_by: { attribute => proc }, each proc taking one value of the attribute and returning its match value (see
+    #   ValueMatcher)
+    def laforged(associations: {}, attribute_groups: {}, ruleset_selector: nil, match_by: {})
       LaForge::ActiveRecord.assert_no_collisions!(self)
       LaForge.assert_ruleset_selector!(ruleset_selector, where: "#{name} laforged ruleset_selector:", model: true)
       groups = LaForge::ActiveRecord.attribute_groups(self, attribute_groups, associations)
+      match_values = LaForge::ActiveRecord.match_by(self, match_by, associations, groups)
       include Model
 
       LaForge::ActiveRecord.declare_data_associations(self)
@@ -20,6 +23,8 @@ module LaForge
 
       laforge.attribute_groups = groups
       laforge.ruleset_selector = ruleset_selector
+      laforge.match_by = match_values
+      laforge.value_matchers = {}
 
       configs = associations.to_h { |name, options| [name.to_s, AssociationConfig.new(self, name, **options)] }
       configs.each_value { |config| TrackedAssociation.declare(self, config) }
@@ -65,6 +70,17 @@ module LaForge
       raise ArgumentError, "#{model.name} attribute group #{clash.first} is also an attribute of group #{seen[clash.first]}; give the group its own name" if clash.any?
 
       groups
+    end
+
+    # Returns the `match_by` declared on a model as { attribute name => proc }, names as strings. Raises for a value that
+    # is not callable, and as `ValueMatcher.assert_matchable!` does. Uses no database, so a model can load without one.
+    def self.match_by(model, match_by, associations, groups)
+      match_by.to_h do |attribute, match_value|
+        ValueMatcher.assert_matchable!(model, attribute, associations.keys.map(&:to_s), groups)
+        raise ArgumentError, "#{model.name} match_by: #{attribute} must be a proc taking one value and returning its match value, not #{match_value.inspect}" unless match_value.respond_to?(:call)
+
+        [attribute.to_s, match_value]
+      end
     end
 
     # Declares the model's associations to its data entries, data sources and precedence rules

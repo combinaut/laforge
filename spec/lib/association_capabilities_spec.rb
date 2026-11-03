@@ -2426,6 +2426,14 @@ describe 'Association tracking capabilities' do
       expect(ParcelLink.where(place_id: linked_place.id).order(:id).ids).to eq(links.map(&:id))
     end
 
+    it 'raises for a match_by on a tracked association, pointing to what identifies its members', capability: 'C192' do
+      model = Class.new(Place) { def self.name = 'Place' }
+
+      expect { model.laforged(associations: { tenants: {} }, match_by: { 'tenants' => ->(value) { value } }) }
+        .to raise_error(ArgumentError, /Place#tenants is a tracked association, whose members are identified by key: and tombstone_matcher:, not by match_by/)
+      expect { LaForge::ValueMatcher.for(Place, :tenants) }.to raise_error(ArgumentError, /Place#tenants is a tracked association/)
+    end
+
     it 'writes member order to order_column: when given, which a scope ordering by an expression needs, and none for false', capability: 'C108' do
       stub_const('ListedPlace', Class.new(ActiveRecord::Base))
       ListedPlace.table_name = 'places'

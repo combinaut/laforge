@@ -22,12 +22,18 @@ describe 'Recordings on a member before its owner is forged' do
     AssociationCapabilities.setup!
     AssociationCapabilities.reset!
   end
+  after { declare_tenant }
 
   let(:low) { LaForge::DataSource.create!(name: 'low', precedence: 11) }
   let(:high) { LaForge::DataSource.create!(name: 'high', precedence: 12) }
   let(:place) { Place.create!(name: 'Harbor Building') }
 
   def jan(day) = Time.utc(2026, 1, day)
+  def ignoring_case = { name: ->(value) { value&.strip&.downcase } }
+
+  def declare_tenant(match_by = {})
+    Tenant.laforged associations: { opening_hours: { key: :day } }, attribute_groups: { postal_address: %i[street postcode] }, match_by: match_by
+  end
 
   # Names a tenant as an importer does, by id once a tenant with the `external_id` exists, otherwise as a new tenant
   def tenant(external_id, **attributes)
@@ -59,8 +65,19 @@ describe 'Recordings on a member before its owner is forged' do
   value_unchanged = 'replay reads recorded_at, not whether the value changed'
   first_unknown = "replay sees only the source's latest recording"
   member_expiries_ignored = "replay never fires a member's own expiry"
+  matcher_ignored = 'replay ignores the matcher for :changes'
 
   describe 'when the value did not change' do
+    each_way('leaves :changes on a value with the same match value', replay_gap: value_unchanged) do |how|
+      declare_tenant(ignoring_case)
+      provide_name('Harbor Cafe')
+      correct_name(how, 'Harbor Books')
+      record_on_member(3, { name: 'harbor cafe ' })
+      forge_on(4)
+
+      expect(correction.expires_at).to be_nil
+    end
+
     each_way('leaves :changes on the same value with only a new expires_at', replay_gap: value_unchanged) do |how|
       provide_name('Harbor Cafe')
       correct_name(how, 'Harbor Books')
@@ -172,6 +189,30 @@ describe 'Recordings on a member before its owner is forged' do
       record_on_member(3, { name: 'Harbor Diner' })
       record_on_member(4, { name: 'Harbor Cafe' })
       forge_on(5)
+
+      expect(correction.expires_at).to eq(jan(3))
+    end
+  end
+
+  describe 'when `match_by:` changed before the forge' do
+    # :changes fires on an event, so a recording is judged by the matcher declared when it was recorded
+    each_way('judges :changes by the matcher at the recording, from ignoring case to exact', replay_gap: matcher_ignored) do |how|
+      declare_tenant(ignoring_case)
+      provide_name('Harbor Cafe')
+      correct_name(how, 'Harbor Books')
+      record_on_member(3, { name: 'harbor cafe' })
+      declare_tenant
+      forge_on(4)
+
+      expect(correction.expires_at).to be_nil
+    end
+
+    each_way('judges :changes by the matcher at the recording, from exact to ignoring case') do |how|
+      provide_name('Harbor Cafe')
+      correct_name(how, 'Harbor Books')
+      record_on_member(3, { name: 'harbor cafe' })
+      declare_tenant(ignoring_case)
+      forge_on(4)
 
       expect(correction.expires_at).to eq(jan(3))
     end

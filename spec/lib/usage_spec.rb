@@ -1233,6 +1233,213 @@ describe 'Usage' do
     end
   end
 
+  # How LaForge tells whether two values of an attribute are the same, which `match_by:` can decide for an attribute
+  describe 'matching values' do
+    let(:place_model) do
+      Class.new(ActiveRecordMock) do
+        def self.name = 'MatchedPlace'
+
+        laforged match_by: { name: ->(value) { value&.strip&.downcase } }
+      end
+    end
+    let(:place) { place_model.find(record.id) }
+
+    before { stub_const('MatchedPlace', place_model) }
+
+    it 'compares values as an entry reads once saved and loaded again, so nil matches only nil' do
+      matcher = LaForge::ValueMatcher.for(ActiveRecordMock, :name)
+
+      expect(matcher.matches?(:open, 'open')).to be(true)
+      expect(matcher.matches?(Date.new(2026, 3, 1), '2026-03-01')).to be(true)
+      expect(matcher.matches?(1, '1')).to be(false)
+      expect(matcher.matches?(nil, nil)).to be(true)
+      expect(matcher.matches?(nil, '')).to be(false)
+      expect(matcher.match_value(:open)).to eq('open')
+    end
+
+    it "gives the attribute's match value from `match_by:`, in the value's stored form" do
+      matcher = LaForge::ValueMatcher.for(MatchedPlace, :name)
+
+      expect(matcher.match_value('Harbor Building')).to eq('harbor building')
+      expect(matcher.matches?('Harbor Building', 'harbor building ')).to be(true)
+      expect(matcher.matches?(:Harbor, 'harbor')).to be(true)
+      expect(LaForge::ValueMatcher.for(MatchedPlace, :count).matches?(1, 2)).to be(false)
+    end
+
+    it 'lets `match_by:` decide how nil matches' do
+      blank_model = Class.new(ActiveRecordMock) do
+        def self.name = 'ActiveRecordMock'
+
+        laforged match_by: { name: ->(value) { value.to_s.strip } }
+      end
+
+      expect(LaForge::ValueMatcher.for(blank_model, :name).matches?(nil, ' ')).to be(true)
+    end
+
+    it 'finds the matcher from a record, a model, or anything else that names the model' do
+      entry = place.record_data_entries({ name: 'Harbor Building' }, cadastre).then { place.data_entries.first }
+      entry.update!(record_type: 'MatchedPlace')
+
+      [place, MatchedPlace, 'MatchedPlace', :matched_place, MatchedPlace.model_name, entry].each do |named|
+        expect(LaForge::ValueMatcher.for(named, :name).matches?('Harbor', 'harbor')).to be(true)
+      end
+    end
+
+    it 'raises for what it cannot match, saying what to pass' do
+      expect { LaForge::ValueMatcher.for('Unknown', :name) }.to raise_error(ArgumentError, /"Unknown" names no laforged model. Pass a record, a model or a model's name/)
+      expect { LaForge::ValueMatcher.for(LaForge::DataSource, :name) }.to raise_error(ArgumentError, /names no laforged model/)
+      expect { LaForge::ValueMatcher.for(ActiveRecordMock, :nme) }.to raise_error(ArgumentError, /ActiveRecordMock has no attribute nme to match/)
+    end
+
+    it 'leaves what is recorded and forged as it is' do
+      place.record_data_entries({ name: ' Harbor Building ' }, cadastre)
+      place.forge!
+
+      expect(place.reload.name).to eq(' Harbor Building ')
+      expect(place.data_entries.sole.value).to eq(' Harbor Building ')
+    end
+
+    it 'compares a recording with what the source provided by match value, for an expiry on the source' do
+      place.record_data_entries({ name: 'Harbor Building' }, cadastre)
+      place.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor, expires_on: cadastre)
+      place.save!
+
+      place.reload.record_data_entries({ name: ' harbor building' }, cadastre)
+      place.save!
+      expect(place.data_entries.with_source(map_editor).sole.expired?).to be(false)
+      expect(place.data_entries.with_source(cadastre).sole.value).to eq(' harbor building') # recorded as given
+
+      place.reload.record_data_entries({ name: 'Harbor Hall' }, cadastre)
+      place.save!
+      expect(place.data_entries.with_source(map_editor).sole.expired?).to be(true)
+    end
+
+    it "still counts a source's first value, whatever its match value" do
+      place.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor, expires_on: cadastre)
+      place.save!
+
+      place.reload.record_data_entries({ name: nil }, cadastre)
+      place.save!
+
+      expect(place.data_entries.with_source(map_editor).sole.expired?).to be(true)
+    end
+
+    it 'takes a match_by on an attribute with a setter that is not a column, and on an attribute of a group' do
+      model = Class.new(ActiveRecordMock) do
+        def self.name = 'ActiveRecordMock'
+
+        def phone_number=(number); end
+
+        laforged attribute_groups: { listing: %i[name count] }, match_by: { phone_number: ->(value) { value.to_s.delete('-') }, name: :downcase.to_proc }
+      end
+
+      expect(LaForge::ValueMatcher.for(model, :phone_number).matches?('555-0100', '5550100')).to be(true)
+      expect(LaForge::ValueMatcher.for(model, :name).matches?('Harbor', 'harbor')).to be(true)
+    end
+
+    it 'raises when declared for what cannot be matched, saying what to declare' do
+      declare = lambda do |**options|
+        Class.new(ActiveRecordMock) { def self.name = 'ActiveRecordMock' }.laforged(**options)
+      end
+      downcase = ->(value) { value&.downcase }
+
+      expect { declare.(match_by: { name: :downcase }) }.to raise_error(ArgumentError, /ActiveRecordMock match_by: name must be a proc taking one value and returning its match value, not :downcase/)
+      expect { declare.(match_by: { parent: downcase }) }.to raise_error(ArgumentError, /ActiveRecordMock#parent is recorded as parent_id; declare match_by on parent_id instead/)
+      expect { declare.(attribute_groups: { listing: %i[name count] }, match_by: { listing: downcase }) }
+        .to raise_error(ArgumentError, /attribute group listing matches when every one of its attributes matches; declare match_by on name, count instead/)
+    end
+
+    context 'when a model declares `match_by:` for an attribute it does not have' do
+      let(:misspelled_model) do
+        Class.new(ActiveRecordMock) do
+          def self.name = 'ActiveRecordMock'
+
+          laforged match_by: { nme: ->(value) { value } }
+        end
+      end
+
+      it 'raises at the first matcher for any of its attributes, not when declared' do
+        expect { misspelled_model }.not_to raise_error
+        expect { LaForge::ValueMatcher.for(misspelled_model, :name) }.to raise_error(ArgumentError, /ActiveRecordMock has no attribute nme to match/)
+      end
+
+      it 'raises at the first recording that compares values' do
+        place = misspelled_model.find(record.id)
+        place.record_data_entries({ name: 'Harbor Building' }, map_editor, expires_on: cadastre)
+        place.save!
+        place.record_data_entries({ name: 'Harbor Building' }, cadastre)
+        place.save!
+
+        expect { place.reload.record_data_entries({ name: 'Harbor Building' }, cadastre) }.to raise_error(ArgumentError, /ActiveRecordMock has no attribute nme to match/)
+      end
+    end
+
+    it 'checks the attributes of a `match_by:` once per model, and again when it is declared again' do
+      model = Class.new(ActiveRecordMock) do
+        def self.name = 'ActiveRecordMock'
+
+        laforged match_by: { name: :downcase.to_proc }
+      end
+      allow(LaForge::ValueMatcher).to receive(:assert_attribute!).and_call_original
+
+      matcher = model.laforge.value_matcher(:name)
+      expect(model.laforge.value_matcher(:name)).to be(matcher)
+      expect(LaForge::ValueMatcher).to have_received(:assert_attribute!).once
+
+      model.laforged match_by: { name: :upcase.to_proc }
+      expect(model.laforge.value_matcher(:name).match_value('Harbor')).to eq('HARBOR')
+      expect(LaForge::ValueMatcher).to have_received(:assert_attribute!).twice
+    end
+
+    it 'takes a match_by on a setter defined below `laforged`' do
+      model = Class.new(ActiveRecordMock) do
+        def self.name = 'ActiveRecordMock'
+
+        laforged match_by: { phone_number: ->(value) { value.to_s.delete('-') } }
+
+        def phone_number=(number); end
+      end
+
+      expect(LaForge::ValueMatcher.for(model, :phone_number).matches?('555-0100', '5550100')).to be(true)
+    end
+
+    # The model's own connection goes nowhere, so anything that reaches for a database while it loads raises
+    context 'when a model loads without a database' do
+      let(:unreachable_base) do
+        stub_const('UnreachableRecord', Class.new(ActiveRecord::Base) { self.abstract_class = true })
+        UnreachableRecord.tap { |base| base.establish_connection(adapter: 'mysql2', host: '127.0.0.1', port: 1, database: 'none') }
+      end
+
+      after { ActiveRecord::Base.connection_handler.remove_connection_pool('UnreachableRecord') }
+
+      it 'declares `match_by:` without querying, and reaches for the database at the first matcher' do
+        model = Class.new(unreachable_base) do
+          def self.name = 'UnreachablePlace'
+
+          belongs_to :parent, class_name: 'UnreachablePlace', optional: true
+          laforged match_by: { name: ->(value) { value }, nme: ->(value) { value } }
+        end
+
+        expect(model.laforge.match_by.keys).to eq(%w[name nme])
+        expect { LaForge::ValueMatcher.for(model, :name) }.to raise_error(ActiveRecord::ConnectionNotEstablished)
+      end
+
+      it 'still raises at declaration for what needs no database' do
+        declare = lambda do |**options|
+          Class.new(unreachable_base) do
+            def self.name = 'UnreachablePlace'
+
+            belongs_to :parent, class_name: 'UnreachablePlace', optional: true
+            has_many :notes, class_name: 'UnreachablePlace'
+          end.laforged(**options)
+        end
+
+        expect { declare.(match_by: { parent: ->(value) { value } }) }.to raise_error(ArgumentError, /recorded as parent_id/)
+        expect { declare.(match_by: { notes: ->(value) { value } }) }.to raise_error(ArgumentError, /UnreachablePlace has no attribute notes to match/)
+      end
+    end
+  end
+
   describe 'data sources' do
     it 'requires a unique precedence and a case-insensitively unique name' do
       expect(LaForge::DataSource.new(name: 'Other', precedence: business_directory.precedence)).not_to be_valid

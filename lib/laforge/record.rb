@@ -15,9 +15,13 @@ module LaForge
     # - associations: { name => AssociationConfig } for its tracked associations
     # - attribute_groups: { group name => [attribute names] }
     # - ruleset_selector: its own ruleset selector (see Rulesets)
-    class_attribute :model, :associations, :attribute_groups, :ruleset_selector, instance_writer: false, instance_predicate: false
+    # - match_by: { attribute name => proc giving a value's match value } (see ValueMatcher)
+    # - value_matchers: { attribute name => ValueMatcher }, filled as matchers are first used
+    class_attribute :model, :associations, :attribute_groups, :ruleset_selector, :match_by, :value_matchers, instance_writer: false, instance_predicate: false
     self.associations = {}
     self.attribute_groups = {}
+    self.match_by = {}
+    self.value_matchers = {}
 
     API = [Recording::API, Forging::API, Precedence::API, Inspection::API].flatten.uniq.freeze
     CLASS_API = [Precedence::CLASS_API, Inspection::CLASS_API].flatten.uniq.freeze
@@ -26,6 +30,15 @@ module LaForge
       # Returns the AssociationConfig of the tracked association `name`
       def association(name)
         associations.fetch(name.to_s)
+      end
+
+      # Returns the matcher for `attribute`, kept until `laforged` declares the model again. The model's first one checks
+      # that it has the attributes of its `match_by`, which `laforged` leaves to here because that reads its columns.
+      def value_matcher(attribute)
+        value_matchers.fetch(attribute.to_s) do |name|
+          match_by.each_key { |declared| ValueMatcher.assert_attribute!(model, declared) } if value_matchers.empty?
+          value_matchers[name] = ValueMatcher.new(match_by[name])
+        end
       end
 
       def inspect
