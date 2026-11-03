@@ -1,4 +1,6 @@
 require 'rails/all'
+require 'laforge/expiry_trigger'
+require 'laforge/expiry_sweep'
 require 'laforge/expiring'
 require 'laforge/recording_settings'
 require 'laforge/data_entry'

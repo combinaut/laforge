@@ -48,6 +48,7 @@ ActiveRecord::Schema.define(version: 0) do
     t.datetime :recorded_at, precision: 6, null: false
     t.datetime :expires_at, precision: 6, index: true
     t.references :expires_on_source, foreign_key: { to_table: :laforge_data_sources, on_delete: :nullify }
+    t.string :expires_when, null: false, default: 'changes'
     t.timestamps precision: 6, null: false
   end
 
@@ -60,6 +61,7 @@ ActiveRecord::Schema.define(version: 0) do
     t.string :ruleset, limit: 100, null: false, default: '', charset: 'utf8mb4', collation: 'utf8mb4_bin' # '' for the base rules, and names case-sensitive as in Ruby; see LaForge.fork_ruleset
     t.datetime :expires_at, precision: 6, index: true
     t.references :expires_on_source, foreign_key: { to_table: :laforge_data_sources, on_delete: :nullify }
+    t.string :expires_when, null: false, default: 'changes'
     t.datetime :recorded_at, precision: 6, null: false
     t.virtual :global_precedence, type: :integer, as: "CASE WHEN record_type = '' THEN precedence END", stored: true
     t.timestamps precision: 6, null: false

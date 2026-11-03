@@ -10,7 +10,8 @@ describe 'The upgrade migrations' do
       'recorded_at_migration' => 'AddRecordedAtToLaforgeDataEntries',
       'active_sources_migration' => 'AddActiveToLaforgeDataSources',
       'expiry_migration' => 'AddExpiryToLaforgeDataEntriesAndPrecedenceRules',
-      'rulesets_migration' => 'AddRulesetToLaforgePrecedenceRules'
+      'rulesets_migration' => 'AddRulesetToLaforgePrecedenceRules',
+      'expires_when_migration' => 'AddExpiresWhenToLaforgeDataEntriesAndPrecedenceRules'
     }
   end
 

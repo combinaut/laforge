@@ -11,14 +11,17 @@ module LaForge
     # source has an entry for it yet. Saved immediately on a persisted record, otherwise with the record. Pass nil to
     # remove it. Raises for an attribute in a group, whose precedence is set on the group, and for a `ruleset:`, since a
     # record's own rules apply whatever its ruleset.
-    # `expires_at:` and `expires_on:` expire the precedence (see Expiring). Setting it again replaces the expiry,
-    # leaving them out clears it, and passing either with a nil precedence raises.
-    def update_attribute_source_precedence(attribute, source, precedence, expires_at: nil, expires_on: nil, ruleset: nil)
+    # `expires_at:`, `expires_on:` and `expires_when:` expire the precedence (see Expiring). Setting it again replaces
+    # the expiry, leaving them out clears it, and passing any with a nil precedence raises. With
+    # `expires_when: :matches`, raises as `assert_can_match!` does.
+    def update_attribute_source_precedence(attribute, source, precedence, expires_at: nil, expires_on: nil, expires_when: nil, ruleset: nil)
       assert_no_ruleset!(ruleset, :update_attribute_source_precedence)
       self.class.assert_rule_attribute!(attribute)
-      settings = RecordingSettings.given(precedence: precedence, expires_at: expires_at, expires_on: expires_on, where: "#{record.class.name}#update_attribute_source_precedence(:#{attribute})",
-                                         removing: ("a nil precedence" if precedence.nil?))
+      settings = RecordingSettings.given(precedence: precedence, expires_at: expires_at, expires_on: expires_on, expires_when: expires_when,
+                                         where: "#{record.class.name}#update_attribute_source_precedence(:#{attribute})", removing: ("a nil precedence" if precedence.nil?))
+      assert_can_match!(attribute, [DataSource.normalize_source_id(source)], settings)
       rule = write_precedence_rule(attribute, source, settings)
+      expire_matched([rule]) if settings.trigger.compares_values?
       return unless record.persisted? && rule
 
       rule.marked_for_destruction? ? record.precedence_rules.destroy(rule) : rule.save!
@@ -28,15 +31,19 @@ module LaForge
     # record's other rules for the attribute, so nil or [] removes them. Saved with the record. Raises for an attribute
     # in a group, whose precedence is set on the group, and for a `ruleset:`, since a record's own rules apply whatever
     # its ruleset.
-    # `expires_at:` and `expires_on:` expire the order (see Expiring), after which the next level's order applies.
-    # Setting it again replaces the expiry, leaving them out clears it, and passing either with no sources raises.
-    def update_precedence_order(attribute, sources, expires_at: nil, expires_on: nil, ruleset: nil)
+    # `expires_at:`, `expires_on:` and `expires_when:` expire the order (see Expiring), after which the next level's
+    # order applies. Setting it again replaces the expiry, leaving them out clears it, and passing any with no sources
+    # raises. With `expires_when: :matches`, each source's rule expires on its own, and raises as `assert_can_match!`
+    # does.
+    def update_precedence_order(attribute, sources, expires_at: nil, expires_on: nil, expires_when: nil, ruleset: nil)
       assert_no_ruleset!(ruleset, :update_precedence_order)
       self.class.assert_rule_attribute!(attribute)
       source_ids = DataSource.normalize_source_ids(sources)
-      settings = RecordingSettings.given(expires_at: expires_at, expires_on: expires_on, where: "#{record.class.name}#update_precedence_order(:#{attribute})", removing: ("no sources" if source_ids.empty?))
+      settings = RecordingSettings.given(expires_at: expires_at, expires_on: expires_on, expires_when: expires_when, where: "#{record.class.name}#update_precedence_order(:#{attribute})", removing: ("no sources" if source_ids.empty?))
+      assert_can_match!(attribute, source_ids, settings)
       record.precedence_rules.select { |rule| rule.attribute_name == attribute.to_s && !source_ids.include?(rule.source_id) }.each { |rule| write_precedence_rule(attribute, rule.source_id, settings.with_precedence(nil)) }
-      source_ids.each_with_index { |source_id, index| write_precedence_rule(attribute, source_id, settings.with_precedence(source_ids.size - index)) }
+      rules = source_ids.each_with_index.map { |source_id, index| write_precedence_rule(attribute, source_id, settings.with_precedence(source_ids.size - index)) }
+      expire_matched(rules) if settings.trigger.compares_values?
     end
 
     # Returns the active sources in the order they rank for one attribute of this record, as
@@ -76,7 +83,7 @@ module LaForge
       else
         rule ||= record.precedence_rules.build(attribute_name: attribute_name.to_s, source_id: source_id)
         LaForge::ActiveRecord.set_marked_for_destruction(rule, false) # setting a precedence again undoes an unsaved removal
-        columns = %w[precedence expires_at expires_on_source_id]
+        columns = ['precedence', *Expiring::COLUMNS]
         before = rule.attributes.slice(*columns) # in memory, so setting back an expiry that fired since the save is a change
         settings.apply_to_rule(rule)
         if rule.new_record? || before != rule.attributes.slice(*columns) || columns.any? { |column| rule.will_save_change_to_attribute?(column) }
@@ -85,6 +92,36 @@ module LaForge
         end
       end
       rule
+    end
+
+    # @api private
+    # Expires each of `rules` that already matches, and nothing else. Setting a rule saves that rule alone, so a sweep of
+    # the record could expire other rows in memory only. They are checked at the next recording (see ExpirySweep).
+    def expire_matched(rules)
+      rules.each { |rule| ExpirySweep.new(self, rule.source_id, rule.recorded_at).run([rule]) }
+    end
+
+    # @api private
+    # Raises when settings that expire on a match can't apply to the record's rules for `attribute`, or attribute group,
+    # and the sources `source_ids`. A rule has no value of its own, so it compares its source's entry, which must exist
+    # and must not be the entry it would compare with. A tracked association raises as
+    # `AssociationConfig#assert_no_match!` does.
+    def assert_can_match!(attribute, source_ids, settings)
+      return unless settings.trigger.compares_values?
+
+      name = attribute.to_s
+      associations[name]&.assert_no_match!(settings)
+      if source_ids.include?(settings.expiry[:expires_on_source_id])
+        raise ArgumentError, "#{record.class.name}##{name}: expires_when: :matches compares each source's value with that of expires_on:, which is one of these sources, so its rule would match itself. " \
+                             'Leave that source out, or leave out expires_when:'
+      end
+
+      self.class.attributes_of(name).product(source_ids).each do |attribute_name, source_id|
+        next if provided_entry(attribute_name, source_id)
+
+        raise ArgumentError, "#{record.class.name}##{name}: #{DataSource.find(source_id).name} provides no value for #{attribute_name} on this record, and expires_when: :matches compares a rule's source's value. " \
+                             'Record a value from that source first, or leave out expires_when:'
+      end
     end
 
     # @api private

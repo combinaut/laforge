@@ -870,7 +870,7 @@ describe 'Usage' do
       record.remove_data_entries(sources: cadastre)
       record.save!
 
-      expected = { record_type: 'ActiveRecordMock', record_id: record.id, attribute_name: 'name', source_id: cadastre.id, expires_at: nil, expires_on_source_id: nil }
+      expected = { record_type: 'ActiveRecordMock', record_id: record.id, attribute_name: 'name', source_id: cadastre.id, expires_at: nil, expires_on_source_id: nil, expires_when: 'changes' }
       expect(events).to eq([
         expected.merge(value_was: nil, value: 'From Cadastre', destroyed: false),
         expected.merge(value_was: 'From Cadastre', value: 'Renamed', destroyed: false),
@@ -1437,6 +1437,313 @@ describe 'Usage' do
         expect { declare.(match_by: { parent: ->(value) { value } }) }.to raise_error(ArgumentError, /recorded as parent_id/)
         expect { declare.(match_by: { notes: ->(value) { value } }) }.to raise_error(ArgumentError, /UnreachablePlace has no attribute notes to match/)
       end
+    end
+  end
+
+  # A change that should hold until a source agrees with it, rather than until the source provides something else
+  describe 'expiring a change when it matches a source' do
+    include ActiveSupport::Testing::TimeHelpers
+
+    let(:correction) { record.data_entries.with_source(map_editor).sole }
+    let(:grouped_model) do
+      Class.new(ActiveRecordMock) do
+        def self.name = 'ActiveRecordMock'
+
+        laforged attribute_groups: { listing: %i[name count] }
+      end
+    end
+
+    # Records the value from the source, and saves
+    def record_and_save(subject, values, source, **options)
+      subject.record_data_entries(values, source, **options)
+      subject.save!
+    end
+
+    before { record_and_save(record, { name: 'From Cadastre' }, cadastre) }
+
+    it "holds a change until the source provides a value that matches it, then falls back, keeping the row" do
+      record_and_save(record, { name: 'Harbor Building' }, map_editor, expires_on: cadastre, expires_when: :matches)
+      record_and_save(record.reload, { name: 'Harbour Building' }, cadastre) # a different value, which ends a :changes expiry
+      record.forge!
+      expect(record.reload.name).to eq('Harbor Building')
+      expect(correction).to have_attributes(expires_at: nil, expires_when: 'matches', expires_on_source: cadastre)
+
+      recorded_at = travel_to(Time.utc(2030, 1, 1)) do
+        record_and_save(record.reload, { name: 'Harbor Building' }, cadastre)
+        Time.current
+      end
+      record.forge!
+
+      expect(correction.reload).to have_attributes(value: 'Harbor Building', expires_at: recorded_at, expires_when: 'matches', expires_on_source: cadastre)
+    end
+
+    it 'keeps the trigger of an expiry on a source at :changes by default' do
+      record_and_save(record, { name: 'Harbor Building' }, map_editor, expires_on: cadastre)
+      record_and_save(record, { name: 'Harbor Hall' }, map_editor, expires_on: cadastre, expires_when: :changes)
+      expect(correction.expires_when).to eq('changes')
+
+      record_and_save(record.reload, { name: 'Harbor Hall' }, cadastre) # differs from the source's own entry
+      expect(correction.reload.expired?).to be(true)
+    end
+
+    it 'checks each time the source records, the same value included' do
+      record_and_save(record, { name: 'Harbor Building' }, map_editor, expires_on: cadastre, expires_when: :matches)
+      correction.update_columns(value: 'From Cadastre') # brought in line outside LaForge
+
+      record_and_save(record.reload, { name: 'From Cadastre' }, cadastre)
+
+      expect(correction.reload.expired?).to be(true)
+    end
+
+    it 'expires a change that already matches at its own recorded time, publishing the trigger with it' do
+      events = []
+      subscription = ActiveSupport::Notifications.subscribe(LaForge::DataEntry::CHANGED) { |*, payload| events << payload.slice(:value, :expires_at, :expires_when) }
+
+      record_and_save(record, { name: 'From Cadastre' }, map_editor, expires_on: cadastre, expires_when: :matches)
+      ActiveSupport::Notifications.unsubscribe(subscription)
+
+      expect(correction).to have_attributes(expires_at: correction.recorded_at, expires_when: 'matches')
+      expect(events).to eq([{ value: 'From Cadastre', expires_at: correction.expires_at, expires_when: 'matches' }])
+    end
+
+    it 'compares with the source on an unsaved record too' do
+      place = ActiveRecordMock.new
+      place.record_data_entries({ name: 'From Cadastre' }, cadastre)
+      place.record_data_entries({ name: 'From Cadastre' }, map_editor, expires_on: cadastre, expires_when: :matches)
+
+      expect(place.data_entries.find { |entry| entry.source == map_editor }.expired?).to be(true)
+    end
+
+    it 'finds no match with a source that has no entry, even for nil, and counts its first value only if it matches' do
+      record_and_save(record, { count: nil, active: false }, map_editor, expires_on: cadastre, expires_when: :matches)
+      expect(record.data_entries.with_source(map_editor).map(&:expired?)).to eq([false, false])
+
+      record_and_save(record.reload, { count: nil, active: true }, cadastre)
+
+      expect(record.data_entries.with_source(map_editor).to_h { |entry| [entry.attribute_name, entry.expired?] }).to eq('count' => true, 'active' => false)
+    end
+
+    it "finds no match with a source whose entry is expired or marked for destruction" do
+      record.data_entries.with_source(cadastre).sole.update!(expires_at: 1.day.ago)
+      record_and_save(record.reload, { name: 'From Cadastre' }, map_editor, expires_on: cadastre, expires_when: :matches)
+      expect(correction.expired?).to be(false)
+
+      record.data_entries.with_source(cadastre).sole.update!(expires_at: nil)
+      record.reload.remove_data_entries(sources: cadastre)
+      record.record_data_entries({ name: 'From Cadastre' }, map_editor, expires_on: cadastre, expires_when: :matches, expires_at: 1.day.from_now)
+
+      expect(record.data_entries.find { |entry| entry.source == map_editor }).to have_attributes(expired?: false)
+    end
+
+    it "compares match values from `match_by:`" do
+      place_model = Class.new(ActiveRecordMock) do
+        def self.name = 'ActiveRecordMock'
+
+        laforged match_by: { name: ->(value) { value&.strip&.downcase } }
+      end
+      place = place_model.find(record.id)
+      record_and_save(place, { name: 'Harbor Building' }, map_editor, expires_on: cadastre, expires_when: :matches)
+
+      record_and_save(place.reload, { name: ' harbor building' }, cadastre)
+
+      expect(place.data_entries.with_source(map_editor).sole).to have_attributes(value: 'Harbor Building', expired?: true)
+    end
+
+    it 'only asks whether the record has an expiry on a source when no rule has one, without loading its rules' do
+      place = ActiveRecordMock.find(record.id)
+      queries = []
+      subscriber = ActiveSupport::Notifications.subscribe('sql.active_record') { |*, payload| queries << payload[:sql] }
+
+      place.record_data_entries({ name: 'From Cadastre' }, cadastre)
+
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+      expect(queries.grep(/laforge_precedence_rules/)).to contain_exactly(match(/SELECT 1 AS one/))
+      expect(place.precedence_rules).not_to be_loaded
+    end
+
+    it 'compares a value recorded for the first time as it reads once saved' do
+      record_and_save(record, { name: :'From Cadastre' }, map_editor, expires_on: cadastre, expires_when: :matches)
+
+      expect(correction.expired?).to be(true)
+    end
+
+    it 'ends the change at whichever comes first of the time and the match' do
+      expires_at = 1.week.from_now
+      record_and_save(record, { name: 'Harbor Building', count: 3 }, map_editor, expires_on: cadastre, expires_when: :matches, expires_at: expires_at)
+      record_and_save(record.reload, { name: 'Harbor Building' }, cadastre)
+
+      entries = record.data_entries.with_source(map_editor).index_by(&:attribute_name)
+      expect(entries['name'].expires_at).to be_within(1.minute).of(Time.current)
+      expect(entries['count'].expires_at).to be_within(1.second).of(expires_at)
+      travel_to(2.weeks.from_now) { expect(entries['count'].expired?).to be(true) }
+    end
+
+    it 'compares a belongs_to by its foreign key' do
+      parent = ActiveRecordMock.create!(name: 'Parent')
+      record_and_save(record, { parent: parent }, map_editor, expires_on: cadastre, expires_when: :matches)
+      record_and_save(record.reload, { parent: parent }, cadastre)
+
+      expect(record.data_entries.with_source(map_editor).sole).to have_attributes(attribute_name: 'parent_id', expired?: true)
+    end
+
+    it 'takes a wrapper, which keeps the trigger on what it wraps' do
+      record_and_save(record, { name: LaForge.with_settings('Harbor Building', expires_on: cadastre, expires_when: :matches), count: LaForge.with_settings(3, expires_on: cadastre) }, map_editor)
+
+      expect(record.data_entries.with_source(map_editor).pluck(:attribute_name, :expires_when)).to contain_exactly(['name', 'matches'], ['count', 'changes'])
+    end
+
+    it 'makes the change again when the trigger changes, and clears it when the expiry is left out' do
+      travel_to(Time.utc(2030, 1, 1)) { record_and_save(record, { name: 'Harbor Building' }, map_editor, expires_on: cadastre) }
+      travel_to(Time.utc(2030, 1, 2)) { record_and_save(record.reload, { name: 'Harbor Building' }, map_editor, expires_on: cadastre, expires_when: :matches) }
+      expect(correction).to have_attributes(recorded_at: Time.utc(2030, 1, 2), expires_when: 'matches')
+
+      record_and_save(record.reload, { name: 'Harbor Building' }, map_editor)
+
+      expect(correction.reload).to have_attributes(expires_on_source_id: nil, expires_when: 'changes')
+    end
+
+    it 'keeps an expired change expired when it is recorded again and still matches, at the new recording' do
+      travel_to(Time.utc(2030, 1, 1)) { record_and_save(record, { name: 'From Cadastre' }, map_editor, expires_on: cadastre, expires_when: :matches) }
+      travel_to(Time.utc(2030, 1, 2)) { record_and_save(record.reload, { name: 'From Cadastre' }, map_editor, expires_on: cadastre, expires_when: :matches) }
+
+      expect(correction).to have_attributes(recorded_at: Time.utc(2030, 1, 2), expires_at: Time.utc(2030, 1, 2))
+    end
+
+    context 'on an attribute group' do
+      let(:grouped) { grouped_model.find(record.id) }
+
+      before do
+        record_and_save(grouped, { name: 'From Cadastre', count: 5 }, cadastre)
+        record_and_save(grouped, { name: 'Harbor Building', count: 9 }, map_editor, expires_on: cadastre, expires_when: :matches)
+      end
+
+      it 'matches when every attribute of the group matches' do
+        record_and_save(grouped.reload, { name: 'Harbor Building', count: 5 }, cadastre)
+        expect(grouped.data_entries.with_source(map_editor).map(&:expired?)).to eq([false, false])
+
+        record_and_save(grouped.reload, { name: 'Harbor Building', count: 9 }, cadastre)
+
+        expect(grouped.data_entries.with_source(map_editor).map(&:expired?)).to eq([true, true])
+      end
+
+      it "compares the group as recorded, not one attribute at a time against the source's earlier values" do
+        record_and_save(grouped.reload, { name: 'From Cadastre', count: 9 }, cadastre)
+        record_and_save(grouped.reload, { name: 'Harbor Building', count: 5 }, cadastre) # the name now matches, and the old count did
+
+        expect(grouped.data_entries.with_source(map_editor).map(&:expired?)).to eq([false, false])
+      end
+
+      it "expires a precedence rule on the group the same way, comparing its source's entries" do
+        grouped.update_precedence_order(:listing, [map_editor], expires_on: cadastre, expires_when: :matches)
+        grouped.save!
+        record_and_save(grouped.reload, { name: 'Harbor Building', count: 9 }, cadastre)
+
+        expect(grouped.precedence_rules.sole.expired?).to be(true)
+      end
+
+      it "raises for a rule whose source has no entry for one of the group's attributes" do
+        grouped.data_entries.with_source(map_editor).with_attribute(:count).delete_all
+
+        expect { grouped.reload.update_precedence_order(:listing, [map_editor], expires_on: cadastre, expires_when: :matches) }
+          .to raise_error(ArgumentError, /ActiveRecordMock#listing: Map Editor provides no value for count on this record/)
+      end
+    end
+
+    context 'on a precedence rule' do
+      before { record_and_save(record, { name: 'Harbor Building' }, map_editor) }
+
+      it "compares the entry of the rule's source for the same record and attribute" do
+        record.update_precedence_order(:name, [map_editor], expires_on: cadastre, expires_when: :matches)
+        record.save!
+        expect(record.precedence_rules.sole).to have_attributes(expires_at: nil, expires_when: 'matches')
+
+        record_and_save(record.reload, { name: 'Harbour Building' }, cadastre)
+        expect(record.precedence_rules.sole.expired?).to be(false)
+
+        record_and_save(record.reload, { name: 'Harbor Building' }, cadastre)
+        expect(record.precedence_rules.sole.expired?).to be(true)
+      end
+
+      it "expires when the value of the rule's source comes to match" do
+        record.update_attribute_source_precedence(:name, map_editor, 5, expires_on: cadastre, expires_when: :matches)
+
+        record_and_save(record.reload, { name: 'From Cadastre' }, map_editor)
+
+        expect(record.precedence_rules.sole.expired?).to be(true)
+      end
+
+      context "with another change whose match nothing has checked yet, as `LaForge.merge` can leave one" do
+        let(:waiting) { record.data_entries.find { |entry| entry.source_id == map_editor.id } }
+
+        before do
+          record_and_save(record, { name: 'Harbor Hall' }, map_editor, expires_on: cadastre, expires_when: :matches)
+          record_and_save(record, { name: 'Harbor Hall' }, business_directory)
+          LaForge::DataEntry.where(source: cadastre).update_all(value: 'Harbor Hall')
+          record.reload
+        end
+
+        it 'update_attribute_source_precedence checks only the rule it saves' do
+          record.update_attribute_source_precedence(:name, cadastre, 5, expires_on: business_directory, expires_when: :matches)
+
+          expect(waiting.expires_at).to be_nil
+          expect(record.precedence_rules.sole.expired?).to be(true)
+        end
+
+        it 'update_precedence_order checks only the rules it sets' do
+          record.update_precedence_order(:name, [cadastre], expires_on: business_directory, expires_when: :matches)
+
+          expect(waiting.expires_at).to be_nil
+          expect(record.precedence_rules.sole.expired?).to be(true)
+        end
+      end
+
+      it 'expires a rule that already matches at its own recorded time' do
+        record_and_save(record, { name: 'From Cadastre' }, map_editor)
+        record.update_attribute_source_precedence(:name, map_editor, 5, expires_on: cadastre, expires_when: :matches)
+
+        expect(record.reload.precedence_rules.sole).to have_attributes(expires_when: 'matches')
+        expect(record.precedence_rules.sole.expires_at).to eq(record.precedence_rules.sole.recorded_at)
+      end
+
+      it 'expires a precedence passed while recording with the entry it keeps on top' do
+        record_and_save(record, { name: 'Harbor Hall' }, map_editor, precedence: 100, expires_on: cadastre, expires_when: :matches)
+        record_and_save(record.reload, { name: 'Harbor Hall' }, cadastre)
+
+        expect(correction.expired?).to be(true)
+        expect(record.precedence_rules.sole).to have_attributes(expired?: true, expires_when: 'matches')
+      end
+
+      it 'raises when the source has no entry for the attribute, naming both, and sets nothing' do
+        expect { record.update_precedence_order(:name, [map_editor, business_directory], expires_on: cadastre, expires_when: :matches) }
+          .to raise_error(ArgumentError, /ActiveRecordMock#name: Business Directory provides no value for name on this record.*Record a value from that source first, or leave out expires_when:/)
+        expect { record.update_attribute_source_precedence(:count, map_editor, 5, expires_on: cadastre, expires_when: :matches) }
+          .to raise_error(ArgumentError, /ActiveRecordMock#count: Map Editor provides no value for count on this record/)
+        expect(record.precedence_rules).to be_empty
+      end
+
+      it 'raises for a rule on the source it would compare with' do
+        expect { record.update_precedence_order(:name, [map_editor, cadastre], expires_on: cadastre, expires_when: :matches) }
+          .to raise_error(ArgumentError, /ActiveRecordMock#name: expires_when: :matches compares each source's value with that of expires_on:, which is one of these sources.*Leave that source out/)
+      end
+
+      it "leaves a rule whose source's entry has gone waiting" do
+        record.update_attribute_source_precedence(:name, map_editor, 5, expires_on: cadastre, expires_when: :matches)
+        record.data_entries.with_source(map_editor).sole.destroy!
+
+        record_and_save(record.reload, { name: 'Harbor Building' }, cadastre)
+
+        expect(record.precedence_rules.sole.expired?).to be(false)
+      end
+    end
+
+    it 'raises for a trigger it cannot use, saying what to pass' do
+      expect { record.record_data_entries({ name: 'Renamed' }, map_editor, expires_when: :matches) }
+        .to raise_error(ArgumentError, /Recording ActiveRecordMock: expires_when: says when an expiry on a source fires, so it needs expires_on:. Pass the source as expires_on:, or leave out expires_when:/)
+      expect { record.record_data_entries({ name: 'Renamed' }, map_editor, expires_at: 1.week.from_now, expires_when: :changes) }.to raise_error(ArgumentError, /so it needs expires_on:/)
+      expect { record.record_data_entries({ name: 'Renamed' }, map_editor, expires_on: cadastre, expires_when: :agrees) }.to raise_error(ArgumentError, /expires_when: must be :changes or :matches, not :agrees/)
+      expect { LaForge.with_settings('Renamed', expires_when: :matches) }.to raise_error(ArgumentError, /LaForge.with_settings: expires_when: says when an expiry on a source fires/)
+      expect { record.update_precedence_order(:name, [], expires_on: cadastre, expires_when: :matches) }.to raise_error(ArgumentError, /with no sources removes it/)
+      expect { record.update_attribute_source_precedence(:name, cadastre, nil, expires_when: :matches) }.to raise_error(ArgumentError, /with a nil precedence removes it/)
     end
   end
 

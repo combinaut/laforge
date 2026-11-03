@@ -15,6 +15,13 @@ module LaForge
       end
 
       # @api private
+      # Returns the attributes `name` stands for, as strings. A group stands for its attributes, and so does an attribute
+      # in a group, and anything else for itself.
+      def attributes_of(name)
+        attribute_groups.fetch(name.to_s) { with_groups(name) }
+      end
+
+      # @api private
       # Returns the name of the attribute group an attribute belongs to, or nil
       def group_of(attribute_name)
         attribute_name = attribute_name.to_s

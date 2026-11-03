@@ -28,7 +28,7 @@ module LaForge
     CHANGED = 'data_entry_changed.laforge'.freeze
 
     after_save do
-      if previously_new_record? || saved_change_to_value? || saved_change_to_expires_at? || saved_change_to_expires_on_source_id?
+      if previously_new_record? || saved_change_to_value? || Expiring::COLUMNS.any? { |column| saved_change_to_attribute?(column) }
         DataEntry.publish_change(self, value_was: value_before_last_save, value: value)
       end
     end
@@ -40,11 +40,11 @@ module LaForge
     # - record_type, record_id, attribute_name, source_id: the entry's
     # - value_was, value: its value before and after the write
     # - destroyed: whether the write destroyed it
-    # - expires_at, expires_on_source_id: its expiry after the write
+    # - expires_at, expires_on_source_id, expires_when: its expiry after the write
     def self.publish_change(entry, value_was:, value:, destroyed: false)
       payload = { entry: entry, record_type: entry.record_type, record_id: entry.record_id, attribute_name: entry.attribute_name,
                   source_id: entry.source_id, value_was: value_was.deep_dup, value: value.deep_dup, destroyed: destroyed,
-                  expires_at: entry.expires_at, expires_on_source_id: entry.expires_on_source_id }
+                  expires_at: entry.expires_at, expires_on_source_id: entry.expires_on_source_id, expires_when: entry.expires_when }
       ::ActiveRecord::Base.current_transaction.after_commit { ActiveSupport::Notifications.instrument(CHANGED, payload) }
     end
 

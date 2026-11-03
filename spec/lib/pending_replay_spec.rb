@@ -216,5 +216,25 @@ describe 'Recordings on a member before its owner is forged' do
 
       expect(correction.expires_at).to eq(jan(3))
     end
+
+    # :matches is a state every recording checks again, so a replay compares by the matcher declared at the forge
+    each_way('compares :matches, from exact to ignoring case') do |how|
+      provide_name('Harbor Cafe')
+      correct_name(how, 'harbor cafe', expires_when: :matches)
+      declare_tenant(ignoring_case)
+      forge_on(4)
+
+      expect(correction.expires_at).to how == :replayed ? eq(jan(2)) : be_nil
+    end
+
+    each_way('compares :matches, from ignoring case to exact') do |how|
+      declare_tenant(ignoring_case)
+      provide_name('Harbor Cafe')
+      correct_name(how, 'harbor cafe', expires_when: :matches)
+      declare_tenant
+      forge_on(4)
+
+      expect(correction.expires_at).to how == :replayed ? be_nil : eq(jan(2))
+    end
   end
 end
