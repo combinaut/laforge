@@ -66,6 +66,7 @@ describe 'Recordings on a member before its owner is forged' do
   first_unknown = "replay sees only the source's latest recording"
   member_expiries_ignored = "replay never fires a member's own expiry"
   matcher_ignored = 'replay ignores the matcher for :changes'
+  no_trace = 'an identical recording leaves no trace for replay'
 
   describe 'when the value did not change' do
     each_way('leaves :changes on a value with the same match value', replay_gap: value_unchanged) do |how|
@@ -85,6 +86,34 @@ describe 'Recordings on a member before its owner is forged' do
       forge_on(4)
 
       expect(correction.expires_at).to be_nil
+    end
+
+    each_way('ends :records on a value with the same match value') do |how|
+      declare_tenant(ignoring_case)
+      provide_name('Harbor Cafe')
+      correct_name(how, 'Harbor Books', expires_when: :records)
+      record_on_member(3, { name: 'harbor cafe ' })
+      forge_on(4)
+
+      expect(correction.expires_at).to eq(jan(3))
+    end
+
+    each_way('ends :records on the same value with only a new expires_at') do |how|
+      provide_name('Harbor Cafe')
+      correct_name(how, 'Harbor Books', expires_when: :records)
+      record_on_member(3, { name: 'Harbor Cafe' }, expires_at: jan(1) + 1.year)
+      forge_on(4)
+
+      expect(correction.expires_at).to eq(jan(3))
+    end
+
+    each_way('ends :records on an identical recording', replay_gap: no_trace) do |how|
+      provide_name('Harbor Cafe')
+      correct_name(how, 'Harbor Books', expires_when: :records)
+      record_on_member(3, { name: 'Harbor Cafe' })
+      forge_on(4)
+
+      expect(correction.expires_at).to eq(jan(3))
     end
   end
 
@@ -176,6 +205,16 @@ describe 'Recordings on a member before its owner is forged' do
     each_way('ends :changes at the first different value', replay_gap: first_unknown) do |how|
       provide_name('Harbor Cafe')
       correct_name(how, 'Harbor Books')
+      record_on_member(3, { name: 'Harbor Diner' })
+      record_on_member(5, { name: 'Harbor Inn' })
+      forge_on(6)
+
+      expect(correction.expires_at).to eq(jan(3))
+    end
+
+    each_way('ends :records at the first recording', replay_gap: first_unknown) do |how|
+      provide_name('Harbor Cafe')
+      correct_name(how, 'Harbor Books', expires_when: :records)
       record_on_member(3, { name: 'Harbor Diner' })
       record_on_member(5, { name: 'Harbor Inn' })
       forge_on(6)

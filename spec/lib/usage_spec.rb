@@ -1740,10 +1740,94 @@ describe 'Usage' do
       expect { record.record_data_entries({ name: 'Renamed' }, map_editor, expires_when: :matches) }
         .to raise_error(ArgumentError, /Recording ActiveRecordMock: expires_when: says when an expiry on a source fires, so it needs expires_on:. Pass the source as expires_on:, or leave out expires_when:/)
       expect { record.record_data_entries({ name: 'Renamed' }, map_editor, expires_at: 1.week.from_now, expires_when: :changes) }.to raise_error(ArgumentError, /so it needs expires_on:/)
-      expect { record.record_data_entries({ name: 'Renamed' }, map_editor, expires_on: cadastre, expires_when: :agrees) }.to raise_error(ArgumentError, /expires_when: must be :changes or :matches, not :agrees/)
+      expect { record.record_data_entries({ name: 'Renamed' }, map_editor, expires_on: cadastre, expires_when: :agrees) }.to raise_error(ArgumentError, /expires_when: must be :changes, :matches or :records, not :agrees/)
       expect { LaForge.with_settings('Renamed', expires_when: :matches) }.to raise_error(ArgumentError, /LaForge.with_settings: expires_when: says when an expiry on a source fires/)
       expect { record.update_precedence_order(:name, [], expires_on: cadastre, expires_when: :matches) }.to raise_error(ArgumentError, /with no sources removes it/)
       expect { record.update_attribute_source_precedence(:name, cadastre, nil, expires_when: :matches) }.to raise_error(ArgumentError, /with a nil precedence removes it/)
+    end
+  end
+
+  # A change that should hold until a source next provides the attribute, whatever it provides
+  describe 'expiring a change on any value from a source' do
+    include ActiveSupport::Testing::TimeHelpers
+
+    let(:correction) { record.data_entries.with_source(map_editor).sole }
+
+    # Records the value from the source at the time, and saves
+    def record_at(time, values, source, subject: record.reload, **options)
+      travel_to(time) do
+        subject.record_data_entries(values, source, **options)
+        subject.save!
+      end
+    end
+
+    before do
+      record_at(Time.utc(2030, 1, 1), { name: 'From Cadastre' }, cadastre)
+      record_at(Time.utc(2030, 1, 2), { name: 'Harbor Building' }, map_editor, expires_on: cadastre, expires_when: :records)
+    end
+
+    it 'expires it when the same value is recorded again' do
+      expect(correction).to have_attributes(expires_at: nil, expires_when: 'records', expires_on_source: cadastre)
+
+      record_at(Time.utc(2030, 1, 3), { name: 'From Cadastre' }, cadastre)
+
+      expect(correction.reload).to have_attributes(value: 'Harbor Building', expires_at: Time.utc(2030, 1, 3), expires_when: 'records', expires_on_source: cadastre)
+    end
+
+    it 'expires it on a different value, and on one that matches' do
+      record_at(Time.utc(2030, 1, 3), { name: 'Harbor Building' }, cadastre)
+      expect(correction.reload.expires_at).to eq(Time.utc(2030, 1, 3))
+
+      record_at(Time.utc(2030, 1, 4), { name: 'Harbor Hall' }, map_editor, expires_on: cadastre, expires_when: :records)
+      record_at(Time.utc(2030, 1, 5), { name: 'Pier Hall' }, cadastre)
+      expect(correction.reload.expires_at).to eq(Time.utc(2030, 1, 5))
+    end
+
+    it "expires it on the source's first entry for the attribute" do
+      geocoder = LaForge::DataSource.create!(name: 'Geocoder', precedence: 1000)
+      record_at(Time.utc(2030, 1, 2), { count: 3 }, map_editor, expires_on: geocoder, expires_when: :records)
+
+      record_at(Time.utc(2030, 1, 3), { count: 4 }, geocoder)
+
+      expect(record.data_entries.with_source(map_editor).with_attribute(:count).sole.expires_at).to eq(Time.utc(2030, 1, 3))
+    end
+
+    it 'leaves it waiting on a value recorded before the change, and on another attribute' do
+      record_at(Time.utc(2030, 1, 3), { count: 1 }, cadastre)
+
+      expect(correction.reload.expires_at).to be_nil
+    end
+
+    it 'keeps the first time it fired when the source provides values again' do
+      record_at(Time.utc(2030, 1, 3), { name: 'From Cadastre' }, cadastre)
+      record_at(Time.utc(2030, 1, 4), { name: 'From Cadastre' }, cadastre)
+
+      expect(correction.reload.expires_at).to eq(Time.utc(2030, 1, 3))
+    end
+
+    it 'expires an attribute group on a recording of the group' do
+      grouped_model = Class.new(ActiveRecordMock) do
+        def self.name = 'ActiveRecordMock'
+
+        laforged attribute_groups: { listing: %i[name count] }
+      end
+      place = grouped_model.find(record.id)
+      place.data_entries.destroy_all
+      record_at(Time.utc(2030, 1, 3), { name: 'Harbor', count: 1 }, map_editor, subject: place, expires_on: cadastre, expires_when: :records)
+
+      record_at(Time.utc(2030, 1, 4), { name: 'Harbor', count: 1 }, cadastre, subject: place)
+
+      expect(place.data_entries.with_source(map_editor).map(&:expires_at)).to eq([Time.utc(2030, 1, 4)] * 2)
+    end
+
+    it "expires a precedence rule on a recording of its attribute from its `expires_on:` source" do
+      travel_to(Time.utc(2030, 1, 3)) { record.reload.update_attribute_source_precedence(:name, map_editor, 100, expires_on: cadastre, expires_when: :records) }
+
+      record_at(Time.utc(2030, 1, 4), { count: 1 }, cadastre)
+      expect(record.precedence_rules.sole.reload.expires_at).to be_nil
+
+      record_at(Time.utc(2030, 1, 5), { name: 'From Cadastre' }, cadastre)
+      expect(record.precedence_rules.sole.reload).to have_attributes(expires_at: Time.utc(2030, 1, 5), expires_when: 'records')
     end
   end
 

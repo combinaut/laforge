@@ -25,6 +25,11 @@ module LaForge
   # record and attribute. A source with no entry, or an expired one, provides no value, so nothing matches it. A change
   # that already matches expires at its own `recorded_at`. Tracked associations have no value to compare, so they raise.
   #
+  # With `:records`, an expiry on a source fires the first time any value from that source is recorded after the change
+  # was made, or for an attribute group, any of its values, the same value included. A member list fires it for the
+  # member lists and rules of the association, and for a member when it covers the member, or for an edit, when the edit
+  # names the member.
+  #
   # Forging leaves an expired row out, as it leaves out an inactive source's, and the row is kept, so it can still be
   # read. An expiry takes effect when the record is next forged. Forging records on time, and removing expired rows,
   # are up to the application (see `expiring`).
@@ -36,7 +41,7 @@ module LaForge
 
     # TRIGGERS are the triggers `expires_when` holds, by name. A proc from `match_by:` is not stored, so a matcher is read
     # from the model each time a change is checked.
-    TRIGGERS = { CHANGES => ExpiryTrigger::Changes.new(CHANGES), 'matches' => ExpiryTrigger::Matches.new('matches') }.freeze
+    TRIGGERS = [ExpiryTrigger::Changes.new(CHANGES), ExpiryTrigger::Matches.new('matches'), ExpiryTrigger::Records.new('records')].index_by(&:name).freeze
 
     # NONE is the expiry of a change made without `expires_at:` or `expires_on:`. Assigning it clears an earlier expiry.
     NONE = { expires_at: nil, expires_on_source_id: nil, expires_when: CHANGES }.freeze

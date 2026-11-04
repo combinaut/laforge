@@ -189,8 +189,9 @@ module LaForge
     # @api private
     # Writes the source's entry for the attribute in memory, with the settings' entry expiry, and the precedence rule
     # for the attribute, or its attribute group, when the settings give a precedence, and notes what was recorded for
-    # the recording's sweep. Recording onto an entry marked for destruction undoes the unsaved removal.
-    def write_data_entry(attribute_name, value, source, settings: RecordingSettings::DEFAULT, recorded_at: Time.current)
+    # the recording's sweep. `edited` is the key of the one member an edit named. Recording onto an entry marked for
+    # destruction undoes the unsaved removal.
+    def write_data_entry(attribute_name, value, source, settings: RecordingSettings::DEFAULT, recorded_at: Time.current, edited: nil)
       source_id = DataSource.normalize_source_id(source)
       data_entry = filter_data_entries_in_memory(attributes: attribute_name, sources: source_id).first
       first_entry = data_entry.nil?
@@ -205,7 +206,7 @@ module LaForge
       rule = write_precedence_rule(rule_name, source_id, settings, made_at: (recorded_at if @replaying)) if settings.precedence_given?
       lists = compared_member_lists(attribute_name.to_s, previous, data_entry.value) if associations.key?(attribute_name.to_s)
       changed = provides_another_value?(attribute_name, previous, data_entry.value, lists, first_entry)
-      sweep_of(source_id, recorded_at).note(rule_name, recorded_at, changed: changed, lists: lists)
+      sweep_of(source_id, recorded_at).note(rule_name, recorded_at, changed: changed, lists: lists, edited: edited)
       note_replayed(rule_name, recorded_at, [data_entry, rule]) if @replaying
     end
 

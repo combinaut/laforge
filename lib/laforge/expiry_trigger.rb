@@ -33,7 +33,7 @@ module LaForge
     # its own entry, made after the change
     class Changes < ExpiryTrigger
       def fires_at(row, sweep)
-        sweep.recorded_for(row).select(&:changed).map(&:at).select { |at| at > row.changed_at }.min
+        first_after_change(row, sweep.recorded_for(row).select(&:changed))
       end
 
       def fires_for_member?(recorded, config, key)
@@ -60,6 +60,26 @@ module LaForge
         agreed_at = sweep.laforge.filter_data_entries_in_memory(attributes: attributes, sources: [row.source_id, row.expires_on_source_id]).map(&:recorded_at)
         [sweep.at, row.recorded_at, *agreed_at].compact.max
       end
+    end
+
+    # `Records` is used for `expires_when: :records`, which fires on the first value from the source made after the
+    # change, whatever the value. A member list fires an expiry on a member when it covers the member, or for an edit,
+    # when the edit names the member.
+    class Records < ExpiryTrigger
+      def fires_at(row, sweep)
+        first_after_change(row, sweep.recorded_for(row))
+      end
+
+      def fires_for_member?(recorded, config, key)
+        recorded.names_member?(config, key)
+      end
+    end
+
+    private
+
+    # Returns the time of the first of `recorded` made after the row's change, or nil
+    def first_after_change(row, recorded)
+      recorded.map(&:at).select { |at| at > row.changed_at }.min
     end
   end
 end

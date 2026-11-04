@@ -468,7 +468,7 @@ An attribute's values are compared as an entry's value reads once saved and load
 
 Only a value recorded after the change counts, so a member list recorded from the source earlier, kept pending on an owner until the owner is forged, does not end it. A value can't expire on the source it comes from, since the next recording from that source replaces it anyway.
 
-A change kept pending on an owner is made when its member list was recorded, so a recording from the source made after that and before the owner is forged ends it, whether that is a later member list forged with it or a recording on the member itself. A recording on the member shows only in the entries it changed, so one that changed nothing there does not end the change. If the source is deleted before the owner is forged, the change keeps only its expiry at a time, when it has one.
+A change kept pending on an owner is made when its member list was recorded, so a recording from the source made after that and before the owner is forged ends it, whether that is a later member list forged with it or a recording on the member itself, with the limits in [Recordings on a member before its owner is forged](#recordings-on-a-member-before-its-owner-is-forged). If the source is deleted before the owner is forged, the change keeps only its expiry at a time, when it has one.
 
 #### Expiring when a source agrees
 
@@ -482,8 +482,9 @@ Some changes should hold until the source agrees with them, rather than until th
 |---|---|---|
 | `:changes` (the default) | a value recorded from the source differs from the source's entry | the source's new value with its previous one |
 | `:matches` | the change's value matches the source's value | the change's value with the source's |
+| `:records` | any value is recorded from the source (see [Expiring on any value from a source](#expiring-on-any-value-from-a-source)) | nothing |
 
-- **It is checked as a state**, each time the source records, the same value included, and when the change is recorded. A change that already matches expires as it is recorded, at its own `recorded_at`, and the row is kept, so a settings screen can show why.
+- **It is checked as a state**, each time a value from the source is recorded, the same value included, and when the change is recorded. A change that already matches expires as it is recorded, at its own `recorded_at`, and the row is kept, so a settings screen can show why.
 - **Values are compared by match value** (see [Matching values](#matching-values)).
 - **A source with no entry provides no value**, so nothing matches it, and neither does a source whose entry has expired. A `:changes` expiry still ends with a source's first value.
 - **A time limit comes from passing `expires_at:` as well.** Whichever comes first ends the change.
@@ -502,6 +503,20 @@ A precedence rule has no value of its own, so it compares its source's entry for
 ##### Tracked associations
 
 Tracked associations raise for `expires_when: :matches`, naming the association, since a member list has no value to compare. That goes for a member list, an edit, a wrapped member and a precedence on the association. A wrapper around an attribute of a member is an attribute's value, so it can match. It is recorded on the member when the owner is forged, and compares with what the source has provided by then.
+
+#### Expiring on any value from a source
+
+Some changes should hold only until the source next provides the attribute, whatever it provides, such as a phone number fixed in the map editor that should stay until the next import from the cadastre. `expires_when: :records`, given with `expires_on:`, ends the change the next time a value is recorded from the `expires_on:` source.
+
+  ```ruby
+    place.record_data_entry(:phone_number, '555-0100', map_editor, expires_on: cadastre, expires_when: :records)
+  ```
+
+- **Any value counts**, whether it is the same as the source's entry, different, or matches the change, and so does the source's first entry for the attribute.
+- **Only a value recorded after the change counts**, as with `:changes`, so a member list recorded from the source earlier, kept pending on an owner until the owner is forged, does not end it.
+- **An attribute group ends with a recording of the group.** A precedence rule ends with a recording of its attribute or group from its `expires_on:` source.
+- **A tracked association ends with a member list recorded again from the source**, whatever it covers. An expiry on one member ends when a member list covers that member, and an edit ends it only by naming that member.
+- **A change kept pending on an owner** may not end on a recording made on the member before the owner is forged (see [Recordings on a member before its owner is forged](#recordings-on-a-member-before-its-owner-is-forged)).
 
 #### Matching values
 
@@ -559,6 +574,16 @@ In an edit (`mode: :edit`), the expiry is given to each member the edit includes
 - **Precedence ranks a source for a whole association**, so a wrapper's precedence on a member applies to the member's own attributes, and the association's precedence comes from the call, or from a wrapper around the association's whole value. A wrapper with a precedence of its own around a member with no attributes, such as an exclusion or a saved record, raises.
 - **An attribute group takes one set of settings.** Wrapping some of its attributes but not the others, or wrapping them differently, raises.
 - **Settings go where something can carry them.** Wrapping part of an attribute's value, part of a member's key, a list of members rather than each member, or a member to forget raises, saying where, in nested lists too, before anything is saved. `record_data_entry` takes a wrapped value too.
+
+#### Recordings on a member before its owner is forged
+
+A change kept pending on an owner reaches its member at the owner's forge, and is judged then from the member's current entries, which show only the source's latest recording. So a recording from the `expires_on:` source made on the member in between can end the change too early, too late or not at all.
+
+- **Too early.** A `:changes` expiry ends on any recording that moved the entry's `recorded_at`, even one a direct recording would ignore. That is a value with the same match value, or the same value with a new expiry. The forge doesn't compare the values.
+- **Too late.** With several recordings in between, `expires_at` is the time of the latest one rather than the first that counts. A source that changes its value and changes it back ends the change when it changed back.
+- **Not at all.** An identical recording leaves the entry as it was, so it doesn't end a `:records` expiry. An expiry on one member of a member list on the member, such as a tenant's opening hours, doesn't end on any recording made in between, even one that stops covering that member.
+
+Forging the owner right after recording its member lists closes the window, since a recording on the member then finds the change there and judges it as usual. `forge!(attributes:)` doesn't count, as it leaves the pending items in place. Nothing on a row shows that this happened to it. Its `created_at`, `recorded_at` and `expires_at` look the same whether the expiry was judged correctly or not.
 
 ### Following changes
 

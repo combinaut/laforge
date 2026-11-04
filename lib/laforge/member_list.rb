@@ -68,8 +68,8 @@ module LaForge
     # - 'recorded_at': `recorded_at`
     # - 'edit': true for an item from an edit, whose nested member lists are then recorded as edits, and left out
     #   otherwise
-    # - 'precedence', 'expires_at' and 'expires_on_source_id': `settings`, as `RecordingSettings#to_item` stores them.
-    #   Every attribute the item records takes them, as recording it directly with those settings would. A nil
+    # - 'precedence', 'expires_at', 'expires_on_source_id' and 'expires_when': `settings`, as `RecordingSettings#to_item`
+    #   stores them. Every attribute the item records takes them, as recording it directly with those settings would. A nil
     #   'precedence' removes the source's precedence for them.
     def self.pending_item(key_hash, attributes, recorded_at, edit: false, settings: RecordingSettings::DEFAULT)
       item = { 'key' => key_hash, 'attributes' => RecordingSettings.storable(attributes), 'recorded_at' => recorded_at.utc.iso8601(6) }

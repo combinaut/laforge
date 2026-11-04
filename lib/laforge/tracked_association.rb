@@ -214,7 +214,7 @@ module LaForge
         when :exclude then previous.excluding(config, member, expiry: expiry)
         when :forget then previous.forgetting(config, member)
         end
-      owner.laforge.write_data_entry(config.name, value, source, settings: edit_entry_settings(source, settings), recorded_at: recorded_at)
+      owner.laforge.write_data_entry(config.name, value, source, settings: edit_entry_settings(source, settings), recorded_at: recorded_at, edited: recognized_key(MemberList.new(value), member))
     end
 
     # Expires at the time of `recorded`, what a sweep noted (see ExpirySweep), the inclusions and exclusions in other
@@ -315,8 +315,7 @@ module LaForge
     # Returns `list` with each new member the tombstone matcher matches to a tombstone named by that tombstone's key,
     # as the next forge names it (see `recognize_tombstones`)
     def recognized(list)
-      known = config.tombstone_matcher ? tombstones : []
-      names = known.empty? ? {} : tombstone_names(list, known)
+      names = recognized_names(list)
       names.empty? ? list : MemberList.new(list.renamed(config, names))
     end
 
@@ -438,6 +437,17 @@ module LaForge
         entry.value = value if save
         [entry, MemberList.new(value)]
       end
+    end
+
+    # Returns the key of `member` as `recognized` names it in `list`
+    def recognized_key(list, member)
+      config.key_of(recognized_names(list)[config.key_of(member)] || member)
+    end
+
+    # Returns what `recognized` renames in `list`, as `tombstone_names` does, from the tombstones that count
+    def recognized_names(list)
+      known = config.tombstone_matcher ? tombstones : []
+      known.empty? ? {} : tombstone_names(list, known)
     end
 
     # Returns { placeholder key => tombstone key hash } for each new member of `list` whose pending item the tombstone

@@ -2128,6 +2128,77 @@ describe 'Association tracking capabilities' do
       expect(Tenant.sole.data_entries.with_source(high).with_attribute(:unit).sole).to have_attributes(expires_at: nil)
     end
 
+    it 'expires a member list and a rule on the association when the source records its member list again', capability: 'C200' do
+      travel_to(Time.utc(2026, 1, 1)) { place.record_data_entries({ place_categories: categories(bakery) }, low) && place.save! }
+      travel_to(Time.utc(2026, 1, 2)) do
+        place.reload.record_data_entries({ place_categories: categories(florist) }, high, precedence: 100, expires_on: low, expires_when: :records)
+        place.save!
+      end
+
+      travel_to(Time.utc(2026, 1, 3)) { place.reload.record_data_entries({ place_categories: categories(bakery) }, low) && place.save! }
+
+      expect(place.data_entries.with_source(high).sole).to have_attributes(expires_at: Time.utc(2026, 1, 3), expires_when: 'records')
+      expect(place.precedence_rules.sole).to have_attributes(expires_at: Time.utc(2026, 1, 3), expires_when: 'records')
+    end
+
+    it "expires a member's expiry on a member list that covers it, and on an edit only by naming it", capability: 'C201' do
+      travel_to(Time.utc(2026, 1, 1)) { place.record_data_entries({ place_categories: categories(bakery, florist) }, low) && place.save! }
+      travel_to(Time.utc(2026, 1, 2)) do
+        place.reload.record_data_entries({ place_categories: { include: categories(bakery) } }, high, mode: :edit, expires_on: low, expires_when: :records)
+        place.save!
+      end
+      expired = -> { place.reload.data_entries.membership_expiries(:place_categories).sole[:expires_at] }
+
+      travel_to(Time.utc(2026, 1, 3)) { place.reload.record_data_entries({ place_categories: { include: categories(florist) } }, low, mode: :edit) && place.save! }
+      expect(expired.call).to be_nil
+
+      travel_to(Time.utc(2026, 1, 4)) { place.reload.record_data_entries({ place_categories: categories(bakery, florist) }, low) && place.save! }
+      expect(expired.call).to eq(Time.utc(2026, 1, 4))
+    end
+
+    it "keeps :records in a pending item, and a pending value from the source counts only when made after the change", capability: 'C202' do
+      travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low) } }
+      travel_to(Time.utc(2026, 1, 2)) do
+        place.reload.record_data_entries({ tenants: [tenant('T-1', unit: LaForge.with_settings('2B', expires_on: low, expires_when: :records))] }, high, mode: :partial)
+        place.forge!
+      end
+      correction = -> { Tenant.sole.data_entries.with_source(high).with_attribute(:unit).sole }
+      expect(correction.call).to have_attributes(expires_when: 'records', expires_at: nil)
+
+      travel_to(Time.utc(2026, 1, 3)) { place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low) && place.save! }
+      travel_to(Time.utc(2026, 1, 4)) { place.reload.forge! }
+
+      expect(correction.call.expires_at).to eq(Time.utc(2026, 1, 3))
+    end
+
+    it 'ends a pending :records change on an identical recording on the member', capability: 'C203' do
+      pending 'an identical recording leaves no trace for replay'
+      travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low) } }
+      travel_to(Time.utc(2026, 1, 2)) do
+        place.reload.record_data_entries({ tenants: [tenant('T-1', unit: LaForge.with_settings('2B', expires_on: low, expires_when: :records))] }, high, mode: :partial)
+        place.save!
+      end
+      travel_to(Time.utc(2026, 1, 3)) { Tenant.sole.then { |corner_cafe| corner_cafe.record_data_entries({ unit: '1A' }, low) && corner_cafe.save! } }
+
+      travel_to(Time.utc(2026, 1, 4)) { place.reload.forge! }
+
+      expect(Tenant.sole.data_entries.with_source(high).with_attribute(:unit).sole).to have_attributes(expires_when: 'records', expires_at: Time.utc(2026, 1, 3))
+    end
+
+    it "fires a :records exclusion of a removed member on an edit that brings the member back by its attributes", capability: 'C206' do
+      travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) } }
+      travel_to(Time.utc(2026, 1, 2)) do
+        place.reload.forge! { place.record_data_entries({ tenants: { exclude: [{ id: Tenant.sole.id }] } }, top, mode: :edit, expires_on: low, expires_when: :records) }
+      end
+      exclusion = -> { place.data_entries.membership_expiries(:tenants).find { |item| item[:source_id] == top.id } }
+
+      travel_to(Time.utc(2026, 1, 3)) { place.reload.record_data_entries({ tenants: { include: [{ name: 'Bay Books' }] } }, low, mode: :edit) && place.save! }
+      expect(exclusion.call[:expires_at]).to be_nil
+
+      travel_to(Time.utc(2026, 1, 4)) { place.reload.record_data_entries({ tenants: { include: [{ name: 'Corner Café' }] } }, low, mode: :edit) && place.save! }
+      expect(exclusion.call[:expires_at]).to eq(Time.utc(2026, 1, 4))
+    end
+
     it 'keeps a trigger in a pending item only while its source exists', capability: 'C197' do
       geocoder = LaForge::DataSource.create!(name: 'geocoder', precedence: 14)
       place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) }

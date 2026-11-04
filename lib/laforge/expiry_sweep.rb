@@ -7,10 +7,18 @@ module LaForge
     # - changed: whether it differs from the source's entry (see `Recording#provides_another_value?`)
     # - lists: for a tracked association, the source's member lists before and after. nil when the write is only known
     #   from an entry's `recorded_at` (see `Recording#note_replayed`), which counts for every member.
-    Recorded = Struct.new(:rule_name, :at, :changed, :lists, keyword_init: true) do
+    # - edited: the key of the one member an edit named, as `lists` name it, or nil
+    Recorded = Struct.new(:rule_name, :at, :changed, :lists, :edited, keyword_init: true) do
       # Returns whether the source covers the member differently after the write
       def coverage_changed?(config, key)
         lists.nil? || lists.map { |list| list.recorded_coverage(config, key) }.uniq.size > 1
+      end
+
+      # Returns whether the write says something about the member
+      def names_member?(config, key)
+        return true if lists.nil?
+
+        edited ? edited == key : !lists.last.recorded_coverage(config, key).nil?
       end
     end
 
@@ -23,8 +31,8 @@ module LaForge
       @recorded = []
     end
 
-    def note(rule_name, at, changed:, lists: nil)
-      @recorded << Recorded.new(rule_name: rule_name, at: at, changed: changed, lists: lists)
+    def note(rule_name, at, changed:, lists: nil, edited: nil)
+      @recorded << Recorded.new(rule_name: rule_name, at: at, changed: changed, lists: lists, edited: edited)
     end
 
     # Expires each of `rows` that waits on the source and whose trigger fires, then what member lists fire. Triggers that
