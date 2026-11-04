@@ -303,7 +303,7 @@ module LaForge
     # list or an attribute's whole value may be wrapped. Raises for a wrapper around part of an attribute's value. A
     # nested list's members keep theirs, for `assert_nested_list!` to check where they are.
     def unwrapped_value(field, value)
-      value = RecordingSettings::DEFAULT.for(value).first
+      value, _settings = RecordingSettings::DEFAULT.for(value)
       return value if nested_config(field)
 
       RecordingSettings.assert_none_in!(value, where: "#{klass.name}##{field} on members of #{owner_class.name}##{name}")
