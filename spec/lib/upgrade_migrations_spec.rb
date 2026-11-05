@@ -66,6 +66,15 @@ describe 'The upgrade migrations' do
     end
   end
 
+  # `installed` with the created_at and updated_at of `alpha`, since an upgrade keeps those columns of the tables it
+  # finds, and nothing compares them
+  def with_timestamps_of(alpha, installed)
+    installed.to_h do |table, definition|
+      timestamps = alpha.fetch(table, { columns: [] })[:columns].select { |column_name, *| %w[created_at updated_at].include?(column_name) }.index_by(&:first)
+      [table, definition.merge(columns: definition[:columns].map { |column| timestamps.fetch(column.first, column) })]
+    end
+  end
+
   around do |example|
     drop_tables
     example.run
@@ -75,7 +84,7 @@ describe 'The upgrade migrations' do
     [LaForge::DataSource, LaForge::DataEntry, LaForge::PrecedenceRule].each(&:reset_column_information)
   end
 
-  it 'reaches the schema laforge:install creates, and goes back to the 0.0.1.alpha schema with its priorities' do
+  it 'reaches the schema laforge:install creates, apart from the precision of the timestamps it finds, and goes back to the 0.0.1.alpha schema with its priorities' do
     migrate(migration('migration', 'AddLaforgeDataSourcesAndEntries'), :up)
     installed = schema
     drop_tables
@@ -89,7 +98,7 @@ describe 'The upgrade migrations' do
     SQL
 
     upgrades.each { |template_name, migration_class_name| migrate(migration(template_name, migration_class_name), :up) }
-    expect(schema).to eq(installed)
+    expect(schema).to eq(with_timestamps_of(alpha, installed))
     expect(connection.select_rows('SELECT record_type, record_id, attribute_name, source_id, precedence, ruleset FROM laforge_precedence_rules ORDER BY id'))
       .to eq([['', 0, '', 1, 10, ''], ['', 0, '', 2, 20, ''], ['Place', 1, 'name', 1, 30, '']])
 
