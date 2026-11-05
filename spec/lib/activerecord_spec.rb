@@ -80,7 +80,14 @@ describe 'ActiveRecordExtensions' do
         expect(ActiveRecordMock.with_attribute_without_source(['active', 'name'], data_source)).to eq([record2])
       end
 
-      xit 'returns records with all recorded attributes from the given source when chained'
+      it 'returns records with all recorded attributes not from the given source when chained' do
+        pending "merging replaces the earlier call's conditions on the same columns, so only the last call counts"
+        both = ActiveRecordMock.create(name: "Both")
+        LaForge::DataEntry.create(source: data_source2, record: both, attribute_name: "name", value: "Article")
+        LaForge::DataEntry.create(source: data_source2, record: both, attribute_name: "active", value: true)
+
+        expect(ActiveRecordMock.with_attribute_without_source('name', data_source).with_attribute_without_source('active', data_source)).to eq([both])
+      end
     end
 
     describe "::without_attribute_with_source" do
@@ -96,7 +103,14 @@ describe 'ActiveRecordExtensions' do
         expect(ActiveRecordMock.without_attribute_with_source(['active', 'name'], data_source)).to eq([])
       end
 
-      xit 'returns records without any of the recorded attributes from the given source when chained'
+      it 'returns records without any of the recorded attributes from the given source when chained' do
+        pending "merging replaces the earlier call's conditions on the same columns, so only the last call counts"
+        LaForge::DataEntry.create(source: data_source, record: record2, attribute_name: "name", value: "Article")
+        other = ActiveRecordMock.create(name: "Other")
+        LaForge::DataEntry.create(source: data_source, record: other, attribute_name: "count", value: 1)
+
+        expect(ActiveRecordMock.without_attribute_with_source('name', data_source).without_attribute_with_source('active', data_source)).to eq([other])
+      end
     end
   end
 
