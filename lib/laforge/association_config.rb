@@ -289,15 +289,19 @@ module LaForge
 
     # Raises unless `field` of a member is its key, its placeholder key, or, when `attributes` is true, a nested tracked
     # association or a column LaForge can record. The column must not be the member's primary key, its link to the
-    # owner or the order column, and `value` must be storable.
+    # owner or the order column, and `value` must be storable. A wrapper may go around all of `value`, as a nested list
+    # or an attribute's whole value may be wrapped, but not part of an attribute's value. A nested list's members keep
+    # theirs, for `assert_nested_list!` to check where they are.
     def assert_attribute!(field, value, attributes:, edit:)
       return if (field == NEW_MEMBER && primary_keyed?) || key.include?(field)
 
-      nested_config(field)&.assert_no_match!(RecordingSettings.settings_of(value))
-      value = unwrapped_value(field, value)
+      value, settings = RecordingSettings::DEFAULT.for(value)
+      nested = nested_config(field)
+      nested&.assert_no_match!(settings)
+      RecordingSettings.assert_none_in!(value, where: "#{klass.name}##{field} on members of #{owner_class.name}##{name}") unless nested
       if !attributes
         raise ArgumentError, "#{owner_class.name}##{name} members are named here by key only (#{key.join(', ')}), not #{field}"
-      elsif (nested = nested_config(field)) # validated now, recorded on the member when a forge of the owner includes it
+      elsif nested # validated now, recorded on the member when a forge of the owner includes it
         assert_nested_list!(nested, value, edit: edit)
       elsif field == klass.primary_key || field == owner_foreign_key || field == owner_type_column || !klass.column_names.include?(field)
         raise InvalidAttributeName, "Cannot set #{field} on #{klass.name} members of #{owner_class.name}##{name}"
@@ -306,17 +310,6 @@ module LaForge
       elsif !DataEntry.storable?(value)
         raise InvalidValue, "Cannot record #{value.class} for #{field} on #{klass.name} members of #{owner_class.name}##{name}; values are stored as JSON, so record a string, number, boolean, date, nil, or an array or hash of those"
       end
-    end
-
-    # Returns a member's `value` for `field` without the wrapper around all of it (see RecordingSettings), as a nested
-    # list or an attribute's whole value may be wrapped. Raises for a wrapper around part of an attribute's value. A
-    # nested list's members keep theirs, for `assert_nested_list!` to check where they are.
-    def unwrapped_value(field, value)
-      value, _settings = RecordingSettings::DEFAULT.for(value)
-      return value if nested_config(field)
-
-      RecordingSettings.assert_none_in!(value, where: "#{klass.name}##{field} on members of #{owner_class.name}##{name}")
-      value
     end
 
     # Raises when `value`, a member's list for the nested tracked association `nested`, is invalid. A collection's list
