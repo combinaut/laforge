@@ -15,7 +15,7 @@ module LaForge
   #
   # - precedence: the precedence of the record's rule for the source, for each attribute or attribute group recorded.
   #   NOT_GIVEN keeps the rule as it is, and nil removes it.
-  # - expiry: `{ expires_at:, expires_on_source_id: }` for the entries and rules written (see Expiring).
+  # - expiry: `{ expires_at:, expires_on_source_id:, expires_when: }` for the entries and rules written (see Expiring).
   #   `Expiring::NONE` clears an earlier expiry.
   # - entry_expiry: the expiry of the entry the settings are applied to, which is `expiry` unless `with_entry_expiry`
   #   gives another. nil leaves the entry's own expiry as it is.
@@ -27,21 +27,22 @@ module LaForge
 
     # Returns the settings for the options given where a change is made. Raises as `Expiring.columns` does for an expiry
     # that cannot be used.
-    def self.given(precedence: NOT_GIVEN, expires_at: nil, expires_on: nil, where:, source: nil, removing: nil)
-      new(precedence: precedence, expiry: Expiring.columns(expires_at, expires_on, where: where, source: source, removing: removing))
+    def self.given(precedence: NOT_GIVEN, expires_at: nil, expires_on: nil, expires_when: nil, where:, source: nil, removing: nil)
+      new(precedence: precedence, expiry: Expiring.columns(expires_at, expires_on, where: where, expires_when: expires_when, source: source, removing: removing))
     end
 
     # Returns the settings stored in a pending item (see MemberList) or a stored wrapper, under the keys `to_item`
     # writes
     def self.from_item(item)
       new(precedence: item.key?('precedence') ? item['precedence'] : NOT_GIVEN,
-          expiry: { expires_at: item['expires_at'] && Time.iso8601(item['expires_at']), expires_on_source_id: item['expires_on_source_id'] })
+          expiry: { expires_at: item['expires_at'] && Time.iso8601(item['expires_at']), expires_on_source_id: item['expires_on_source_id'], expires_when: Expiring.trigger(item['expires_when']).name })
     end
 
-    # Returns pending `items` (see MemberList) without each 'expires_on_source_id' that names a source deleted since, in
-    # an item and in the stored wrappers in its attributes, so restoring the settings gives no expiry on a source, and
-    # 'expires_at' is kept. Deleting a source nulls the columns that name it, but not the ids in a member list's value,
-    # which would then fail the foreign key where they are recorded. Looks the ids up in one query, when there are any.
+    # Returns pending `items` (see MemberList) without each 'expires_on_source_id', and the 'expires_when' beside it,
+    # that names a source deleted since, in an item and in the stored wrappers in its attributes, so restoring the
+    # settings gives no expiry on a source, and 'expires_at' is kept. Deleting a source nulls the columns that name it,
+    # but not the ids in a member list's value, which would then fail the foreign key where they are recorded. Looks the
+    # ids up in one query, when there are any.
     def self.without_deleted_sources(items)
       ids = items.flat_map { |item| [item['expires_on_source_id'], *stored_source_ids(item['attributes'])] }.compact.uniq
       return items if ids.empty?
@@ -49,7 +50,7 @@ module LaForge
       deleted = ids - DataSource.where(id: ids).ids
       return items if deleted.empty?
 
-      drop = ->(settings) { deleted.include?(settings['expires_on_source_id']) ? settings.except('expires_on_source_id') : settings }
+      drop = ->(settings) { deleted.include?(settings['expires_on_source_id']) ? settings.except('expires_on_source_id', 'expires_when') : settings }
       items.map { |item| drop.(item).merge('attributes' => with_stored_settings(item['attributes'], &drop)) }
     end
 
@@ -194,7 +195,7 @@ module LaForge
     end
 
     def expiring?
-      expiry.values.any?
+      expiry != Expiring::NONE
     end
 
     # Returns these settings with `precedence` in place of their own
@@ -221,7 +222,13 @@ module LaForge
       item = {}
       item['expires_at'] = expiry[:expires_at].utc.iso8601(6) if expiry[:expires_at]
       item['expires_on_source_id'] = expiry[:expires_on_source_id] if expiry[:expires_on_source_id]
+      item['expires_when'] = expiry[:expires_when] unless expiry[:expires_when] == Expiring::CHANGES
       item
+    end
+
+    # Returns the trigger of the expiry on a source these settings give
+    def trigger
+      Expiring.trigger(expiry[:expires_when])
     end
 
     def apply_to_entry(data_entry)
@@ -258,16 +265,17 @@ module LaForge
   # - an excluded member
   # - a tracked association's whole value, or a nested list
   # An option left out is not given, as for the call, so a wrapper without `expires_at:` or `expires_on:` gives what it
-  # wraps no expiry, whatever the call's.
+  # wraps no expiry, whatever the call's. `expires_when: :matches` wraps an attribute's value, and raises around a
+  # member or a list, which are compared by what they cover (see `AssociationConfig#assert_no_match!`).
   #
   # A precedence ranks the source for a whole association, so a wrapper's precedence on a member applies to the
   # member's own attributes. The association's precedence comes from the call, or from a wrapper around its whole value.
   # Raises ArgumentError for a value that is already wrapped, and for an expiry that cannot be used (see
   # `Expiring.columns`). Recording raises for a precedence on a member with no attributes, such as an exclusion or a
   # saved record, unless it is the call's.
-  def self.with_settings(value, precedence: NOT_GIVEN, expires_at: nil, expires_on: nil)
+  def self.with_settings(value, precedence: NOT_GIVEN, expires_at: nil, expires_on: nil, expires_when: nil)
     raise ArgumentError, 'LaForge.with_settings cannot wrap a value that is already wrapped; give one wrapper all the settings' if RecordingSettings.wrapped?(value)
 
-    WithSettings.new(value, RecordingSettings.given(precedence: precedence, expires_at: expires_at, expires_on: expires_on, where: 'LaForge.with_settings'))
+    WithSettings.new(value, RecordingSettings.given(precedence: precedence, expires_at: expires_at, expires_on: expires_on, expires_when: expires_when, where: 'LaForge.with_settings'))
   end
 end

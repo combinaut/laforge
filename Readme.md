@@ -54,12 +54,14 @@ Key features:
   - `laforge:active_sources` adds `active` to data sources, with every existing source active (see [Deactivating a source](#deactivating-a-source)).
   - `laforge:expiry` adds `expires_at` and `expires_on_source_id` to data entries and precedence rules, and `recorded_at` to precedence rules, filled from `updated_at`. Nothing expires until a change is made with an expiry (see [Expiring a change](#expiring-a-change)). It also gives `created_at` and `updated_at` on LaForge's three tables sub-second precision, matching `recorded_at`, which an expiry on a source compares between a recording and the change it ends; this rewrites the columns, which can take a while on a large `laforge_data_entries` table.
   - `laforge:rulesets` adds `ruleset` to precedence rules, with every existing rule a base rule, and adds it to both unique indexes on `laforge_precedence_rules` (see [Rulesets](#rulesets)). Going down deletes every ruleset's rules.
+  - `laforge:expires_when` adds `expires_when` to data entries and precedence rules, with every existing change keeping the `changes` trigger (see [Expiring when a source agrees](#expiring-when-a-source-agrees)).
 
   ```bash
     rails generate laforge:recorded_at
     rails generate laforge:active_sources
     rails generate laforge:expiry
     rails generate laforge:rulesets
+    rails generate laforge:expires_when
     rails db:migrate
   ```
 
@@ -134,7 +136,7 @@ A source's precedence ranks its values everywhere, unless a more specific rule a
 
 | Level | Set with |
 |---|---|
-| One attribute of one record | `record.update_precedence_order(:height, [source2, source1])`, `record.update_attribute_source_precedence(:height, source2, 3)`, or `precedence:` when recording; each also takes `expires_at:` and `expires_on:` (see [Expiring a change](#expiring-a-change)) |
+| One attribute of one record | `record.update_precedence_order(:height, [source2, source1])`, `record.update_attribute_source_precedence(:height, source2, 3)`, or `precedence:` when recording; each also takes `expires_at:`, `expires_on:` and `expires_when:` (see [Expiring a change](#expiring-a-change)) |
 | One attribute of every record of a model | `MyModel.update_precedence_order([source2, source1], attribute: :height)` or `MyModel.update_attribute_source_precedence(:height, source2, 3)` |
 | Every attribute of every record of a model | `MyModel.update_precedence_order([source2, source1])` or `MyModel.update_source_precedence(source2, 3)` |
 | Everything (the source's own precedence) | `LaForge.update_precedence_order([source2, source1])` or `source2.update!(precedence: 3)` |
@@ -432,7 +434,7 @@ In a tracked association, an inactive source's member lists are left out too. Me
 
 ### Expiring a change
 
-A change to one record can be made to expire, so the record goes back to what its sources say without it and no one has to remember to undo it. A recorded value, a record's precedence order, a single precedence, or several of them in one save, take `expires_at:` (a time) or `expires_on:` (a source). An expiry on a source holds the change until the source provides a different value, as when an editor corrects a value until the source fixes it. It fires at the first value recorded from that source that differs from the source's own entry for the attribute, and sets `expires_at` to when that value was recorded. Recording the same value from the source again, as an import does each time it runs, leaves the change in place.
+A change to one record can be made to expire, so the record goes back to what its sources say without it and no one has to remember to undo it. A recorded value, a record's precedence order, a single precedence, or several of them in one save, take `expires_at:` (a time) or `expires_on:` (a source). An expiry on a source holds the change until the source provides a different value, as when an editor corrects a value until the source fixes it, or with `expires_when: :matches`, until the source agrees with it (see [Expiring when a source agrees](#expiring-when-a-source-agrees)). It fires at the first value recorded from that source that differs from the source's own entry for the attribute, and sets `expires_at` to when that value was recorded. Recording the same value from the source again, as an import does each time it runs, leaves the change in place.
 
   ```ruby
     # Rename the place until the cadastre's name for it changes
@@ -460,11 +462,80 @@ LaForge publishes nothing when a change expires by time, and the forge writes no
 
 #### Which values end an expiry on a source
 
-A value from the source ends the expiry when it differs from the source's own entry for the attribute, not from the record's forged value, so a source that comes to provide the editor's value ends it too. For an attribute group, a different value for any of the group's attributes ends it. For a tracked association, a member list ends it when it covers some member differently from the source's previous member list, and an expiry given to one member by an edit ends only when the source's coverage of that member changes. What a member list says about a member besides its key counts on the member's own entries once a forge records it there. A member the source lists again after a forge removed it is the same member when the tombstone matcher recognizes it. A source that had no entry for the attribute ends the expiry with its first value. A source with no member list covers no member, so its first member list ends an expiry only when it covers some member, and a member's expiry only when it covers that member.
+With the default `expires_when: :changes`, a value from the source ends the expiry when it differs from the source's own entry for the attribute, not from the record's forged value, so a source that comes to provide the editor's value ends it too. For an attribute group, a different value for any of the group's attributes ends it. For a tracked association, a member list ends it when it covers some member differently from the source's previous member list, and an expiry given to one member by an edit ends only when the source's coverage of that member changes. What a member list says about a member besides its key counts on the member's own entries once a forge records it there. A member the source lists again after a forge removed it is the same member when the tombstone matcher recognizes it. A source that had no entry for the attribute ends the expiry with its first value. A source with no member list covers no member, so its first member list ends an expiry only when it covers some member, and a member's expiry only when it covers that member.
+
+An attribute's values are compared as an entry's value reads once saved and loaded again, so `:open` and `'open'` are the same value (see [Matching values](#matching-values)).
 
 Only a value recorded after the change counts, so a member list recorded from the source earlier, kept pending on an owner until the owner is forged, does not end it. A value can't expire on the source it comes from, since the next recording from that source replaces it anyway.
 
-A change kept pending on an owner is made when its member list was recorded, so a recording from the source made after that and before the owner is forged ends it, whether that is a later member list forged with it or a recording on the member itself. A recording on the member shows only in the entries it changed, so one that changed nothing there does not end the change. If the source is deleted before the owner is forged, the change keeps only its expiry at a time, when it has one.
+A change kept pending on an owner is made when its member list was recorded, so a recording from the source made after that and before the owner is forged ends it, whether that is a later member list forged with it or a recording on the member itself, with the limits in [Recordings on a member before its owner is forged](#recordings-on-a-member-before-its-owner-is-forged). If the source is deleted before the owner is forged, the change keeps only its expiry at a time, when it has one.
+
+#### Expiring when a source agrees
+
+Some changes should hold until the source agrees with them, rather than until the source provides something else, such as a place's name fixed in the map editor that should stay until the cadastre provides the same name. `expires_when: :matches`, given with `expires_on:`, ends the change when its value matches the value of the `expires_on:` source. `expires_when: :changes`, the default, is the expiry described above.
+
+  ```ruby
+    place.record_data_entry(:name, 'Harbor Building', map_editor, expires_on: cadastre, expires_when: :matches)
+  ```
+
+| `expires_when:` | The change ends when | Compares |
+|---|---|---|
+| `:changes` (the default) | a value recorded from the source differs from the source's entry | the source's new value with its previous one |
+| `:matches` | the change's value matches the source's value | the change's value with the source's |
+| `:records` | any value is recorded from the source (see [Expiring on any value from a source](#expiring-on-any-value-from-a-source)) | nothing |
+
+- **It is checked as a state**, each time a value from the source is recorded, the same value included, and when the change is recorded. A change that already matches expires as it is recorded, at its own `recorded_at`, and the row is kept, so a settings screen can show why.
+- **Values are compared by match value** (see [Matching values](#matching-values)).
+- **A source with no entry provides no value**, so nothing matches it, and neither does a source whose entry has expired. A `:changes` expiry still ends with a source's first value.
+- **A time limit comes from passing `expires_at:` as well.** Whichever comes first ends the change.
+- **Attribute groups match when every attribute of the group matches.** Attributes recorded together are compared once they are all recorded.
+- **`LaForge.with_settings`, `update_precedence_order` and `update_attribute_source_precedence` take `expires_when:` too**, and the `expires_when` of an entry is in the event it publishes (see [Following changes](#following-changes)). `expires_when:` without `expires_on:` raises.
+
+##### Expiring a precedence on a match
+
+A precedence rule has no value of its own, so it compares its source's entry for the same record and attribute. Recording a rule whose source has no entry there raises, naming the attribute and the source, and so does a rule for the `expires_on:` source itself, which would only compare its entry with itself. In a precedence order, each source's rule ends on its own.
+
+  ```ruby
+    # Rank the map editor first for the name until the cadastre provides the map editor's name
+    place.update_precedence_order(:name, [map_editor], expires_on: cadastre, expires_when: :matches)
+  ```
+
+##### Tracked associations
+
+Tracked associations raise for `expires_when: :matches`, naming the association, since a member list has no value to compare. That goes for a member list, an edit, a wrapped member and a precedence on the association. A wrapper around an attribute of a member is an attribute's value, so it can match. It is recorded on the member when the owner is forged, and compares with what the source has provided by then.
+
+#### Expiring on any value from a source
+
+Some changes should hold only until the source next provides the attribute, whatever it provides, such as a phone number fixed in the map editor that should stay until the next import from the cadastre. `expires_when: :records`, given with `expires_on:`, ends the change the next time a value is recorded from the `expires_on:` source.
+
+  ```ruby
+    place.record_data_entry(:phone_number, '555-0100', map_editor, expires_on: cadastre, expires_when: :records)
+  ```
+
+- **Any value counts**, whether it is the same as the source's entry, different, or matches the change, and so does the source's first entry for the attribute.
+- **Only a value recorded after the change counts**, as with `:changes`, so a member list recorded from the source earlier, kept pending on an owner until the owner is forged, does not end it.
+- **An attribute group ends with a recording of the group.** A precedence rule ends with a recording of its attribute or group from its `expires_on:` source.
+- **A tracked association ends with a member list recorded again from the source**, whatever it covers. An expiry on one member ends when a member list covers that member, and an edit ends it only by naming that member.
+- **A change kept pending on an owner** may not end on a recording made on the member before the owner is forged (see [Recordings on a member before its owner is forged](#recordings-on-a-member-before-its-owner-is-forged)).
+
+#### Matching values
+
+Two values of an attribute match when they read the same once saved and loaded again, so a value recorded for the first time compares as it will after a round trip, and `nil` matches only `nil`. A model can give an attribute its own match value with `match_by:`, a proc that takes one value in that stored form and returns what to compare. Two values match when their match values are equal.
+
+  ```ruby
+    class Place < ApplicationRecord
+      laforged match_by: { name: ->(value) { value&.strip&.downcase } }
+    end
+
+    LaForge::ValueMatcher.for(place, :name).matches?('Harbor Building', 'harbor building ')  # => true
+    LaForge::ValueMatcher.for(Place, :name).match_value('Harbor Building')                   # => "harbor building"
+  ```
+
+- **`match_by:` never changes what is recorded or forged.** It only decides whether two values are the same, so the cadastre going from `'Harbor Building'` to `'harbor building '` ends no expiry on it, and both triggers compare the same way.
+- **`nil` reaches the proc**, which decides how `nil` matches, so write it to accept `nil`.
+- **An application can use the same matcher**, as a screen can to disable `:matches` when the change's value already matches the source's. `ValueMatcher.for` takes a record, a model, or anything else that names the model, such as its name or a data entry. `matches?` compares two values and nothing else, so a source with no entry has to be checked for first.
+- **`match_by:` covers one attribute.** Declaring it raises for a tracked association, whose members are identified by `key:` and `tombstone_matcher:`, and for an attribute group, which is declared on each of the group's attributes. A `belongs_to` is declared on its foreign key.
+- **Declaring `match_by:` never touches the database**, so an app can boot without one, as for an asset precompile. An attribute the model doesn't have raises at the model's first matcher instead, from `ValueMatcher.for` or from a recording that compares values.
 
 #### Expiring a member list
 
@@ -488,7 +559,7 @@ In an edit (`mode: :edit`), the expiry is given to each member the edit includes
 
 #### Settings for part of a payload
 
-`LaForge.with_settings(value, precedence:, expires_at:, expires_on:)` wraps any part of a payload with settings of its own, which replace the call's for everything recorded from it: an attribute's value, a belongs_to, a member (its attributes, nested lists and its inclusion), an exclusion, or a nested list. Options left out are not given, so a wrapper without an expiry makes what it wraps permanent. One call then records what would otherwise take one call per setting.
+`LaForge.with_settings(value, precedence:, expires_at:, expires_on:, expires_when:)` wraps any part of a payload with settings of its own, which replace the call's for everything recorded from it: an attribute's value, a belongs_to, a member (its attributes, nested lists and its inclusion), an exclusion, or a nested list. Options left out are not given, so a wrapper without an expiry makes what it wraps permanent. One call then records what would otherwise take one call per setting.
 
   ```ruby
     place.record_data_entries({
@@ -504,13 +575,23 @@ In an edit (`mode: :edit`), the expiry is given to each member the edit includes
 - **An attribute group takes one set of settings.** Wrapping some of its attributes but not the others, or wrapping them differently, raises.
 - **Settings go where something can carry them.** Wrapping part of an attribute's value, part of a member's key, a list of members rather than each member, or a member to forget raises, saying where, in nested lists too, before anything is saved. `record_data_entry` takes a wrapped value too.
 
+#### Recordings on a member before its owner is forged
+
+A change kept pending on an owner reaches its member at the owner's forge, and is judged then from the member's current entries, which show only the source's latest recording. So a recording from the `expires_on:` source made on the member in between can end the change too early, too late or not at all.
+
+- **Too early.** A `:changes` expiry ends on any recording that moved the entry's `recorded_at`, even one a direct recording would ignore. That is a value with the same match value, or the same value with a new expiry. The forge doesn't compare the values.
+- **Too late.** With several recordings in between, `expires_at` is the time of the latest one rather than the first that counts. A source that changes its value and changes it back ends the change when it changed back.
+- **Not at all.** An identical recording leaves the entry as it was, so it doesn't end a `:records` expiry. An expiry on one member of a member list on the member, such as a tenant's opening hours, doesn't end on any recording made in between, even one that stops covering that member.
+
+Forging the owner right after recording its member lists closes the window, since a recording on the member then finds the change there and judges it as usual. `forge!(attributes:)` doesn't count, as it leaves the pending items in place. Nothing on a row shows that this happened to it. Its `created_at`, `recorded_at` and `expires_at` look the same whether the expiry was judged correctly or not.
+
 ### Following changes
 
 Each data entry saved new, or with its value or its expiry changed, and each one destroyed, publishes `LaForge::DataEntry::CHANGED` (`'data_entry_changed.laforge'`), so an application can follow what sources say without reading every entry, such as to notice that an import changed the value an editor's entry replaced.
 
   ```ruby
     ActiveSupport::Notifications.subscribe(LaForge::DataEntry::CHANGED) do |*, payload|
-      payload # => { entry:, record_type:, record_id:, attribute_name:, source_id:, value_was:, value:, destroyed:, expires_at:, expires_on_source_id: }
+      payload # => { entry:, record_type:, record_id:, attribute_name:, source_id:, value_was:, value:, destroyed:, expires_at:, expires_on_source_id:, expires_when: }
     end
   ```
 

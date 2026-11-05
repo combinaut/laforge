@@ -1,0 +1,8 @@
+# Adds expires_when to laforge_data_entries and laforge_precedence_rules, the trigger of an expiry on a source. Every
+# existing change keeps today's trigger, 'changes', which ends it once the source provides a different value.
+class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
+  def change
+    add_column :laforge_data_entries, :expires_when, :string, null: false, default: 'changes'
+    add_column :laforge_precedence_rules, :expires_when, :string, null: false, default: 'changes'
+  end
+end

@@ -214,6 +214,14 @@ module LaForge
       end
     end
 
+    # Raises for `settings`, or nil, that expire on a match, since a member list has no value to compare
+    def assert_no_match!(settings)
+      return unless settings&.trigger&.compares_values?
+
+      raise ArgumentError, "#{owner_class.name}##{name} is a tracked association, whose member lists have no value to match, so expires_when: :matches can't expire it. " \
+                           "Leave out expires_when: to expire it once the source covers a member differently, or wrap a member's attribute with LaForge.with_settings(expires_when: :matches)"
+    end
+
     # Returns `members` without those whose referenced record does not exist
     def drop_dangling(members)
       reference_reflections.inject(members) do |list, reference|
@@ -285,6 +293,7 @@ module LaForge
     def assert_attribute!(field, value, attributes:, edit:)
       return if (field == NEW_MEMBER && primary_keyed?) || key.include?(field)
 
+      nested_config(field)&.assert_no_match!(RecordingSettings.settings_of(value))
       value = unwrapped_value(field, value)
       if !attributes
         raise ArgumentError, "#{owner_class.name}##{name} members are named here by key only (#{key.join(', ')}), not #{field}"
@@ -303,7 +312,7 @@ module LaForge
     # list or an attribute's whole value may be wrapped. Raises for a wrapper around part of an attribute's value. A
     # nested list's members keep theirs, for `assert_nested_list!` to check where they are.
     def unwrapped_value(field, value)
-      value = RecordingSettings::DEFAULT.for(value).first
+      value, _settings = RecordingSettings::DEFAULT.for(value)
       return value if nested_config(field)
 
       RecordingSettings.assert_none_in!(value, where: "#{klass.name}##{field} on members of #{owner_class.name}##{name}")
@@ -312,9 +321,14 @@ module LaForge
 
     # Raises when `value`, a member's list for the nested tracked association `nested`, is invalid. A collection's list
     # in an edit is validated as edits. Each member is read without its own wrapper, as recording reads it, so a wrapper
-    # anywhere else in the member, such as around its key, raises now rather than when a forge records it.
+    # anywhere else in the member, such as around its key, raises now rather than when a forge records it. So does a
+    # wrapper that expires a member on a match.
     def assert_nested_list!(nested, value, edit:)
-      unwrap = ->(member) { RecordingSettings::DEFAULT.for(member).first }
+      unwrap = lambda do |member|
+        unwrapped, settings = RecordingSettings::DEFAULT.for(member)
+        nested.assert_no_match!(settings)
+        unwrapped
+      end
       if edit && nested.collection? && !value.nil?
         nested.edits(value).each { |action, nested_member| nested.normalize_members([unwrap.(nested_member)], attributes: action == :include, edit: true) }
       else

@@ -19,6 +19,8 @@ How LaForge's README, code comments, spec descriptions, error messages, commit m
 | **precedence order** | The sources in order at one level. | ranking, priority list |
 | **ruleset**, **base rules** | Defined, with the rest of the ruleset vocabulary, in the comment on `class << self` in `lib/laforge/rulesets.rb`. | profile, domain |
 | **inactive source** | A source whose entries are kept but left out of forging. | disabled, paused |
+| **matcher** | Takes the things to compare and does the comparison itself, as `tombstone_matcher:` does with a member and the tombstones, and `ValueMatcher#matches?(a, b)` does with two values. | comparator |
+| **match_by**, **match value** | `match_by:` takes one value and returns its match value, and LaForge does the comparison. Two values match when their match values are equal. | matcher, normalizer, key |
 
 ### Associations
 

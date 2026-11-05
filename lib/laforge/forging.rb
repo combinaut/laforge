@@ -38,10 +38,10 @@ module LaForge
     # [[source id, attributes, recorded_at, edit, settings], ...].
     def forge_diff_with(pending)
       entries = record.data_entries.to_a
-      values = entries.to_h { |entry| [entry, [entry.attributes.slice('value', 'recorded_at', 'expires_at', 'expires_on_source_id'), entry.remade_state, entry.marked_for_destruction?]] }
+      values = entries.to_h { |entry| [entry, [entry.attributes.slice('value', 'recorded_at', *Expiring::COLUMNS), entry.remade_state, entry.marked_for_destruction?]] }
       rules = record.precedence_rules.to_a # recording builds, changes and expires rules, which the owner's next save writes
-      settings = rules.to_h { |rule| [rule, [rule.attributes.slice('precedence', 'recorded_at', 'expires_at', 'expires_on_source_id'), rule.remade_state, rule.marked_for_destruction?]] }
-      pending.each { |source_id, attributes, recorded_at, edit, item_settings| record_pending(attributes, source_id, recorded_at, edit: edit, settings: item_settings) }
+      settings = rules.to_h { |rule| [rule, [rule.attributes.slice('precedence', 'recorded_at', *Expiring::COLUMNS), rule.remade_state, rule.marked_for_destruction?]] }
+      replay_pending(pending)
       forge_diff
     ensure
       record.data_entries.target.replace(entries)

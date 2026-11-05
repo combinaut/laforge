@@ -2028,6 +2028,189 @@ describe 'Association tracking capabilities' do
       expect { LaForge.with_settings('Harbor Building', expires_at: '2030-01-01') }.to raise_error(ArgumentError, /LaForge.with_settings: expires_at: must be a time/)
     end
 
+    it 'raises for expires_when: :matches on a member list, naming the association, wherever it is given', capability: 'C193' do
+      corner_cafe = place.tenants.create!(name: 'Corner Café')
+      message = /Place#tenants is a tracked association, whose member lists have no value to match.*Leave out expires_when:/
+      matching = { expires_on: low, expires_when: :matches }
+
+      expect { place.record_data_entries({ tenants: [{ name: 'Florist' }] }, top, **matching) }.to raise_error(ArgumentError, message)
+      expect { place.record_data_entries({ tenants: [] }, top, **matching) }.to raise_error(ArgumentError, message)
+      expect { place.record_data_entries({ tenants: { exclude: [corner_cafe] } }, top, mode: :partial, **matching) }.to raise_error(ArgumentError, message)
+      expect { place.record_data_entries({ tenants: { include: [] } }, top, mode: :edit, precedence: 7, **matching) }.to raise_error(ArgumentError, message)
+      expect { place.record_data_entries({ tenants: LaForge.with_settings([{ name: 'Florist' }], **matching) }, top) }.to raise_error(ArgumentError, message)
+      expect { place.record_data_entries({ tenants: [LaForge.with_settings({ name: 'Florist' }, **matching)] }, top) }.to raise_error(ArgumentError, message)
+      expect { place.record_data_entries({ tenants: { exclude: [LaForge.with_settings(corner_cafe, **matching)] } }, top, mode: :edit) }.to raise_error(ArgumentError, message)
+      expect { place.record_data_entries({ marker: { label: 'Harbor' } }, top, **matching) }.to raise_error(ArgumentError, /Place#marker is a tracked association/)
+      expect { place.update_precedence_order(:tenants, [top], **matching) }.to raise_error(ArgumentError, message)
+      expect { place.update_attribute_source_precedence(:tenants, top, 5, **matching) }.to raise_error(ArgumentError, message)
+    end
+
+    it 'raises for expires_when: :matches on a nested list before anything is saved', capability: 'C194' do
+      matching = { expires_on: low, expires_when: :matches }
+
+      expect { place.record_data_entries({ tenants: [tenant('T-1', opening_hours: LaForge.with_settings(week('09:00'), **matching))] }, top) }
+        .to raise_error(ArgumentError, /Tenant#opening_hours is a tracked association/)
+      expect { place.record_data_entries({ tenants: [tenant('T-1', opening_hours: [LaForge.with_settings({ day: 1 }, **matching)])] }, top) }
+        .to raise_error(ArgumentError, /Tenant#opening_hours is a tracked association/)
+      expect(place.data_entries).to be_empty
+    end
+
+    it "expires an attribute of a member on a match, comparing with the source's value once a forge records it", capability: 'C195' do
+      travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) } }
+      travel_to(Time.utc(2026, 1, 2)) do
+        unit = LaForge.with_settings('1A', expires_on: low, expires_when: :matches)
+        name = LaForge.with_settings('Harbor Books', precedence: 100, expires_on: low, expires_when: :matches)
+        place.reload.record_data_entries({ tenants: [tenant('T-1', unit: unit, name: name)] }, high, mode: :partial)
+        place.save!
+      end
+      travel_to(Time.utc(2026, 1, 3)) { Tenant.sole.then { |corner_cafe| corner_cafe.record_data_entries({ unit: '1A' }, low) && corner_cafe.save! } }
+      travel_to(Time.utc(2026, 1, 4)) { place.reload.forge! }
+
+      entries = Tenant.sole.data_entries.with_source(high).index_by(&:attribute_name)
+      expect(entries['unit']).to have_attributes(expires_when: 'matches', expires_on_source: low, expires_at: Time.utc(2026, 1, 3))
+      expect(entries['name']).to have_attributes(expires_when: 'matches', expires_at: nil)
+      expect(Tenant.sole.precedence_rules.sole).to have_attributes(expires_when: 'matches', expires_at: nil)
+    end
+
+    it "expires a change that already matches the source when a forge records it, at the time it was recorded", capability: 'C196' do
+      travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low) } }
+      travel_to(Time.utc(2026, 1, 2)) do
+        place.reload.record_data_entries({ tenants: [tenant('T-1', unit: LaForge.with_settings('1A', expires_on: low, expires_when: :matches))] }, high, mode: :partial)
+        place.save!
+      end
+      travel_to(Time.utc(2026, 1, 4)) { place.reload.forge! }
+
+      expect(Tenant.sole.data_entries.with_source(high).with_attribute(:unit).sole).to have_attributes(recorded_at: Time.utc(2026, 1, 2), expires_at: Time.utc(2026, 1, 2))
+    end
+
+    it "expires a rule on a member no earlier than its own source's matching value, for an attribute and a group", capability: 'C204' do
+      address = { street: '1 Quay', postcode: '1000' }
+      travel_to(Time.utc(2026, 1, 1)) do
+        place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A', **address)] }, high) }
+        Tenant.sole.then do |corner_cafe|
+          corner_cafe.update_attribute_source_precedence(:unit, high, 100, expires_on: low, expires_when: :matches)
+          corner_cafe.update_attribute_source_precedence(:postal_address, high, 100, expires_on: low, expires_when: :matches)
+        end
+      end
+      travel_to(Time.utc(2026, 1, 2)) { place.reload.record_data_entries({ tenants: [tenant('T-1', unit: '2B', street: '2 Quay', postcode: '1000')] }, low, mode: :partial) && place.save! }
+      travel_to(Time.utc(2026, 1, 3)) { Tenant.sole.then { |corner_cafe| corner_cafe.record_data_entries({ unit: '2B', street: '2 Quay', postcode: '1000' }, high) && corner_cafe.save! } }
+
+      travel_to(Time.utc(2026, 1, 4)) { place.reload.forge! }
+
+      expect(Tenant.sole.precedence_rules.map(&:expires_at)).to eq([Time.utc(2026, 1, 3)] * 2)
+    end
+
+    it "leaves a direct correction waiting on a pending value a later pending value replaced", capability: 'C205' do
+      travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1C')] }, low) } }
+      travel_to(Time.utc(2026, 1, 2)) { place.reload.record_data_entries({ tenants: { include: [tenant('T-1', unit: '1A')] } }, low, mode: :edit) && place.save! }
+      travel_to(Time.utc(2026, 1, 4)) { place.reload.record_data_entries({ tenants: { include: [tenant('T-1', unit: '1B')] } }, low, mode: :edit) && place.save! }
+      travel_to(Time.utc(2026, 1, 5)) { Tenant.sole.then { |corner_cafe| corner_cafe.record_data_entries({ unit: '1A' }, high, expires_on: low, expires_when: :matches) && corner_cafe.save! } }
+
+      travel_to(Time.utc(2026, 1, 6)) { place.reload.forge! }
+
+      expect(Tenant.sole.data_entries.with_source(low).with_attribute(:unit).sole.value).to eq('1B')
+      expect(Tenant.sole.data_entries.with_source(high).with_attribute(:unit).sole).to have_attributes(expires_at: nil)
+    end
+
+    it "checks a member's pending items once for each source, after they are all recorded", capability: 'C199' do
+      travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) } }
+      travel_to(Time.utc(2026, 1, 2)) do
+        place.reload.record_data_entries({ tenants: [tenant('T-1', unit: LaForge.with_settings('1A', expires_on: low, expires_when: :matches))] }, high, mode: :partial)
+        place.forge!
+      end
+      travel_to(Time.utc(2026, 1, 3)) { place.reload.record_data_entries({ tenants: { include: [tenant('T-1', unit: '1A')] } }, low, mode: :edit) && place.save! }
+      travel_to(Time.utc(2026, 1, 4)) { place.reload.record_data_entries({ tenants: { include: [tenant('T-1', unit: '1B')] } }, low, mode: :edit) && place.save! }
+      allow(LaForge::ExpirySweep).to receive(:new).and_call_original
+
+      travel_to(Time.utc(2026, 1, 5)) { place.reload.forge! }
+
+      expect(LaForge::ExpirySweep).to have_received(:new).once
+      expect(Tenant.sole.data_entries.with_source(high).with_attribute(:unit).sole).to have_attributes(expires_at: nil)
+    end
+
+    it 'expires a member list and a rule on the association when the source records its member list again', capability: 'C200' do
+      travel_to(Time.utc(2026, 1, 1)) { place.record_data_entries({ place_categories: categories(bakery) }, low) && place.save! }
+      travel_to(Time.utc(2026, 1, 2)) do
+        place.reload.record_data_entries({ place_categories: categories(florist) }, high, precedence: 100, expires_on: low, expires_when: :records)
+        place.save!
+      end
+
+      travel_to(Time.utc(2026, 1, 3)) { place.reload.record_data_entries({ place_categories: categories(bakery) }, low) && place.save! }
+
+      expect(place.data_entries.with_source(high).sole).to have_attributes(expires_at: Time.utc(2026, 1, 3), expires_when: 'records')
+      expect(place.precedence_rules.sole).to have_attributes(expires_at: Time.utc(2026, 1, 3), expires_when: 'records')
+    end
+
+    it "expires a member's expiry on a member list that covers it, and on an edit only by naming it", capability: 'C201' do
+      travel_to(Time.utc(2026, 1, 1)) { place.record_data_entries({ place_categories: categories(bakery, florist) }, low) && place.save! }
+      travel_to(Time.utc(2026, 1, 2)) do
+        place.reload.record_data_entries({ place_categories: { include: categories(bakery) } }, high, mode: :edit, expires_on: low, expires_when: :records)
+        place.save!
+      end
+      expired = -> { place.reload.data_entries.membership_expiries(:place_categories).sole[:expires_at] }
+
+      travel_to(Time.utc(2026, 1, 3)) { place.reload.record_data_entries({ place_categories: { include: categories(florist) } }, low, mode: :edit) && place.save! }
+      expect(expired.call).to be_nil
+
+      travel_to(Time.utc(2026, 1, 4)) { place.reload.record_data_entries({ place_categories: categories(bakery, florist) }, low) && place.save! }
+      expect(expired.call).to eq(Time.utc(2026, 1, 4))
+    end
+
+    it "keeps :records in a pending item, and a pending value from the source counts only when made after the change", capability: 'C202' do
+      travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low) } }
+      travel_to(Time.utc(2026, 1, 2)) do
+        place.reload.record_data_entries({ tenants: [tenant('T-1', unit: LaForge.with_settings('2B', expires_on: low, expires_when: :records))] }, high, mode: :partial)
+        place.forge!
+      end
+      correction = -> { Tenant.sole.data_entries.with_source(high).with_attribute(:unit).sole }
+      expect(correction.call).to have_attributes(expires_when: 'records', expires_at: nil)
+
+      travel_to(Time.utc(2026, 1, 3)) { place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low) && place.save! }
+      travel_to(Time.utc(2026, 1, 4)) { place.reload.forge! }
+
+      expect(correction.call.expires_at).to eq(Time.utc(2026, 1, 3))
+    end
+
+    it 'ends a pending :records change on an identical recording on the member', capability: 'C203' do
+      pending 'an identical recording leaves no trace for replay'
+      travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: '1A')] }, low) } }
+      travel_to(Time.utc(2026, 1, 2)) do
+        place.reload.record_data_entries({ tenants: [tenant('T-1', unit: LaForge.with_settings('2B', expires_on: low, expires_when: :records))] }, high, mode: :partial)
+        place.save!
+      end
+      travel_to(Time.utc(2026, 1, 3)) { Tenant.sole.then { |corner_cafe| corner_cafe.record_data_entries({ unit: '1A' }, low) && corner_cafe.save! } }
+
+      travel_to(Time.utc(2026, 1, 4)) { place.reload.forge! }
+
+      expect(Tenant.sole.data_entries.with_source(high).with_attribute(:unit).sole).to have_attributes(expires_when: 'records', expires_at: Time.utc(2026, 1, 3))
+    end
+
+    it "fires a :records exclusion of a removed member on an edit that brings the member back by its attributes", capability: 'C206' do
+      travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) } }
+      travel_to(Time.utc(2026, 1, 2)) do
+        place.reload.forge! { place.record_data_entries({ tenants: { exclude: [{ id: Tenant.sole.id }] } }, top, mode: :edit, expires_on: low, expires_when: :records) }
+      end
+      exclusion = -> { place.data_entries.membership_expiries(:tenants).find { |item| item[:source_id] == top.id } }
+
+      travel_to(Time.utc(2026, 1, 3)) { place.reload.record_data_entries({ tenants: { include: [{ name: 'Bay Books' }] } }, low, mode: :edit) && place.save! }
+      expect(exclusion.call[:expires_at]).to be_nil
+
+      travel_to(Time.utc(2026, 1, 4)) { place.reload.record_data_entries({ tenants: { include: [{ name: 'Corner Café' }] } }, low, mode: :edit) && place.save! }
+      expect(exclusion.call[:expires_at]).to eq(Time.utc(2026, 1, 4))
+    end
+
+    it 'keeps a trigger in a pending item only while its source exists', capability: 'C197' do
+      geocoder = LaForge::DataSource.create!(name: 'geocoder', precedence: 14)
+      place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) }
+      place.reload.record_data_entries({ tenants: [tenant('T-1', unit: LaForge.with_settings('1A', expires_on: geocoder, expires_when: :matches))] }, high, mode: :partial)
+      place.save!
+      geocoder.destroy!
+
+      place.reload.forge!
+
+      expect(Tenant.sole.data_entries.with_source(high).with_attribute(:unit).sole).to have_attributes(expires_on_source_id: nil, expires_when: 'changes')
+    end
+
     it "raises for a recorded hash using the key LaForge reserves for settings in a member list's pending items", capability: 'C153' do
       reserved = { '_laforge_settings' => {}, 'value' => 'Harbor Hall', 'other' => 1 }
 
@@ -2256,6 +2439,22 @@ describe 'Association tracking capabilities' do
       expect(place.forge_diff(attributes: :place_categories).keys).to eq(['place_categories'])
     end
 
+    it "leaves a member's change waiting for a match as it was after forge_diff previews a member list that matches it", capability: 'C198' do
+      place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) }
+      corner_cafe = Tenant.sole
+      corner_cafe.record_data_entries({ name: 'Corner Café (renamed)' }, top, expires_on: low, expires_when: :matches)
+      corner_cafe.save!
+      waiting = -> { Tenant.sole.data_entries.with_source(top).sole }
+
+      place.reload.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café (renamed)')] }, low)
+      place.forge_diff
+      place.update!(name: 'Harbor Building, renamed') # a save without forging
+      expect(waiting.call).to have_attributes(expires_at: nil, expires_when: 'matches')
+
+      place.forge!
+      expect(waiting.call.expired?).to be(true)
+    end
+
     it "leaves a member's waiting expiries as they were after forge_diff previews a member list from the source they expire on", capability: 'C143' do
       travel_to(Time.utc(2026, 1, 1)) { place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) } }
       travel_to(Time.utc(2026, 1, 2)) do
@@ -2424,6 +2623,14 @@ describe 'Association tracking capabilities' do
       linked_place.record_data_entries({ parcel_links: [parcel_link(lot_12, occupies), parcel_link(lot_14, occupies)] }, low)
       expect { linked_place.forge! }.not_to raise_error
       expect(ParcelLink.where(place_id: linked_place.id).order(:id).ids).to eq(links.map(&:id))
+    end
+
+    it 'raises for a match_by on a tracked association, pointing to what identifies its members', capability: 'C192' do
+      model = Class.new(Place) { def self.name = 'Place' }
+
+      expect { model.laforged(associations: { tenants: {} }, match_by: { 'tenants' => ->(value) { value } }) }
+        .to raise_error(ArgumentError, /Place#tenants is a tracked association, whose members are identified by key: and tombstone_matcher:, not by match_by/)
+      expect { LaForge::ValueMatcher.for(Place, :tenants) }.to raise_error(ArgumentError, /Place#tenants is a tracked association/)
     end
 
     it 'writes member order to order_column: when given, which a scope ordering by an expression needs, and none for false', capability: 'C108' do

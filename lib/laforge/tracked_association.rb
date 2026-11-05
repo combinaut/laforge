@@ -158,7 +158,7 @@ module LaForge
       return unless settings.precedence_given?
 
       rule = owner.laforge.write_precedence_rule(config.name, source, settings, made_at: recorded_at)
-      owner.laforge.expire_replayed(config.name, recorded_at, [rule]) if recorded_at
+      owner.laforge.note_replayed(config.name, recorded_at, [rule]) if recorded_at
     end
 
     # Writes the source's member list of `members`, replacing its previous one. `members` is a list of members, or for
@@ -167,8 +167,8 @@ module LaForge
     # rule's, and both are given to every attribute the member list's pending items record. A wrapped member or
     # exclusion takes its wrapper's settings instead, and an expiry of its own other than the member list's is kept
     # among the member list's expiries (see MemberList). It replaces the previous member list as
-    # `MemberList::Complete.replacing` and `MemberList::Partial.replacing` do. Raises for a partial list of a has_one,
-    # and for members AssociationConfig rejects.
+    # `MemberList::Complete.replacing` and `MemberList::Partial.replacing` do. Raises for a partial list of a has_one, and
+    # for members AssociationConfig rejects.
     def record(members, source, settings: RecordingSettings::DEFAULT, partial: false, recorded_at: Time.current)
       raise ArgumentError, "#{owner.class.name}##{config.name} is a has_one, which takes a complete list. Record it without mode: :partial" if partial && !config.collection?
 
@@ -214,19 +214,18 @@ module LaForge
         when :exclude then previous.excluding(config, member, expiry: expiry)
         when :forget then previous.forgetting(config, member)
         end
-      owner.laforge.write_data_entry(config.name, value, source, settings: edit_entry_settings(source, settings), recorded_at: recorded_at)
+      owner.laforge.write_data_entry(config.name, value, source, settings: edit_entry_settings(source, settings), recorded_at: recorded_at, edited: recognized_key(MemberList.new(value), member))
     end
 
-    # Expires at `recorded_at` the inclusions and exclusions in other sources' member lists on the owner that expire on
-    # `source_id` and were made before `recorded_at` (see MemberList#expired_on). Given `lists`, the source's member
-    # lists before and after a recording, only those for a member the two cover differently.
-    def expire_members_on(source_id, recorded_at, lists = nil)
-      coverage_changed = lists && ->(key) { lists.map { |list| list.recorded_coverage(config, config.key_of(key)) }.uniq.size > 1 }
+    # Expires at the time of `recorded`, what a sweep noted (see ExpirySweep), the inclusions and exclusions in other
+    # sources' member lists on the owner that expire on `source_id`, were made before it and whose trigger fires (see
+    # MemberList#expired_on).
+    def expire_members_on(source_id, recorded)
       owner.laforge.filter_data_entries_in_memory(attributes: config.name).each do |entry|
         next if entry.source_id == source_id || entry.marked_for_destruction?
 
         saved = entry.new_record? ? [] : MemberList.new(entry.attribute_in_database('value')).expiries
-        value = MemberList.new(entry.value).expired_on(source_id, recorded_at, saved: saved, coverage_changed: coverage_changed)
+        value = MemberList.new(entry.value).expired_on(source_id, recorded.at, saved: saved) { |item| Expiring.trigger(item['expires_when']).fires_for_member?(recorded, config, config.key_of(item['key'])) }
         entry.value = value if value
       end
     end
@@ -316,8 +315,7 @@ module LaForge
     # Returns `list` with each new member the tombstone matcher matches to a tombstone named by that tombstone's key,
     # as the next forge names it (see `recognize_tombstones`)
     def recognized(list)
-      known = config.tombstone_matcher ? tombstones : []
-      names = known.empty? ? {} : tombstone_names(list, known)
+      names = recognized_names(list)
       names.empty? ? list : MemberList.new(list.renamed(config, names))
     end
 
@@ -364,7 +362,7 @@ module LaForge
 
     # Returns [[key hash, attributes, settings], ...] for `members`, normalized as `AssociationConfig#normalize_members`
     # does, each with its wrapper's settings or `settings`. Raises for a wrapper around the whole list, and as
-    # `assert_member_precedence!` does.
+    # `AssociationConfig#assert_no_match!` and `assert_member_precedence!` do.
     def normalize_with_settings(members, settings, attributes: true, edit: false)
       if RecordingSettings.wrapped?(members)
         raise ArgumentError, "#{owner.class.name}##{config.name}: LaForge.with_settings can wrap each member, or the association's whole value, not a list of members"
@@ -373,6 +371,7 @@ module LaForge
       given = members.is_a?(Array) ? members.map { |member| settings.for(member) } : nil
       normalized = config.normalize_members(given ? given.map(&:first) : members, attributes: attributes, edit: edit)
       normalized.zip(given ? given.map(&:last) : Array.new(normalized.size, settings)).map do |(key_hash, member_attributes), member_settings|
+        config.assert_no_match!(member_settings)
         assert_member_precedence!(key_hash, member_attributes, member_settings, settings)
         [key_hash, member_attributes, member_settings]
       end
@@ -440,6 +439,17 @@ module LaForge
       end
     end
 
+    # Returns the key of `member` as `recognized` names it in `list`
+    def recognized_key(list, member)
+      config.key_of(recognized_names(list)[config.key_of(member)] || member)
+    end
+
+    # Returns what `recognized` renames in `list`, as `tombstone_names` does, from the tombstones that count
+    def recognized_names(list)
+      known = config.tombstone_matcher ? tombstones : []
+      known.empty? ? {} : tombstone_names(list, known)
+    end
+
     # Returns { placeholder key => tombstone key hash } for each new member of `list` whose pending item the tombstone
     # matcher matches to one of `known`
     def tombstone_names(list, known)
@@ -485,8 +495,7 @@ module LaForge
         record = existing.delete(key)&.then { |kept| keep(kept) } || created[key] || add(member, described: items.any?)
         next unless record
 
-        recorded = items.map { |source_id, attributes, recorded_at, edit, settings| record.laforge.record_pending(attributes, source_id, recorded_at, edit: edit, settings: settings) }
-        recorded_on << record if recorded.any?
+        recorded_on << record if record.laforge.replay_pending(items).any?
         record
       end
     end

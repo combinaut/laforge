@@ -60,7 +60,7 @@ module LaForge
           combined = combined_member_list(config, MemberList.new(preferred.value), other_list)
           assert_one_member!(survivor, duplicate, config, entry.source, combined) unless config.collection?
           survivors_entry.update_columns(value: combined, recorded_at: [survivors_entry.recorded_at, entry.recorded_at].max,
-                                         expires_at: preferred.expires_at, expires_on_source_id: preferred.expires_on_source_id)
+                                         **preferred.attributes.slice(*Expiring::COLUMNS).symbolize_keys)
           entry.destroy!
         else
           keep_survivors = kept_row(survivors_entry, entry, on_conflict).equal?(survivors_entry)
