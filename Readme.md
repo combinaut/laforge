@@ -54,7 +54,7 @@ Key features:
 2. Add the columns 1.0 adds to LaForge's tables. Each generator creates one migration.
   - `laforge:recorded_at` adds `recorded_at` to data entries, filled from `updated_at`.
   - `laforge:active_sources` adds `active` to data sources, with every existing source active (see [Deactivating a source](#deactivating-a-source)).
-  - `laforge:expiry` adds `expires_at` and `expires_on_source_id` to data entries and precedence rules, and `recorded_at` to precedence rules, filled from `updated_at`. Nothing expires until a change is made with an expiry (see [Expiring a change](#expiring-a-change)). It also gives `created_at` and `updated_at` on LaForge's three tables sub-second precision, matching `recorded_at`, which an expiry on a source compares between a recording and the change it ends; this rewrites the columns, which can take a while on a large `laforge_data_entries` table.
+  - `laforge:expiry` adds `expires_at` and `expires_on_source_id` to data entries and precedence rules, and `recorded_at` to precedence rules, filled from `updated_at`. Nothing expires until a change is made with an expiry (see [Expiring a change](#expiring-a-change)).
   - `laforge:rulesets` adds `ruleset` to precedence rules, with every existing rule a base rule, and adds it to both unique indexes on `laforge_precedence_rules` (see [Rulesets](#rulesets)). Going down deletes every ruleset's rules.
   - `laforge:expires_when` adds `expires_when` to data entries and precedence rules, with every existing change keeping the `changes` trigger (see [Expiring when a source agrees](#expiring-when-a-source-agrees)).
 
