@@ -214,9 +214,9 @@ module LaForge
       end
     end
 
-    # Raises for `settings`, or nil, that expire on a match, since a member list has no value to compare
+    # Raises for `settings` that expire on a match, since a member list has no value to compare
     def assert_no_match!(settings)
-      return unless settings&.trigger&.compares_values?
+      return unless settings.trigger.compares_values?
 
       raise ArgumentError, "#{owner_class.name}##{name} is a tracked association, whose member lists have no value to match, so expires_when: :matches can't expire it. " \
                            "Leave out expires_when: to expire it once the source covers a member differently, or wrap a member's attribute with LaForge.with_settings(expires_when: :matches)"
