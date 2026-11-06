@@ -101,15 +101,22 @@ module LaForge
       model.has_many :precedence_rules, as: :record, dependent: :delete_all, autosave: true, class_name: 'LaForge::PrecedenceRule'
     end
 
-    # Declares the scopes that find the model's records by the sources and attributes of their entries
+    # Declares the scopes that find the model's records by the sources and attributes of their entries. Each scope tests
+    # for an entry in a subquery of its own, so chained scopes all apply, and a record is returned once however many of
+    # its entries match. A "without" scope returns the records with no such entry, so it includes records with no entries.
     def self.declare_scopes(model)
-      model.scope :with_source, ->(source) { joins(:data_entries).merge(DataEntry.with_source(source)) }
-      model.scope :without_source, ->(source) { joins(:data_entries).merge(DataEntry.without_source(source)) }
-      model.scope :with_attribute, ->(attribute) { joins(:data_entries).merge(DataEntry.with_attribute(attribute)) }
-      model.scope :without_attribute, ->(attribute) { joins(:data_entries).merge(DataEntry.without_attribute(attribute)) }
-      model.scope :with_attribute_with_source, ->(attribute, source) { joins(:data_entries).merge(DataEntry.with_attribute(attribute).with_source(source)) }
-      model.scope :with_attribute_without_source, ->(attribute, source) { joins(:data_entries).merge(DataEntry.with_attribute(attribute).without_source(source)) }
-      model.scope :without_attribute_with_source, ->(attribute, source) { joins(:data_entries).merge(DataEntry.without_attribute(attribute).with_source(source)) }
+      model.scope :with_source, ->(source) { where(ActiveRecord.entry_exists(klass, DataEntry.with_source(source))) }
+      model.scope :without_source, ->(source) { where.not(ActiveRecord.entry_exists(klass, DataEntry.with_source(source))) }
+      model.scope :with_attribute, ->(attribute) { where(ActiveRecord.entry_exists(klass, DataEntry.with_attribute(attribute))) }
+      model.scope :without_attribute, ->(attribute) { where.not(ActiveRecord.entry_exists(klass, DataEntry.with_attribute(attribute))) }
+      model.scope :with_attribute_with_source, ->(attribute, source) { where(ActiveRecord.entry_exists(klass, DataEntry.with_attribute(attribute).with_source(source))) }
+      model.scope :with_attribute_without_source, ->(attribute, source) { where(ActiveRecord.entry_exists(klass, DataEntry.with_attribute(attribute).without_source(source))) }
+      model.scope :without_attribute_with_source, ->(attribute, source) { where.not(ActiveRecord.entry_exists(klass, DataEntry.with_attribute(attribute).with_source(source))) }
+    end
+
+    # Returns the condition that a record of `model` has one of `entries`
+    def self.entry_exists(model, entries)
+      entries.where(record_type: model.polymorphic_name).where(DataEntry.arel_table[:record_id].eq(model.arel_table[model.primary_key])).arel.exists
     end
 
     # Sets whether `record` is marked for destruction, which undoes an unsaved removal when `marked` is false. Active

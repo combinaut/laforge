@@ -497,8 +497,8 @@ describe 'Usage' do
       other.record_data_entries({ name: 'Other' }, map_editor)
       other.save!
 
-      expect(ActiveRecordMock.with_source(business_directory).distinct).to eq([record])
-      expect(ActiveRecordMock.with_attribute_with_source(:name, map_editor).distinct).to eq([other])
+      expect(ActiveRecordMock.with_source(business_directory)).to eq([record])
+      expect(ActiveRecordMock.with_attribute_with_source(:name, map_editor)).to eq([other])
     end
   end
 

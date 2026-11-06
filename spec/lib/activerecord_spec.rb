@@ -9,6 +9,7 @@ describe 'ActiveRecordExtensions' do
 
     before(:each) do
       LaForge::DataEntry.destroy_all
+      ActiveRecordMock.delete_all
       LaForge::DataEntry.create(source: data_source, record: record, attribute_name: "name", value: "Article")
       LaForge::DataEntry.create(source: data_source2, record: record2, attribute_name: "active", value: true)
     end
@@ -17,11 +18,54 @@ describe 'ActiveRecordExtensions' do
       it 'returns all records from a given source' do
         expect(ActiveRecordMock.with_source(data_source)).to eq([record])
       end
+
+      it 'returns a record once when it has several entries from the source' do
+        LaForge::DataEntry.create(source: data_source, record: record, attribute_name: "active", value: true)
+
+        expect(ActiveRecordMock.with_source(data_source)).to eq([record])
+      end
+
+      it 'does not return a record of another model with the same id' do
+        LaForge::DataEntry.with_source(data_source2).update_all(record_type: "OtherModel", record_id: record.id)
+        LaForge::DataEntry.with_source(data_source).update_all(record_type: "OtherModel", record_id: record2.id)
+
+        expect(ActiveRecordMock.with_source(data_source)).to eq([])
+      end
+
+      it 'returns records with entries from both sources when chained' do
+        LaForge::DataEntry.create(source: data_source2, record: record, attribute_name: "active", value: true)
+
+        expect(ActiveRecordMock.with_source(data_source).with_source(data_source2)).to eq([record])
+      end
     end
 
     describe "::without_source" do
       it 'returns all records without a given source' do
         expect(ActiveRecordMock.without_source(data_source)).to eq([record2])
+      end
+
+      it 'does not return a record with an entry from the source and an entry from another' do
+        LaForge::DataEntry.create(source: data_source2, record: record, attribute_name: "active", value: true)
+
+        expect(ActiveRecordMock.without_source(data_source)).to eq([record2])
+      end
+
+      it 'returns a record with no entries, and a record of another model with the same id does not hide it' do
+        LaForge::DataEntry.with_source(data_source).update_all(record_type: "OtherModel", record_id: record2.id)
+
+        expect(ActiveRecordMock.without_source(data_source)).to contain_exactly(record, record2)
+      end
+
+      it 'returns a record once when it has several entries from other sources' do
+        LaForge::DataEntry.create(source: data_source2, record: record2, attribute_name: "name", value: "Article")
+
+        expect(ActiveRecordMock.without_source(data_source)).to eq([record2])
+      end
+
+      it 'returns records with no entries from either source when chained' do
+        other = ActiveRecordMock.create(name: "Other")
+
+        expect(ActiveRecordMock.without_source(data_source).without_source(data_source2)).to eq([other])
       end
     end
 
@@ -36,6 +80,24 @@ describe 'ActiveRecordExtensions' do
 
       it 'returns all records with any of recorded attribute when an array is passed' do
         expect(ActiveRecordMock.with_attribute([:name, :active])).to eq([record, record2])
+      end
+
+      it 'returns a record once when it has several of the recorded attributes' do
+        LaForge::DataEntry.create(source: data_source, record: record, attribute_name: "active", value: true)
+
+        expect(ActiveRecordMock.with_attribute([:name, :active])).to contain_exactly(record, record2)
+      end
+
+      it 'returns a record once when several sources provide the attribute' do
+        LaForge::DataEntry.create(source: data_source2, record: record, attribute_name: "name", value: "Article")
+
+        expect(ActiveRecordMock.with_attribute(:name)).to eq([record])
+      end
+
+      it 'returns records with both recorded attributes when chained' do
+        LaForge::DataEntry.create(source: data_source, record: record, attribute_name: "active", value: true)
+
+        expect(ActiveRecordMock.with_attribute(:name).with_attribute(:active)).to eq([record])
       end
     end
 
@@ -55,6 +117,24 @@ describe 'ActiveRecordExtensions' do
       it 'returns an empty array when there are no records without any of recorded attribute when an array is passed' do
         expect(ActiveRecordMock.without_attribute([:name, :active])).to eq([])
       end
+
+      it 'does not return a record with the recorded attribute and another' do
+        LaForge::DataEntry.create(source: data_source, record: record, attribute_name: "active", value: true)
+
+        expect(ActiveRecordMock.without_attribute(:name)).to eq([record2])
+      end
+
+      it 'returns a record with no entries' do
+        LaForge::DataEntry.with_source(data_source2).destroy_all
+
+        expect(ActiveRecordMock.without_attribute(:name)).to eq([record2])
+      end
+
+      it 'returns a record once when it has several other recorded attributes' do
+        LaForge::DataEntry.create(source: data_source2, record: record2, attribute_name: "count", value: 1)
+
+        expect(ActiveRecordMock.without_attribute(:name)).to eq([record2])
+      end
     end
 
     describe "::with_attribute_with_source" do
@@ -69,6 +149,19 @@ describe 'ActiveRecordExtensions' do
       it 'does not return records from a different source but with the recorded attribute' do
         expect(ActiveRecordMock.with_attribute_with_source('name', data_source2)).not_to include(record)
       end
+
+      it 'returns a record once when it has several of the recorded attributes from the source' do
+        LaForge::DataEntry.create(source: data_source, record: record, attribute_name: "active", value: true)
+
+        expect(ActiveRecordMock.with_attribute_with_source(['name', 'active'], data_source)).to eq([record])
+      end
+
+      it 'returns records with both recorded attributes from the source when chained' do
+        LaForge::DataEntry.create(source: data_source, record: record, attribute_name: "active", value: true)
+        LaForge::DataEntry.create(source: data_source, record: record2, attribute_name: "name", value: "Article")
+
+        expect(ActiveRecordMock.with_attribute_with_source('name', data_source).with_attribute_with_source('active', data_source)).to eq([record])
+      end
     end
 
     describe "::with_attribute_without_source" do
@@ -80,8 +173,20 @@ describe 'ActiveRecordExtensions' do
         expect(ActiveRecordMock.with_attribute_without_source(['active', 'name'], data_source)).to eq([record2])
       end
 
+      it 'returns a record with the recorded attribute from the given source and from another' do
+        LaForge::DataEntry.create(source: data_source2, record: record, attribute_name: "name", value: "Article")
+
+        expect(ActiveRecordMock.with_attribute_without_source('name', data_source)).to eq([record])
+      end
+
+      it 'returns a record once when several other sources provide the attribute' do
+        third_source = LaForge::DataSource.find_or_create_by!(name: "reuters") { |source| source.precedence = 3 }
+        LaForge::DataEntry.create(source: third_source, record: record2, attribute_name: "active", value: false)
+
+        expect(ActiveRecordMock.with_attribute_without_source('active', data_source)).to eq([record2])
+      end
+
       it 'returns records with all recorded attributes not from the given source when chained' do
-        pending "merging replaces the earlier call's conditions on the same columns, so only the last call counts"
         both = ActiveRecordMock.create(name: "Both")
         LaForge::DataEntry.create(source: data_source2, record: both, attribute_name: "name", value: "Article")
         LaForge::DataEntry.create(source: data_source2, record: both, attribute_name: "active", value: true)
@@ -92,24 +197,100 @@ describe 'ActiveRecordExtensions' do
 
     describe "::without_attribute_with_source" do
       it 'returns all records without recorded attribute from the given source' do
-        expect(ActiveRecordMock.without_attribute_with_source('active', data_source)).to eq([record])
+        expect(ActiveRecordMock.without_attribute_with_source('active', data_source)).to contain_exactly(record, record2)
       end
 
       it 'returns all records without any recorded attributes from the given source' do
-        expect(ActiveRecordMock.without_attribute_with_source(['active', 'integer'], data_source)).to eq([record])
+        expect(ActiveRecordMock.without_attribute_with_source(['active', 'integer'], data_source)).to contain_exactly(record, record2)
       end
 
-      it 'returns an empty array when there are no records without any recorded attributes from the given source' do
-        expect(ActiveRecordMock.without_attribute_with_source(['active', 'name'], data_source)).to eq([])
+      it 'does not return a record with one of the recorded attributes from the given source' do
+        expect(ActiveRecordMock.without_attribute_with_source(['active', 'name'], data_source)).to eq([record2])
+      end
+
+      it 'does not return a record with the attribute from the source when it has another attribute from the source' do
+        LaForge::DataEntry.create(source: data_source, record: record, attribute_name: "active", value: true)
+
+        expect(ActiveRecordMock.without_attribute_with_source('name', data_source)).to eq([record2])
+      end
+
+      it 'returns a record with no entries from the source' do
+        expect(ActiveRecordMock.without_attribute_with_source('name', data_source)).to eq([record2])
+      end
+
+      it 'returns a record with the attribute from another source only' do
+        LaForge::DataEntry.create(source: data_source2, record: record2, attribute_name: "name", value: "Article")
+
+        expect(ActiveRecordMock.without_attribute_with_source('name', data_source)).to eq([record2])
       end
 
       it 'returns records without any of the recorded attributes from the given source when chained' do
-        pending "merging replaces the earlier call's conditions on the same columns, so only the last call counts"
         LaForge::DataEntry.create(source: data_source, record: record2, attribute_name: "name", value: "Article")
         other = ActiveRecordMock.create(name: "Other")
         LaForge::DataEntry.create(source: data_source, record: other, attribute_name: "count", value: 1)
 
         expect(ActiveRecordMock.without_attribute_with_source('name', data_source).without_attribute_with_source('active', data_source)).to eq([other])
+      end
+    end
+  end
+
+  describe 'the querying scopes as sets of records' do
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
+    let(:data_source2) { LaForge::DataSource.find_or_create_by!(name: "guardian") { |source| source.precedence = 2 } }
+    let(:sources) { [data_source.id, data_source2.id] }
+    let(:attributes) { %w[name active] }
+    let(:subsets) { ->(items) { (0..items.size).flat_map { |size| items.combination(size).to_a } } }
+
+    # Each scope call, with the test a record's entries, as [attribute, source] pairs, have to pass to be in its set
+    let(:calls) do
+      subsets[sources].flat_map do |source|
+        [[[:with_source, source], ->(entries) { entries.any? { |_, id| source.include?(id) } }],
+         [[:without_source, source], ->(entries) { entries.none? { |_, id| source.include?(id) } }]]
+      end + subsets[attributes].flat_map do |attribute|
+        [[[:with_attribute, attribute], ->(entries) { entries.any? { |name, _| attribute.include?(name) } }],
+         [[:without_attribute, attribute], ->(entries) { entries.none? { |name, _| attribute.include?(name) } }]]
+      end + subsets[attributes].product(subsets[sources]).flat_map do |attribute, source|
+        [[[:with_attribute_with_source, attribute, source], ->(entries) { entries.any? { |name, id| attribute.include?(name) && source.include?(id) } }],
+         [[:with_attribute_without_source, attribute, source], ->(entries) { entries.any? { |name, id| attribute.include?(name) && !source.include?(id) } }],
+         [[:without_attribute_with_source, attribute, source], ->(entries) { entries.none? { |name, id| attribute.include?(name) && source.include?(id) } }]]
+      end
+    end
+
+    # A record for every possible set of entries. Another model's record with the same id has the entries it lacks.
+    let!(:records) do
+      LaForge::DataEntry.delete_all
+      ActiveRecordMock.delete_all
+      pairs = attributes.product(sources)
+      subsets[pairs].to_h do |entries|
+        record = ActiveRecordMock.create!(name: "Place")
+        rows = entries.map { |name, id| entry_row("ActiveRecordMock", record.id, name, id) }
+        rows += (pairs - entries).map { |name, id| entry_row("OtherModel", record.id, name, id) }
+        LaForge::DataEntry.insert_all!(rows) if rows.any?
+        [record.id, entries]
+      end
+    end
+
+    def entry_row(record_type, record_id, attribute_name, source_id)
+      { record_type: record_type, record_id: record_id, attribute_name: attribute_name, source_id: source_id,
+        recorded_at: Time.current, created_at: Time.current, updated_at: Time.current }
+    end
+
+    def members(test)
+      records.select { |_, entries| test.call(entries) }.keys
+    end
+
+    it 'returns each set once for every argument' do
+      calls.each do |call, test|
+        expect(ActiveRecordMock.public_send(*call).pluck(:id)).to match_array(members(test)), "#{call} returned the wrong records"
+      end
+    end
+
+    it 'returns the intersection of the sets when chained' do
+      chainable = calls.reject { |call, _| call.drop(1).any?(&:empty?) }
+
+      chainable.product(chainable).each do |(first, first_test), (second, second_test)|
+        chained = ActiveRecordMock.public_send(*first).public_send(*second).pluck(:id)
+        expect(chained).to match_array(members(first_test) & members(second_test)), "#{first} then #{second} returned the wrong records"
       end
     end
   end
