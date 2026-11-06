@@ -244,23 +244,25 @@ Set rulesets up from one writer at a time. Two processes copying a ruleset at on
     foo.data_sources # => The sources that provided at least one of foo's data entries, each listed once
     MyModel.joins(:data_sources).where(laforge_data_sources: { name: 'Wikipedia' }) # => Records with an entry from Wikipedia
 
-    MyModel.with_source(source1) # => All records from source1
-    MyModel.without_source(source1) # => All records not from source1
+    MyModel.with_source(source1) # => All records with an entry from source1
+    MyModel.without_source(source1) # => All records with no entry from source1
 
     MyModel.with_attribute(:height) # => All records with a recorded height attribute from any source
-    MyModel.without_attribute(:height) # => All records without a recorded height attribute from any source
+    MyModel.without_attribute(:height) # => All records with no recorded height attribute from any source
 
     MyModel.with_attribute_with_source(:height, source1) # => All records with a recorded height attribute from source1
     MyModel.with_attribute_with_source([:height, :width], source1) # => All records with a recorded height or width attribute from source1
 
-    MyModel.with_attribute_without_source(:height, source1) # => All records with a recorded height not from source1
-    MyModel.with_attribute_without_source([:height, :width], source1) # => All records with a recorded height or width attribute not from source1
+    MyModel.with_attribute_without_source(:height, source1) # => All records with a recorded height from a source other than source1, whether or not source1 provides one too
+    MyModel.with_attribute_without_source([:height, :width], source1) # => All records with a recorded height or width attribute from a source other than source1
     MyModel.with_attribute_with_source(:height, source1).with_attribute_with_source(:width, source1) # => All records with both a recorded height and width attribute from source1
 
-    MyModel.without_attribute_with_source(:height, source1) # => All records without a recorded height attribute from source1
-    MyModel.without_attribute_with_source([:height, :width], source1) # => All records missing a recorded height or missing a recorded width from source1
-    MyModel.without_attribute_with_source(:height, source1).without_attribute_with_source(:width, source1) # => All records without both a recorded height and width attribute from source1
+    MyModel.without_attribute_with_source(:height, source1) # => All records with no recorded height attribute from source1, whether or not another source provides one
+    MyModel.without_attribute_with_source([:height, :width], source1) # => All records with neither a recorded height nor a recorded width from source1
+    MyModel.without_attribute_with_source(:height, source1).without_attribute_with_source(:width, source1) # => All records with neither a recorded height nor a recorded width from source1
   ```
+
+Chained scopes all apply, and each record is returned once. The `without` scopes include records with no entries at all.
 
 The same scopes are available on a record's entries and on `LaForge::DataEntry`.
 
