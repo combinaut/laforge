@@ -32,8 +32,9 @@ module LaForge
         associations.fetch(name.to_s)
       end
 
-      # Returns the matcher for `attribute`, kept until `laforged` is called on the model again. The model's first one checks
-      # that it has the attributes of its `match_by`, which `laforged` leaves to here because that reads its columns.
+      # Returns the matcher for `attribute`, kept until `laforged` is called on the model again. The model's first one
+      # checks that it has the attributes of its `match_by`, which `laforged` leaves to here because that reads its
+      # columns.
       def value_matcher(attribute)
         value_matchers.fetch(attribute.to_s) do |name|
           match_by.each_key { |declared| ValueMatcher.assert_attribute!(model, declared) } if value_matchers.empty?
