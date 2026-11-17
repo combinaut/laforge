@@ -22,7 +22,7 @@ describe 'Recordings on a member before its owner is forged' do
     AssociationCapabilities.setup!
     AssociationCapabilities.reset!
   end
-  after { declare_tenant }
+  after { match_tenants_by }
 
   let(:low) { LaForge::DataSource.create!(name: 'low', precedence: 11) }
   let(:high) { LaForge::DataSource.create!(name: 'high', precedence: 12) }
@@ -31,8 +31,10 @@ describe 'Recordings on a member before its owner is forged' do
   def jan(day) = Time.utc(2026, 1, day)
   def ignoring_case = { name: ->(value) { value&.strip&.downcase } }
 
-  def declare_tenant(match_by = {})
-    Tenant.laforged associations: { opening_hours: { key: :day } }, attribute_groups: { postal_address: %i[street postcode] }, match_by: match_by
+  # Gives Tenant the `match_by` in place of its own, as loading a changed model does. A `laforged` call would add to it.
+  def match_tenants_by(match_by = {})
+    Tenant.laforge.match_by = match_by.stringify_keys
+    Tenant.laforge.value_matchers = {}
   end
 
   # Names a tenant as an importer does, by id once a tenant with the `external_id` exists, otherwise as a new tenant
@@ -70,7 +72,7 @@ describe 'Recordings on a member before its owner is forged' do
 
   describe 'when the value did not change' do
     each_way('leaves :changes on a value with the same match value', replay_gap: value_unchanged) do |how|
-      declare_tenant(ignoring_case)
+      match_tenants_by(ignoring_case)
       provide_name('Harbor Cafe')
       correct_name(how, 'Harbor Books')
       record_on_member(3, { name: 'harbor cafe ' })
@@ -89,7 +91,7 @@ describe 'Recordings on a member before its owner is forged' do
     end
 
     each_way('ends :records on a value with the same match value') do |how|
-      declare_tenant(ignoring_case)
+      match_tenants_by(ignoring_case)
       provide_name('Harbor Cafe')
       correct_name(how, 'Harbor Books', expires_when: :records)
       record_on_member(3, { name: 'harbor cafe ' })
@@ -236,11 +238,11 @@ describe 'Recordings on a member before its owner is forged' do
   describe 'when `match_by:` changed before the forge' do
     # :changes fires on an event, so a recording is judged by the matcher declared when it was recorded
     each_way('judges :changes by the matcher at the recording, from ignoring case to exact', replay_gap: matcher_ignored) do |how|
-      declare_tenant(ignoring_case)
+      match_tenants_by(ignoring_case)
       provide_name('Harbor Cafe')
       correct_name(how, 'Harbor Books')
       record_on_member(3, { name: 'harbor cafe' })
-      declare_tenant
+      match_tenants_by
       forge_on(4)
 
       expect(correction.expires_at).to be_nil
@@ -250,7 +252,7 @@ describe 'Recordings on a member before its owner is forged' do
       provide_name('Harbor Cafe')
       correct_name(how, 'Harbor Books')
       record_on_member(3, { name: 'harbor cafe' })
-      declare_tenant(ignoring_case)
+      match_tenants_by(ignoring_case)
       forge_on(4)
 
       expect(correction.expires_at).to eq(jan(3))
@@ -260,17 +262,17 @@ describe 'Recordings on a member before its owner is forged' do
     each_way('compares :matches, from exact to ignoring case') do |how|
       provide_name('Harbor Cafe')
       correct_name(how, 'harbor cafe', expires_when: :matches)
-      declare_tenant(ignoring_case)
+      match_tenants_by(ignoring_case)
       forge_on(4)
 
       expect(correction.expires_at).to how == :replayed ? eq(jan(2)) : be_nil
     end
 
     each_way('compares :matches, from ignoring case to exact') do |how|
-      declare_tenant(ignoring_case)
+      match_tenants_by(ignoring_case)
       provide_name('Harbor Cafe')
       correct_name(how, 'harbor cafe', expires_when: :matches)
-      declare_tenant
+      match_tenants_by
       forge_on(4)
 
       expect(correction.expires_at).to how == :replayed ? be_nil : eq(jan(2))

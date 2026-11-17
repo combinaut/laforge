@@ -2565,6 +2565,140 @@ describe 'Association tracking capabilities' do
       end
     end
 
+    describe 'in more than one `laforged` call' do
+      # Returns a concern that declares the model that includes it laforged, with `options`
+      def laforged_concern(**options)
+        Module.new do
+          extend ActiveSupport::Concern
+          included { laforged(**options) }
+        end
+      end
+
+      # Returns a model named `name` on the places table, after running `body` in it and then `declaration`, in which
+      # the model calls `laforged`
+      def place_model(name, body = TENANTS_AND_MARKER, &declaration)
+        stub_const(name, Class.new(ActiveRecord::Base))
+        model = Object.const_get(name)
+        model.table_name = 'places'
+        model.class_eval(&body)
+        model.class_eval(&declaration)
+        model
+      end
+
+      TENANTS_AND_MARKER = lambda do |_model|
+        has_many :tenants, as: :occupiable, dependent: :destroy
+        has_one :marker, as: :markable, dependent: :destroy
+      end
+
+      it "tracks the model's own associations when a concern it includes declares it laforged, whichever comes first", capability: 'C207' do
+        mappable = laforged_concern
+        concern_first = place_model('ConcernFirstPlace', ->(_model) {}) do
+          include mappable
+          has_many :tenants, as: :occupiable, dependent: :destroy
+          laforged associations: { tenants: { key: :external_id } }
+        end
+        concern_last = place_model('ConcernLastPlace') do
+          laforged associations: { tenants: { key: :external_id } }
+          include mappable
+        end
+
+        [concern_first, concern_last].each do |model|
+          expect(model.laforge.associations.keys).to eq(%w[tenants])
+          shared_place = model.create!(name: 'Harbor Building')
+          shared_place.record_data_entries({ tenants: [{ external_id: 'T-1', name: 'Corner Café' }] }, low)
+          shared_place.forge!
+          expect(shared_place.reload.tenants.pluck(:external_id)).to eq(['T-1'])
+        end
+      end
+
+      it 'adds the associations, attribute groups and match_by of each call to those of the earlier ones, and keeps an earlier ruleset_selector', capability: 'C208' do
+        strip = ->(value) { value&.strip }
+        model = place_model('SharedPlace') do
+          laforged associations: { tenants: {} }, attribute_groups: { listing: %i[name region] }, match_by: { name: strip }, ruleset_selector: :region
+          laforged associations: { marker: {} }, attribute_groups: { reference: %i[number created_at] }, match_by: { number: :to_s.to_proc }
+        end
+
+        expect(model.laforge.associations.keys).to eq(%w[tenants marker])
+        expect(model.laforge.attribute_groups).to eq('listing' => %w[name region], 'reference' => %w[number created_at])
+        expect(model.laforge.match_by.keys).to eq(%w[name number])
+        expect(model.laforge.ruleset_selector).to eq(:region)
+        expect(LaForge::ValueMatcher.for(model, :name).matches?(' Harbor ', 'Harbor')).to be(true)
+        expect(LaForge::ValueMatcher.for(model, :number).matches?(7, '7')).to be(true)
+      end
+
+      it 'raises for an association, attribute group or match_by attribute an earlier call declared, naming the model and the name', capability: 'C209' do
+        model = place_model('SharedPlace') do
+          laforged associations: { tenants: {} }, attribute_groups: { listing: %i[name region] }, match_by: { name: ->(value) { value&.strip } }
+        end
+
+        expect { model.laforged(associations: { 'tenants' => { key: :external_id } }) }
+          .to raise_error(ArgumentError, /SharedPlace `laforged associations:` declares tenants, which an earlier `laforged` call already declared\. Declare tenants in one call only/)
+        expect { model.laforged(attribute_groups: { listing: %i[name number] }) }
+          .to raise_error(ArgumentError, /SharedPlace `laforged attribute_groups:` declares listing, which an earlier `laforged` call already declared\. Declare listing in one call only/)
+        expect { model.laforged(match_by: { name: :downcase.to_proc }) }
+          .to raise_error(ArgumentError, /SharedPlace `laforged match_by:` declares name, which an earlier `laforged` call already declared\. Declare name in one call only/)
+        expect(model.laforge.association(:tenants).key).to eq(%w[id])
+        expect(model.laforge.attribute_groups).to eq('listing' => %w[name region])
+      end
+
+      it 'raises for a ruleset_selector other than the one an earlier call declared, and takes the same one again', capability: 'C210' do
+        model = place_model('SharedPlace') { laforged ruleset_selector: :region }
+
+        expect { model.laforged(ruleset_selector: false) }
+          .to raise_error(ArgumentError, /SharedPlace `laforged ruleset_selector:` is false, but an earlier `laforged` call declared :region\. Declare SharedPlace's ruleset selector in one call only/)
+        expect { model.laforged(ruleset_selector: :region, associations: { tenants: {} }) }.not_to raise_error
+        expect(model.laforge.ruleset_selector).to eq(:region)
+      end
+
+      it 'checks attribute groups and match_by against what every call declared', capability: 'C211' do
+        model = place_model('SharedPlace') do
+          laforged associations: { tenants: {} }, attribute_groups: { listing: %i[name region] }, match_by: { reference: ->(value) { value } }
+        end
+
+        expect { model.laforged(attribute_groups: { occupancy: %i[tenants number] }) }.to raise_error(ArgumentError, /SharedPlace#tenants is a tracked association, which cannot be in an attribute group/)
+        expect { model.laforged(attribute_groups: { reference: %i[number created_at] }) }.to raise_error(ArgumentError, /SharedPlace attribute group reference matches when every one of its attributes matches/)
+        expect { model.laforged(attribute_groups: { labels: %i[name number] }) }.to raise_error(ArgumentError, /SharedPlace#name is in attribute groups listing and labels/)
+        expect { model.laforged(match_by: { tenants: ->(value) { value } }) }.to raise_error(ArgumentError, /SharedPlace#tenants is a tracked association, whose members are identified by key:/)
+        expect { model.laforged(associations: { marker: {} }, attribute_groups: { pin: %i[marker number] }) }.to raise_error(ArgumentError, /SharedPlace#marker is a tracked association/)
+        expect(model.laforge.associations.keys).to eq(%w[tenants]) # a call that raises declares nothing
+      end
+
+      it 'makes the pending writes once per save, and declares the data associations once', capability: 'C212' do
+        mappable = laforged_concern
+        model = place_model('SharedPlace') do
+          include mappable
+          laforged associations: { tenants: {} }
+        end
+        data_entries = model.reflect_on_association(:data_entries)
+        model.laforged associations: { marker: {} }
+        shared_place = model.create!(name: 'Harbor Building')
+        allow(shared_place.laforge).to receive(:write_pending_writes!).and_call_original
+
+        shared_place.update!(name: 'Harbor House')
+
+        expect(shared_place.laforge).to have_received(:write_pending_writes!).once
+        expect(model.reflect_on_association(:data_entries)).to equal(data_entries)
+      end
+
+      it "adds a subclass's call to what its parent declared, and leaves the parent as it was", capability: 'C213' do
+        parent = place_model('SharedPlace') { laforged associations: { tenants: {} }, attribute_groups: { listing: %i[name region] } }
+        stub_const('SharedDepot', Class.new(parent))
+        SharedDepot.laforged associations: { marker: {} }, match_by: { number: :to_s.to_proc }
+
+        expect(SharedDepot.laforge.associations.keys).to eq(%w[tenants marker])
+        expect(SharedDepot.laforge.attribute_groups).to eq('listing' => %w[name region])
+        expect(SharedDepot.laforge.match_by.keys).to eq(%w[number])
+        expect(parent.laforge.associations.keys).to eq(%w[tenants])
+        expect(parent.laforge.match_by).to eq({})
+        expect { SharedDepot.laforged(associations: { tenants: {} }) }.to raise_error(ArgumentError, /SharedDepot `laforged associations:` declares tenants, which an earlier `laforged` call, on SharedDepot or a model it inherits from, already declared/)
+
+        depot = SharedDepot.create!(name: 'Harbor Depot')
+        allow(depot.laforge).to receive(:write_pending_writes!).and_call_original
+        depot.update!(name: 'Harbor Yard')
+        expect(depot.laforge).to have_received(:write_pending_writes!).once
+      end
+    end
+
     it 'derives join model keys from the association reflection', capability: 'C39' do
       expect(Place.laforge.association(:place_categories).key).to eq(%w[category_id])
       expect(Place.laforge.association(:provided_parcel_links).key).to eq(%w[parcel_id parcel_link_type_id])
@@ -2626,7 +2760,9 @@ describe 'Association tracking capabilities' do
     end
 
     it 'raises for a match_by on a tracked association, pointing to what identifies its members', capability: 'C192' do
-      model = Class.new(Place) { def self.name = 'Place' }
+      model = Class.new(ActiveRecord::Base) { def self.name = 'Place' }
+      model.table_name = 'places'
+      model.has_many :tenants, as: :occupiable
 
       expect { model.laforged(associations: { tenants: {} }, match_by: { 'tenants' => ->(value) { value } }) }
         .to raise_error(ArgumentError, /Place#tenants is a tracked association, whose members are identified by key: and tombstone_matcher:, not by match_by/)

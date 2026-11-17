@@ -32,7 +32,7 @@ module LaForge
         associations.fetch(name.to_s)
       end
 
-      # Returns the matcher for `attribute`, kept until `laforged` declares the model again. The model's first one checks
+      # Returns the matcher for `attribute`, kept until `laforged` is called on the model again. The model's first one checks
       # that it has the attributes of its `match_by`, which `laforged` leaves to here because that reads its columns.
       def value_matcher(attribute)
         value_matchers.fetch(attribute.to_s) do |name|

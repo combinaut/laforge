@@ -1374,7 +1374,7 @@ describe 'Usage' do
       end
     end
 
-    it 'checks the attributes of a `match_by:` once per model, and again when it is declared again' do
+    it 'checks the attributes of a `match_by:` once per model, and again when another `laforged` call adds to it' do
       model = Class.new(ActiveRecordMock) do
         def self.name = 'ActiveRecordMock'
 
@@ -1386,9 +1386,9 @@ describe 'Usage' do
       expect(model.laforge.value_matcher(:name)).to be(matcher)
       expect(LaForge::ValueMatcher).to have_received(:assert_attribute!).once
 
-      model.laforged match_by: { name: :upcase.to_proc }
-      expect(model.laforge.value_matcher(:name).match_value('Harbor')).to eq('HARBOR')
-      expect(LaForge::ValueMatcher).to have_received(:assert_attribute!).twice
+      model.laforged match_by: { count: :to_s.to_proc }
+      expect(model.laforge.value_matcher(:name).match_value('Harbor')).to eq('harbor')
+      expect(LaForge::ValueMatcher).to have_received(:assert_attribute!).exactly(3).times
     end
 
     it 'takes a match_by on a setter defined below `laforged`' do
