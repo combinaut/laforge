@@ -264,7 +264,8 @@ module LaForge
     # - removed: the key of each member it would remove
     # - changed: the key of each member whose pending items would change it, merged with those changes
     # - skipped: present only when it has members, the key of each one it would not build, because it is named by an id
-    #   that is not one of the owner's, or because no source described it and it is invalid with its key alone
+    #   that is not one of the owner's, or because no source described it and it is named by a tombstone's key or is
+    #   invalid with its key alone
     def diff
       return if member_lists.empty?
 
@@ -510,9 +511,13 @@ module LaForge
 
     # Returns a member built for an included `member` that does not exist, or nil when it is skipped. A new member is
     # kept in `created` by its placeholder key, so a later forge before the save finds it. A member named by an id that
-    # is not one of the owner's is skipped with a warning, since LaForge does not create a record with a given id. Any
-    # other is built by `build`, which can skip it too.
+    # is not one of the owner's is skipped with a warning, since LaForge does not create a record with a given id. A
+    # member named by a tombstone's key is skipped when `described` is false, since the key alone says nothing about the
+    # member, which a member list can go on naming after the tombstone's exclusion stops counting. It is built when a
+    # source next lists it with its attributes. Any other is built by `build`, which can skip it too.
     def add(member, described:)
+      return if config.tombstone?(member) && !described
+
       if config.primary_keyed? && !config.unsaved?(member)
         owner.logger&.warn("LaForge skipped #{config.klass.name} #{config.key_of(member).first.inspect} in #{owner.class.name} #{owner.id}'s #{config.name}: " \
                            "membership includes it, but it is no longer one of them. List it without its #{config.klass.primary_key} to create a new one")
@@ -525,9 +530,10 @@ module LaForge
     end
 
     # Returns a new member with the association scope's attributes and `AssociationConfig#build_attributes`, or nil
-    # after logging a warning when `described` is false and the member is invalid with those alone. A collection member
-    # is built in the association. A has_one member is built outside it, because Rails replaces a has_one's current
-    # member as soon as one is built through it, and the forge has the owner's save remove the current one.
+    # after logging a warning when `described` is false and the member is invalid with those alone. `add` has already
+    # skipped a member named by a tombstone's key that no source described. A collection member is built in the
+    # association. A has_one member is built outside it, because Rails replaces a has_one's current member as soon as
+    # one is built through it, and the forge has the owner's save remove the current one.
     def build(member, described:)
       attributes = config.build_attributes(member)
       record = config.collection? ? association.build(attributes) : new_member(attributes)
@@ -595,6 +601,11 @@ module LaForge
     # exclusion that has not expired. Every member list that has not expired names the member by the tombstone's key in
     # place of its id. That includes inactive sources' member lists, so they still name it when the source is active
     # again. Each excluding member list keeps the tombstone.
+    #
+    # The member lists name the member by the tombstone's key rather than keep its id, because a new row can take a
+    # removed row's id, as when MySQL before 8.0 restarts and sets AUTO_INCREMENT to the highest id plus one, and the
+    # exclusion would then remove that row. The key also tells a member kept out on purpose from a row that went some
+    # other way.
     def entomb
       all_member_lists = owner.laforge.association_member_lists(config, inactive: true)
       existing.each_value do |record|
@@ -655,6 +666,7 @@ module LaForge
     # Whether a forge would build the included `member`, which does not exist
     def buildable?(member)
       return false if config.primary_keyed? && !config.unsaved?(member) # named by an id that is not one of the owner's
+      return false if config.tombstone?(member) && !pending.key?(config.key_of(member)) # no source described it
 
       pending.key?(config.key_of(member)) || new_member(config.build_attributes(member)).valid?
     end
