@@ -513,7 +513,7 @@ module LaForge
     # kept in `created` by its placeholder key, so a later forge before the save finds it. A member named by an id that
     # is not one of the owner's is skipped with a warning, since LaForge does not create a record with a given id. A
     # member named by a tombstone's key is skipped when `described` is false, since the key alone says nothing about the
-    # member, which a member list can go on naming after the tombstone's exclusion stops counting. It is built when a
+    # member. A member list can go on naming the key after the tombstone's exclusion stops counting. It is built when a
     # source next lists it with its attributes. Any other is built by `build`, which can skip it too.
     def add(member, described:)
       return if config.tombstone?(member) && !described
@@ -530,10 +530,9 @@ module LaForge
     end
 
     # Returns a new member with the association scope's attributes and `AssociationConfig#build_attributes`, or nil
-    # after logging a warning when `described` is false and the member is invalid with those alone. `add` has already
-    # skipped a member named by a tombstone's key that no source described. A collection member is built in the
-    # association. A has_one member is built outside it, because Rails replaces a has_one's current member as soon as
-    # one is built through it, and the forge has the owner's save remove the current one.
+    # after logging a warning when `described` is false and the member is invalid with those alone. A collection member
+    # is built in the association. A has_one member is built outside it, because Rails replaces a has_one's current
+    # member as soon as one is built through it, and the forge has the owner's save remove the current one.
     def build(member, described:)
       attributes = config.build_attributes(member)
       record = config.collection? ? association.build(attributes) : new_member(attributes)
