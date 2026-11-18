@@ -1205,6 +1205,99 @@ describe 'Association tracking capabilities' do
       allow(Place.laforge.association(:tenants)).to receive(:tombstone_matcher).and_return(->(_tenant, _tombstones) { Tenant.new })
       expect { LaForge.tombstone_blocking(place.tenants.build(name: 'Corner Café'), low) }.to raise_error(ArgumentError, /Place#tenants tombstone_matcher: returned .* which is not one of the tombstones it was given/)
     end
+
+    context 'when a member list names a tombstone whose exclusion no longer counts' do
+      # A place whose tenants are valid with no attributes, so a tenant built from a tombstone key alone would be saved
+      before do
+        stub_const('UnvalidatedTenant', Class.new(ActiveRecord::Base))
+        UnvalidatedTenant.table_name = 'tenants'
+        UnvalidatedTenant.belongs_to :occupiable, polymorphic: true
+        stub_const('UnvalidatedPlace', Class.new(ActiveRecord::Base))
+        UnvalidatedPlace.table_name = 'places'
+        UnvalidatedPlace.has_many :tenants, class_name: 'UnvalidatedTenant', as: :occupiable, dependent: :destroy
+        UnvalidatedPlace.laforged(associations: { tenants: { tombstone_matcher: ->(tenant, tombstones) { tombstones.find { |tombstone| tombstone.name == tenant.name } } } })
+      end
+
+      let(:unvalidated_place) { UnvalidatedPlace.create!(name: 'Harbor Building') }
+
+      def lows_member_list = LaForge::MemberList.new(unvalidated_place.reload.data_entries.with_source(low).with_attribute(:tenants).sole.value)
+
+      # Low lists two tenants and top excludes the café, so low's member list names it by the key of top's tombstone,
+      # which is returned
+      def exclude_corner_cafe(**settings)
+        unvalidated_place.record_data_entries({ tenants: [{ name: 'Corner Café', unit: '1A' }, { name: 'Harbor Books' }] }, low)
+        unvalidated_place.forge!
+        unvalidated_place.record_data_entries({ tenants: { exclude: [{ id: UnvalidatedTenant.find_by!(name: 'Corner Café').id }] } }, top, mode: :edit, **settings)
+        unvalidated_place.forge!
+        unvalidated_place.reload.data_entries.tombstones(:tenants).sole
+      end
+
+      # Forges the place for a reason other than its tenants, and checks that `forge_diff` and the forge build no tenant
+      # for the tombstone's key, which low's member list still names
+      def expect_no_tenant_built(tombstone)
+        unvalidated_place.reload.record_data_entries({ name: 'Harbor Hall' }, low)
+        expect(unvalidated_place.forge_diff['tenants']).to eq(added: [], removed: [], changed: [], skipped: [tombstone.to_h])
+        unvalidated_place.forge!
+
+        expect(UnvalidatedTenant.pluck(:name)).to eq(['Harbor Books'])
+        expect(lows_member_list.include).to include(tombstone.to_h)
+      end
+
+      it 'builds no member from the tombstone key after the excluding source forgets the member', capability: 'C214' do
+        tombstone = exclude_corner_cafe
+        unvalidated_place.record_data_entries({ tenants: { forget: [tombstone] } }, top, mode: :edit)
+        unvalidated_place.save!
+
+        expect_no_tenant_built(tombstone)
+      end
+
+      it 'builds no member from the tombstone key after the exclusion expires', capability: 'C215' do
+        tombstone = exclude_corner_cafe(expires_at: 1.week.from_now)
+
+        travel(8.days) { expect_no_tenant_built(tombstone) }
+      end
+
+      it 'builds no member from the tombstone key while the excluding source is inactive', capability: 'C216' do
+        tombstone = exclude_corner_cafe
+        top.update!(active: false)
+
+        expect_no_tenant_built(tombstone)
+      end
+
+      it 'builds a new member, once the member is forgotten, when a source next lists it with its attributes', capability: 'C217' do
+        tombstone = exclude_corner_cafe
+        latest_id = UnvalidatedTenant.maximum(:id)
+        unvalidated_place.record_data_entries({ tenants: { forget: [tombstone] } }, top, mode: :edit)
+        unvalidated_place.save!
+        expect_no_tenant_built(tombstone)
+
+        harbor_books = UnvalidatedTenant.find_by!(name: 'Harbor Books')
+        unvalidated_place.reload.record_data_entries({ tenants: [{ name: 'Corner Café', unit: '2B' }, { id: harbor_books.id }] }, low)
+        expect(unvalidated_place.forge_diff['tenants']).to eq(added: [{ 'name' => 'Corner Café', 'unit' => '2B' }], removed: [], changed: [])
+        unvalidated_place.forge!
+
+        corner_cafe = UnvalidatedTenant.find_by!(name: 'Corner Café')
+        expect(UnvalidatedTenant.count).to eq(2)
+        expect(corner_cafe).to have_attributes(unit: '2B', id: be > latest_id) # a new tenant, with the values low now provides
+        expect(lows_member_list.include).to eq([{ 'id' => corner_cafe.id }, { 'id' => harbor_books.id }])
+      end
+
+      it 'still builds a member from a tombstone key that a source describes, once that source outranks the excluding source', capability: 'C218' do
+        tombstone = exclude_corner_cafe
+        harbor_books = UnvalidatedTenant.find_by!(name: 'Harbor Books')
+        unvalidated_place.record_data_entries({ tenants: [{ name: 'Corner Café', unit: '2B' }, { id: harbor_books.id }] }, low)
+        unvalidated_place.forge!
+        expect(UnvalidatedTenant.pluck(:name)).to eq(['Harbor Books']) # top's tombstone keeps the café out
+        expect(lows_member_list.pending.map { |item| item['key'] }).to eq([tombstone.to_h]) # low describes the tombstone's member
+
+        unvalidated_place.reload.record_data_entries({ tenants: { include: [] } }, low, mode: :edit, precedence: 50)
+        expect(unvalidated_place.forge_diff['tenants']).to eq(added: [{ 'name' => 'Corner Café', 'unit' => '2B' }], removed: [], changed: [])
+        unvalidated_place.forge!
+
+        expect(UnvalidatedTenant.pluck(:name, :unit)).to contain_exactly(['Harbor Books', nil], ['Corner Café', '2B'])
+        expect(unvalidated_place.reload.data_entries.tombstones(:tenants)).to be_empty
+      end
+    end
   end
 
   describe 'merging duplicates' do
