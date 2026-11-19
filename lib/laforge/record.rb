@@ -31,9 +31,12 @@ module LaForge
       # from. `associations` is { name => AssociationConfig }, and the rest are as `laforged` takes them. The attribute
       # groups and `match_by` are checked against everything declared (see `LaForge::ActiveRecord.attribute_groups` and
       # `.match_by`). Raises for a name an earlier call declared, and for a ruleset selector other than an earlier
-      # call's. A call that raises declares nothing. Nothing else writes what is declared, so no call replaces
-      # another's.
+      # call's, and then declares nothing. A subclass's call adds to what its parent had declared by then, so what the
+      # parent declares afterwards does not reach that subclass. The writers are private, so no caller replaces what
+      # another declared.
       def declare(associations:, attribute_groups:, ruleset_selector:, match_by:)
+        attribute_groups = attribute_groups.to_h
+        match_by = match_by.to_h
         assert_not_declared!(:associations, associations, self.associations)
         assert_not_declared!(:attribute_groups, attribute_groups, self.attribute_groups)
         assert_not_declared!(:match_by, match_by, self.match_by)

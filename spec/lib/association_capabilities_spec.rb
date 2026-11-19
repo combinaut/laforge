@@ -2622,6 +2622,7 @@ describe 'Association tracking capabilities' do
         expect(model.laforge.attribute_groups).to eq('listing' => %w[name region], 'reference' => %w[number created_at])
         expect(model.laforge.match_by.keys).to eq(%w[name number])
         expect(model.laforge.ruleset_selector).to eq(:region)
+        expect { model.laforged(attribute_groups: nil, match_by: nil) }.not_to raise_error # as a concern passing on options it was not given
         expect(LaForge::ValueMatcher.for(model, :name).matches?(' Harbor ', 'Harbor')).to be(true)
         expect(LaForge::ValueMatcher.for(model, :number).matches?(7, '7')).to be(true)
       end
@@ -2639,7 +2640,7 @@ describe 'Association tracking capabilities' do
           .to raise_error(ArgumentError, /SharedPlace `laforged match_by:` declares name, which an earlier `laforged` call already declared\. Declare name in one call only/)
         expect(model.laforge.association(:tenants).key).to eq(%w[id])
         expect(model.laforge.attribute_groups).to eq('listing' => %w[name region])
-        expect { model.laforge.associations = {} }.to raise_error(NoMethodError, /private method 'associations='/) # nothing replaces a declaration
+        expect { model.laforge.associations = {} }.to raise_error(NoMethodError, /private method .associations=/) # nothing replaces a declaration
       end
 
       it 'raises for a ruleset_selector other than the one an earlier call declared, and takes the same one again', capability: 'C210' do

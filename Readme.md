@@ -40,7 +40,7 @@ Key features:
 
 ### When a model calls `laforged` more than once
 
-A concern can declare the models that include it laforged, and a model can then declare what it tracks in a call of its own. Each call adds to the earlier ones, whichever runs first, and a subclass's call adds to what its parent declared.
+A concern can declare the models that include it laforged, and a model can then declare what it tracks in a call of its own. Each call adds to the earlier ones, whichever runs first, and a subclass's call adds to what its parent has declared by then.
 
   ```ruby
     module Mappable
