@@ -35,7 +35,8 @@ module LaForge
     #   its single member, recorded as a complete list. The shapes a Rails form submits, `*_attributes` for a tracked
     #   association and `*_ids`, are accepted (see Payload).
     # A member is a hash of its key and what the source says about it (see TrackedAssociation), or a saved record.
-    # Where members are keyed by primary key, a hash without an id is a new member.
+    # Where members are keyed by primary key, a hash without an id is a new member, and `'new' => token` gives it a
+    # token of the caller's, which identifies it before it is saved (see AssociationConfig).
     # `precedence:` covers everything the call records, members' attributes included (see `record_data_entry`).
     # The attributes of an attribute group are recorded together, on the record and on members alike.
     # `expires_at:`, `expires_on:` and `expires_when:` expire what the call records, and a precedence passed with it
@@ -166,6 +167,12 @@ module LaForge
       attributes.any?
     ensure
       @replaying = false
+    end
+
+    # @api private
+    # Whether the record is recording what its owner's member lists kept pending for it (see `record_pending`)
+    def replaying?
+      @replaying == true
     end
 
     # @api private

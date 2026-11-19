@@ -3,7 +3,7 @@ module LaForge
   module Inspection
     extend ActiveSupport::Concern
 
-    API = %i[data_source? data_source_names source_values member_sources tombstones membership_expiries].freeze
+    API = %i[data_source? data_source_names source_values member_sources new_member tombstones membership_expiries].freeze
     CLASS_API = %i[source_values].freeze
 
     # Whether the source has entries on this record
@@ -27,6 +27,14 @@ module LaForge
     def member_sources(name, **member)
       reset_resolver_unless_held # selects the ruleset and reads the rules again, unless an enclosing forge holds them
       TrackedAssociation.new(record, self.class.association(name)).member_sources(member.stringify_keys)
+    end
+
+    # Returns the member a forge of this record built for the new member that `token` identifies in the tracked
+    # association `name`, which is the one recorded with `'new' => token` (see AssociationConfig), or nil when no forge
+    # has built it. The member is unsaved until the record is saved, and the same instance has its id after. A record
+    # that is reloaded returns nil, as its member lists name the member by its id by then.
+    def new_member(name, token)
+      TrackedAssociation.new(record, self.class.association(name)).built_member(token)
     end
 
     # Returns the tombstones of the tracked association `name` (see Tombstone)
