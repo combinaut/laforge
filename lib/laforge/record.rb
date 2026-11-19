@@ -27,6 +27,28 @@ module LaForge
     CLASS_API = [Precedence::CLASS_API, Inspection::CLASS_API].flatten.uniq.freeze
 
     class << self
+      # Adds what a `laforged` call declares to what the earlier calls declared, on the model or on a model it inherits
+      # from. `associations` is { name => AssociationConfig }, and the rest are as `laforged` takes them. The attribute
+      # groups and `match_by` are checked against everything declared (see `LaForge::ActiveRecord.attribute_groups` and
+      # `.match_by`). Raises for a name an earlier call declared, and for a ruleset selector other than an earlier
+      # call's. A call that raises declares nothing. Nothing else writes what is declared, so no call replaces
+      # another's.
+      def declare(associations:, attribute_groups:, ruleset_selector:, match_by:)
+        assert_not_declared!(:associations, associations, self.associations)
+        assert_not_declared!(:attribute_groups, attribute_groups, self.attribute_groups)
+        assert_not_declared!(:match_by, match_by, self.match_by)
+        assert_same_ruleset_selector!(ruleset_selector)
+        associations = self.associations.merge(associations)
+        groups = LaForge::ActiveRecord.attribute_groups(model, self.attribute_groups.merge(attribute_groups), associations.keys)
+        match_values = LaForge::ActiveRecord.match_by(model, self.match_by.merge(match_by), associations.keys, groups)
+
+        self.associations = associations
+        self.attribute_groups = groups
+        self.ruleset_selector = ruleset_selector unless ruleset_selector.nil?
+        self.match_by = match_values
+        self.value_matchers = {}
+      end
+
       # Returns the AssociationConfig of the tracked association `name`
       def association(name)
         associations.fetch(name.to_s)
@@ -46,6 +68,35 @@ module LaForge
         model ? "#{model.name}.laforge" : super
       end
       alias to_s inspect
+
+      private :associations=, :attribute_groups=, :ruleset_selector=, :match_by=, :value_matchers=
+
+      private
+
+      # Raises when `declared`, what a `laforged` call gives `option`, has a name among `earlier`, what the earlier
+      # calls declared for it, naming each one
+      def assert_not_declared!(option, declared, earlier)
+        names = declared.keys.map(&:to_s) & earlier.keys
+        return if names.empty?
+
+        raise ArgumentError, "#{model.name} `laforged #{option}:` declares #{names.join(', ')}, which #{earlier_call} already declared. " \
+                             "Declare #{names.one? ? names.first : 'each'} in one call only"
+      end
+
+      # Raises when a `laforged` call gives a ruleset selector other than the one the earlier calls declared. Two procs
+      # are the same selector only when they are the same object.
+      def assert_same_ruleset_selector!(selector)
+        earlier = ruleset_selector
+        return if selector.nil? || earlier.nil? || selector == earlier
+
+        raise ArgumentError, "#{model.name} `laforged ruleset_selector:` is #{selector.inspect}, but #{earlier_call} declared #{earlier.inspect}. " \
+                             "Declare #{model.name}'s ruleset selector in one call only"
+      end
+
+      # Returns the words an error uses for the `laforged` calls made before the one that raises
+      def earlier_call
+        superclass == Record ? 'an earlier `laforged` call' : "an earlier `laforged` call, on #{model.name} or a model it inherits from,"
+      end
     end
 
     attr_reader :record

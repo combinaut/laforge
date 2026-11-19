@@ -22,7 +22,6 @@ describe 'Recordings on a member before its owner is forged' do
     AssociationCapabilities.setup!
     AssociationCapabilities.reset!
   end
-  after { match_tenants_by }
 
   let(:low) { LaForge::DataSource.create!(name: 'low', precedence: 11) }
   let(:high) { LaForge::DataSource.create!(name: 'high', precedence: 12) }
@@ -31,10 +30,10 @@ describe 'Recordings on a member before its owner is forged' do
   def jan(day) = Time.utc(2026, 1, day)
   def ignoring_case = { name: ->(value) { value&.strip&.downcase } }
 
-  # Gives Tenant the `match_by` in place of its own, as loading a changed model does. A `laforged` call would add to it.
+  # Gives Tenant the `match_by` in place of its own for the example, as loading a changed model does. A `laforged` call
+  # would add to it.
   def match_tenants_by(match_by = {})
-    Tenant.laforge.match_by = match_by.stringify_keys
-    Tenant.laforge.value_matchers = {}
+    allow(Tenant.laforge).to receive_messages(match_by: match_by.stringify_keys, value_matchers: {})
   end
 
   # Names a tenant as an importer does, by id once a tenant with the `external_id` exists, otherwise as a new tenant

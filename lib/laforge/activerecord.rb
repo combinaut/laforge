@@ -12,31 +12,16 @@ module LaForge
     # - match_by: { attribute => proc }, each proc taking one value of the attribute and returning its match value (see
     #   ValueMatcher)
     #
-    # A model can call it more than once, as when a concern it includes calls it too. Each call adds its associations,
-    # attribute groups and `match_by` to what the earlier calls declared, on the model or on a model it inherits from,
-    # and is checked against all of it. Raises for a name an earlier call declared, and for a ruleset selector other
-    # than an earlier call's. A call that raises declares nothing.
+    # A model can call it more than once, as when a concern it includes calls it too. Each call adds to what the earlier
+    # calls declared, and raises as `Record.declare` does.
     def laforged(associations: {}, attribute_groups: {}, ruleset_selector: nil, match_by: {})
       LaForge::ActiveRecord.assert_no_collisions!(self)
       LaForge.assert_ruleset_selector!(ruleset_selector, where: "#{name} laforged ruleset_selector:", model: true)
-      earlier = include?(Model) ? laforge : Record
-      LaForge::ActiveRecord.assert_not_declared!(self, :associations, associations, earlier.associations)
-      LaForge::ActiveRecord.assert_not_declared!(self, :attribute_groups, attribute_groups, earlier.attribute_groups)
-      LaForge::ActiveRecord.assert_not_declared!(self, :match_by, match_by, earlier.match_by)
-      LaForge::ActiveRecord.assert_same_ruleset_selector!(self, ruleset_selector, earlier.ruleset_selector)
-      association_names = earlier.associations.keys + associations.keys.map(&:to_s)
-      groups = LaForge::ActiveRecord.attribute_groups(self, earlier.attribute_groups.merge(attribute_groups), association_names)
-      match_values = LaForge::ActiveRecord.match_by(self, earlier.match_by.merge(match_by), association_names, groups)
       configs = associations.to_h { |name, options| [name.to_s, AssociationConfig.new(self, name, **options)] }
       LaForge::ActiveRecord.declare_model(self) unless include?(Model)
 
-      laforge.attribute_groups = groups
-      laforge.ruleset_selector = ruleset_selector unless ruleset_selector.nil?
-      laforge.match_by = match_values
-      laforge.value_matchers = {}
-
+      laforge.declare(associations: configs, attribute_groups: attribute_groups, ruleset_selector: ruleset_selector, match_by: match_by)
       configs.each_value { |config| TrackedAssociation.declare(self, config) }
-      laforge.associations = earlier.associations.merge(configs)
     end
 
     # Raises when the model already has a method by a name `laforged` adds, naming each one. A method defined after
@@ -52,30 +37,6 @@ module LaForge
       names = instance.map { |name| "##{name}" } + klass.map { |name| ".#{name}" }
       raise ArgumentError, "#{model.name} already defines #{names.join(', ')}, which would hide LaForge's of the same name. Rename #{model.name}'s " \
                            "#{names.one? ? 'method' : 'methods'}, or, to wrap LaForge's and call super, define #{names.one? ? 'it' : 'them'} after `laforged`"
-    end
-
-    # Raises when `declared`, what a `laforged` call gives `option`, has a name among `earlier`, what the earlier calls
-    # declared for it, naming each one
-    def self.assert_not_declared!(model, option, declared, earlier)
-      names = declared.keys.map(&:to_s) & earlier.keys
-      return if names.empty?
-
-      raise ArgumentError, "#{model.name} `laforged #{option}:` declares #{names.join(', ')}, which #{earlier_call(model)} already declared. " \
-                           "Declare #{names.one? ? names.first : 'each'} in one call only"
-    end
-
-    # Raises when a `laforged` call gives a ruleset selector other than `earlier`, the one the earlier calls declared.
-    # Two procs are the same selector only when they are the same object.
-    def self.assert_same_ruleset_selector!(model, selector, earlier)
-      return if selector.nil? || earlier.nil? || selector == earlier
-
-      raise ArgumentError, "#{model.name} `laforged ruleset_selector:` is #{selector.inspect}, but #{earlier_call(model)} declared #{earlier.inspect}. " \
-                           "Declare #{model.name}'s ruleset selector in one call only"
-    end
-
-    # Returns the words an error uses for the `laforged` calls made before the one that raises
-    def self.earlier_call(model)
-      model.superclass.respond_to?(:laforge) ? "an earlier `laforged` call, on #{model.name} or a model it inherits from," : 'an earlier `laforged` call'
     end
 
     # Returns the attribute groups declared on a model as { group name => [attribute names] }, names as strings, given
