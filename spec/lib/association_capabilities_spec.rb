@@ -2794,6 +2794,30 @@ describe 'Association tracking capabilities' do
       end
     end
 
+    it 'takes associations with no options by name, as one name or in a list with those that have options', capability: 'C219' do
+      declare = lambda do |associations|
+        stub_const('NamedPlace', Class.new(ActiveRecord::Base))
+        NamedPlace.table_name = 'places'
+        NamedPlace.has_many :tenants, as: :occupiable, dependent: :destroy
+        NamedPlace.has_one :marker, as: :markable, dependent: :destroy
+        NamedPlace.laforged(associations: associations)
+        NamedPlace.laforge.associations.transform_values(&:key)
+      end
+
+      expect(declare.(:tenants)).to eq('tenants' => %w[id])
+      expect(declare.(%i[tenants marker])).to eq('tenants' => %w[id], 'marker' => [])
+      expect(declare.(['marker', { tenants: { key: :external_id } }])).to eq('marker' => [], 'tenants' => %w[external_id])
+      expect { declare.([:tenants, { 'tenants' => { key: :external_id } }]) }
+        .to raise_error(ArgumentError, /NamedPlace `laforged associations:` names tenants twice\. Name it once, with all its options/)
+      expect { declare.([:tenants, 1]) }.to raise_error(ArgumentError, /NamedPlace `laforged associations:` takes a name, \{ name => options \}, or a list of those, not 1/)
+
+      declare.(:tenants)
+      named_place = NamedPlace.create!(name: 'Harbor Building')
+      named_place.record_data_entries({ tenants: [{ name: 'Corner Café' }] }, low)
+      named_place.forge!
+      expect(named_place.reload.tenants.pluck(:name)).to eq(['Corner Café'])
+    end
+
     it 'derives join model keys from the association reflection', capability: 'C39' do
       expect(Place.laforge.association(:place_categories).key).to eq(%w[category_id])
       expect(Place.laforge.association(:provided_parcel_links).key).to eq(%w[parcel_id parcel_link_type_id])

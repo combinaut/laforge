@@ -4,8 +4,9 @@ module LaForge
     extend ActiveSupport::Concern
 
     # Declares the model's data entries, data sources and precedence rules, with these options:
-    # - associations: { name => options }, the has_many and has_one associations to track (see TrackedAssociation),
-    #   each with the options AssociationConfig takes
+    # - associations: the has_many and has_one associations to track (see TrackedAssociation), as { name => options },
+    #   each with the options AssociationConfig takes. An association with no options can be given by its name alone,
+    #   so this is also one name, or a list of names and such hashes.
     # - attribute_groups: { name => [attributes] }, the model's attribute groups (see AttributeGroups)
     # - ruleset_selector: the model's own ruleset selector, in place of `LaForge.ruleset_selector`. It is a method name
     #   (Symbol), a Proc given the record, or false for the base rules.
@@ -17,7 +18,7 @@ module LaForge
     def laforged(associations: {}, attribute_groups: {}, ruleset_selector: nil, match_by: {})
       LaForge::ActiveRecord.assert_no_collisions!(self)
       LaForge.assert_ruleset_selector!(ruleset_selector, where: "#{name} laforged ruleset_selector:", model: true)
-      configs = associations.to_h { |name, options| [name.to_s, AssociationConfig.new(self, name, **options)] }
+      configs = LaForge::ActiveRecord.association_options(self, associations).to_h { |name, options| [name, AssociationConfig.new(self, name, **options)] }
       LaForge::ActiveRecord.declare_model(self) unless include?(Model)
 
       laforge.declare(associations: configs, attribute_groups: attribute_groups, ruleset_selector: ruleset_selector, match_by: match_by)
@@ -37,6 +38,23 @@ module LaForge
       names = instance.map { |name| "##{name}" } + klass.map { |name| ".#{name}" }
       raise ArgumentError, "#{model.name} already defines #{names.join(', ')}, which would hide LaForge's of the same name. Rename #{model.name}'s " \
                            "#{names.one? ? 'method' : 'methods'}, or, to wrap LaForge's and call super, define #{names.one? ? 'it' : 'them'} after `laforged`"
+    end
+
+    # Returns what a `laforged` call gives `associations:` as { name => options }, names as strings. It is given as that
+    # hash, as one name, or as a list of names and such hashes, and a name alone has no options. Raises for anything
+    # else, and for an association named twice.
+    def self.association_options(model, associations)
+      Array.wrap(associations).each_with_object({}) do |item, result|
+        unless item.is_a?(Hash) || item.is_a?(Symbol) || item.is_a?(String)
+          raise ArgumentError, "#{model.name} `laforged associations:` takes a name, { name => options }, or a list of those, not #{item.inspect}"
+        end
+
+        (item.is_a?(Hash) ? item : { item => {} }).each do |name, options|
+          raise ArgumentError, "#{model.name} `laforged associations:` names #{name} twice. Name it once, with all its options" if result.key?(name.to_s)
+
+          result[name.to_s] = options
+        end
+      end
     end
 
     # Returns the attribute groups declared on a model as { group name => [attribute names] }, names as strings, given

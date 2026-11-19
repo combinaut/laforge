@@ -54,7 +54,7 @@ A concern can declare the models that include it laforged, and a model can then 
 
       has_many :tenants, as: :occupiable, dependent: :destroy
 
-      laforged associations: { tenants: {} }
+      laforged associations: :tenants
     end
   ```
 
@@ -694,12 +694,12 @@ Tracking a `has_many` or `has_one` association is about which members (Rails' as
       has_many :tenants, as: :occupiable, dependent: :destroy
       has_one :marker, as: :markable, dependent: :destroy
 
-      laforged associations: {
-        place_categories: {}, # identified by category_id; ordered by position
-        parcel_links: {},     # identified by parcel_id + parcel_link_type_id
-        tenants: {},          # identified by id
-        marker: {}            # a has_one: recorded as one member, or nil for none
-      }
+      laforged associations: [
+        :place_categories, # identified by category_id; ordered by position
+        :parcel_links,     # identified by parcel_id + parcel_link_type_id
+        :tenants,          # identified by id
+        :marker            # a has_one: recorded as one member, or nil for none
+      ]
     end
 
     class Tenant < ApplicationRecord
@@ -708,6 +708,8 @@ Tracking a `has_many` or `has_one` association is about which members (Rails' as
       laforged associations: { opening_hours: { key: :day } }
     end
   ```
+
+An association that takes no options is given by its name, alone or in a list. One that takes options is given as `{ name => options }`, and a list can hold both, as in `associations: [:marker, { tenants: { key: :external_id } }]`.
 
 `laforged` raises if the model already defines a method LaForge adds, such as `forge` or `source_values`, rather than replacing it without a word. A method meant to wrap LaForge's and call `super` is defined after `laforged`.
 
