@@ -11,30 +11,22 @@ module LaForge
     #   (Symbol), a Proc given the record, or false for the base rules.
     # - match_by: { attribute => proc }, each proc taking one value of the attribute and returning its match value (see
     #   ValueMatcher)
+    #
+    # A model can call it more than once, as when a concern it includes calls it too. Each call adds to what the earlier
+    # calls declared, and raises as `Record.declare` does.
     def laforged(associations: {}, attribute_groups: {}, ruleset_selector: nil, match_by: {})
       LaForge::ActiveRecord.assert_no_collisions!(self)
       LaForge.assert_ruleset_selector!(ruleset_selector, where: "#{name} laforged ruleset_selector:", model: true)
-      groups = LaForge::ActiveRecord.attribute_groups(self, attribute_groups, associations)
-      match_values = LaForge::ActiveRecord.match_by(self, match_by, associations, groups)
-      include Model
-
-      LaForge::ActiveRecord.declare_data_associations(self)
-      LaForge::ActiveRecord.declare_scopes(self)
-
-      laforge.attribute_groups = groups
-      laforge.ruleset_selector = ruleset_selector
-      laforge.match_by = match_values
-      laforge.value_matchers = {}
-
       configs = associations.to_h { |name, options| [name.to_s, AssociationConfig.new(self, name, **options)] }
+      LaForge::ActiveRecord.declare_model(self) unless include?(Model)
+
+      laforge.declare(associations: configs, attribute_groups: attribute_groups, ruleset_selector: ruleset_selector, match_by: match_by)
       configs.each_value { |config| TrackedAssociation.declare(self, config) }
-      laforge.associations = configs
-      after_save { laforge.write_pending_writes! }
     end
 
     # Raises when the model already has a method by a name `laforged` adds, naming each one. A method defined after
     # `laforged` is not checked, so a model can wrap LaForge's and call super. Nothing is checked when the model already
-    # includes `Model`, as when `laforged` is declared again.
+    # includes `Model`, as when `laforged` is called again.
     def self.assert_no_collisions!(model)
       return if model.include?(Model)
 
@@ -47,12 +39,12 @@ module LaForge
                            "#{names.one? ? 'method' : 'methods'}, or, to wrap LaForge's and call super, define #{names.one? ? 'it' : 'them'} after `laforged`"
     end
 
-    # Returns the attribute groups declared on a model as { group name => [attribute names] }, names as strings. Raises
-    # unless:
+    # Returns the attribute groups declared on a model as { group name => [attribute names] }, names as strings, given
+    # the names of its tracked associations. Raises unless:
     # - each group names at least two distinct attributes
     # - no group is named like an attribute of any group
     # - no attribute is in two groups or is a tracked association
-    def self.attribute_groups(model, groups, associations)
+    def self.attribute_groups(model, groups, association_names)
       groups = groups.to_h { |name, attributes| [name.to_s, Array.wrap(attributes).map(&:to_s)] }
       seen = {}
       groups.each do |name, attributes|
@@ -61,7 +53,7 @@ module LaForge
 
         attributes.each do |attribute|
           raise ArgumentError, "#{model.name}##{attribute} is in attribute groups #{seen[attribute]} and #{name}; an attribute belongs to one group at most" if seen[attribute]
-          raise ArgumentError, "#{model.name}##{attribute} is a tracked association, which cannot be in an attribute group" if associations.key?(attribute) || associations.key?(attribute.to_sym)
+          raise ArgumentError, "#{model.name}##{attribute} is a tracked association, which cannot be in an attribute group" if association_names.include?(attribute)
 
           seen[attribute] = name
         end
@@ -72,15 +64,25 @@ module LaForge
       groups
     end
 
-    # Returns the `match_by` declared on a model as { attribute name => proc }, names as strings. Raises for a value that
-    # is not callable, and as `ValueMatcher.assert_matchable!` does. Uses no database, so a model can load without one.
-    def self.match_by(model, match_by, associations, groups)
+    # Returns the `match_by` declared on a model as { attribute name => proc }, names as strings, given the names of its
+    # tracked associations and its attribute groups. Raises for a value that is not callable, and as
+    # `ValueMatcher.assert_matchable!` does. Uses no database, so a model can load without one.
+    def self.match_by(model, match_by, association_names, groups)
       match_by.to_h do |attribute, match_value|
-        ValueMatcher.assert_matchable!(model, attribute, associations.keys.map(&:to_s), groups)
+        ValueMatcher.assert_matchable!(model, attribute, association_names, groups)
         raise ArgumentError, "#{model.name} match_by: #{attribute} must be a proc taking one value and returning its match value, not #{match_value.inspect}" unless match_value.respond_to?(:call)
 
         [attribute.to_s, match_value]
       end
+    end
+
+    # Makes the model laforged, which the first `laforged` call on it or on a model it inherits from does. The model's
+    # save then makes its pending writes (see PendingWrites).
+    def self.declare_model(model)
+      model.include Model
+      declare_data_associations(model)
+      declare_scopes(model)
+      model.after_save { laforge.write_pending_writes! }
     end
 
     # Declares the model's associations to its data entries, data sources and precedence rules

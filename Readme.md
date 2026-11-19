@@ -38,6 +38,28 @@ Key features:
     end
   ```
 
+### When a model calls `laforged` more than once
+
+A concern can declare the models that include it laforged, and a model can then declare what it tracks in a call of its own. Each call adds to the earlier ones, whichever runs first, and a subclass's call adds to what its parent has declared by then.
+
+  ```ruby
+    module Mappable
+      extend ActiveSupport::Concern
+
+      included { laforged }
+    end
+
+    class Place < ApplicationRecord
+      include Mappable
+
+      has_many :tenants, as: :occupiable, dependent: :destroy
+
+      laforged associations: { tenants: {} }
+    end
+  ```
+
+Declare each association, attribute group and `match_by` attribute in one call only. `laforged` raises for a name an earlier call declared, and for a `ruleset_selector:` other than the one an earlier call declared, rather than letting the last call replace the others.
+
 ## Upgrading
 
 ### Upgrading from 0.0.1.alpha to 1.0
