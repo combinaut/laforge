@@ -2809,6 +2809,7 @@ describe 'Association tracking capabilities' do
       expect(declare.(['marker', { tenants: { key: :external_id } }])).to eq('marker' => [], 'tenants' => %w[external_id])
       expect { declare.([:tenants, { 'tenants' => { key: :external_id } }]) }
         .to raise_error(ArgumentError, /NamedPlace `laforged associations:` names tenants twice\. Name it once, with all its options/)
+      expect { declare.(%i[tenants tenants]) }.to raise_error(ArgumentError, /NamedPlace `laforged associations:` names tenants twice/)
       expect { declare.([:tenants, 1]) }.to raise_error(ArgumentError, /NamedPlace `laforged associations:` takes a name, \{ name => options \}, or a list of those, not 1/)
 
       declare.(:tenants)
