@@ -750,12 +750,13 @@ An attribute the member already has a newer value for from the same source, reco
 
 ### Naming members
 
-A member keyed by primary key can be named four ways:
+A member keyed by primary key can be named five ways:
 
 | Passed | Meaning |
 |---|---|
 | `{ id: 7, name: 'Corner Café' }` | Tenant 7 is a member, and the source says these attributes about it |
 | `{ name: 'Corner Café' }` | A new member with these attributes |
+| `{ new: 'draft-1', name: 'Corner Café' }` | The same, with a token of the caller's that identifies the new member before it is saved (see [When the caller needs the member a forge creates](#when-the-caller-needs-the-member-a-forge-creates)) |
 | a saved `Tenant` | Tenant 7 is a member; the source says nothing about its attributes |
 | an unsaved `Tenant` | Raises. LaForge cannot tell which of its attributes came from the source, so pass a hash |
 
@@ -772,11 +773,30 @@ An `id` must be one of the owner's current members. LaForge does not move a reco
 
 #### When a new member is created twice
 
-Until a forge creates a new member, its source's member list names it by a placeholder. Once the owner is saved, the placeholder is replaced by the new row's `id`. Forging again before saving reuses the member already built, rather than building another. Recording twice before a forge creates the member once, since a source's member list replaces its previous one. A new member is created twice only when:
+Until a forge creates a new member, its source's member list names it by a placeholder key, `{ 'new' => token }`. A token is a string that stands in for an `id` while a member has no row, as in a new member's placeholder key and in a removed member's tombstone key. Once the owner is saved, the placeholder key is replaced by the new row's `id`. Forging again before saving reuses the member already built, rather than building another. Recording twice before a forge creates the member once, since a source's member list replaces its previous one. A new member is created twice only when:
 
 - an importer doesn't find a member it listed before, so it lists it as new again. A complete list then also removes the old row, along with everything else recorded on it;
 - two sources each list the same new member before either has been forged. LaForge cannot know they mean the same record, so the second source should find the member the first created;
-- a source adds the same new member twice in single-member edits before a forge.
+- a source adds the same new member twice in single-member edits before a forge, without a token of its own (see below).
+
+#### When the caller needs the member a forge creates
+
+A form that adds a member often needs the record a forge creates for it, either to assign attributes no source provides before the save, or to tell its client which `id` replaced the temporary one the client used. Give the new member a token of your own as `new:`, which identifies it and lets you reference it before it is saved, then ask for the member with `new_member`. Without one, LaForge makes a random token.
+
+  ```ruby
+    place.record_data_entries({ tenants: { include: [{ new: 'draft-1', name: 'Harbor Books' }] } }, map_editor, mode: :edit)
+    place.forge
+    harbor_books = place.new_member(:tenants, 'draft-1') # the unsaved tenant the forge built, or nil before a forge builds one
+    harbor_books.status = 'closed'
+    place.save!
+    place.new_member(:tenants, 'draft-1').id             # the same tenant, now saved
+  ```
+
+- A token is a non-blank String that identifies one new member among the association's new members on the owner, such as `SecureRandom.uuid` or a temporary id the client made unique. LaForge raises when another source's member list already names a new member by it. It cannot tell when one source uses the same token for two different members, so a row's position in a form is a poor one.
+- Recording the same token again before the save names the same new member, and creates no second one. A complete or partial list replaces what the earlier list said about it, and an edit adds to it, as for a member named by `id`.
+- `new_member` returns the same record after another forge, and after a save that fails validation, when nothing was saved and the token still identifies the member.
+- Once the owner is saved, its member lists name the member by `id`, and `new_member` on that owner goes on returning the saved record, so it works after `forge!` too. It returns nil once the owner is reloaded, or once a recording gives the same token to another new member.
+- A new member that the tombstone matcher matches to a tombstone (see [Removed members that sources list again](#removed-members-that-sources-list-again)) is found by its token when a forge builds it, and `new_member` returns nil while the tombstone keeps it out.
 
 ### Partial lists
 
@@ -945,7 +965,7 @@ Each source's member list for an association is one data entry on the owner, nam
 - A complete list is stored as an array of member keys, such as `[{ 'id' => 7 }, { 'id' => 9 }]`, or as `{ 'include' => [...], 'withdrawn' => [...] }` while it remembers members it used to include.
 - A partial list is stored as `{ 'partial' => true, 'include' => [...], 'exclude' => [...], 'withdrawn' => [...] }`, with `'tombstones' => [...]` when it has excluded members whose rows are gone; they are excluded by `{ 'tombstone' => '<token>' }`. `withdrawn` holds the keys of members the source used to include, until the next forge has acted on them; see below.
 - What a source said about a member besides its key waits under `'pending'`, with when it was said, until a forge records it on the member. A complete list with anything pending is stored as `{ 'include' => [...], 'pending' => [...] }`.
-- A new member is keyed `{ 'new' => '<placeholder>' }` until the forge that creates it is saved.
+- A new member is keyed `{ 'new' => '<token>' }` until the forge that creates it is saved. The token is the one given as `new:`, or a random one.
 
 Everything else is ordinary data entries on the members themselves. A forge of the owner then:
 
@@ -967,6 +987,7 @@ The withdrawn keys exist because LaForge leaves alone rows that no member list h
   ```ruby
     place.source_values(:tenants)        # => { business_directory => [{ 'id' => 7, 'name' => 'Corner Café' }], ... }, including what member lists hold for members not yet recorded on
     Place.source_values(:tenants, records: places)                  # the same for many records, in a constant number of queries
+    place.new_member(:tenants, 'draft-1') # => the tenant a forge of this place built for the new member with the token 'draft-1', or nil
     place.member_sources(:tenants, id: 7)
     # => { membership: map_editor, listed_by: [map_editor, business_directory], excluded_by: [],
     #      attributes: { 'name' => business_directory } }
