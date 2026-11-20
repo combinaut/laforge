@@ -901,6 +901,21 @@ The matcher receives an unsaved member built from what a source provided, and an
 
 Excluding a member keyed by primary key without a `tombstone_matcher` raises `ArgumentError` when the exclusion is recorded, naming what to declare, rather than letting the member come back at the next import.
 
+#### When the source that excluded a member adds it again
+
+A source's later recording replaces its earlier one, so a source that includes a new member the tombstone matcher matches to its own tombstone forgets that tombstone, as a `forget:` edit would, and the next forge builds the member as a new one.
+
+  ```ruby
+    place.record_data_entries({ tenants: { exclude: [corner_cafe] } }, map_editor, mode: :edit)
+    place.forge!                        # Corner Café is destroyed, and the map editor's list keeps its tombstone
+
+    place.record_data_entries({ tenants: { include: [{ name: 'Corner Café' }] } }, map_editor, mode: :edit)
+    place.tombstones(:tenants)          # => [], forgotten when the inclusion was recorded
+    place.forge!                        # a new Corner Café is created
+  ```
+
+The same happens for a new member in a partial list. Only the source's own tombstone is forgotten. A tombstone another source keeps for the member still decides it at the forge, so the member stays out while that source outranks the one adding it.
+
 ### How membership is decided
 
 Membership is decided member by member. The highest precedence member list that covers a member decides it. A complete list covers every member, and a partial list only the members it names. So a complete list from a higher precedence source excludes members that lower partial lists add, and a source that only adds members needs to rank above the complete lists it adds to.
