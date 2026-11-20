@@ -1,6 +1,6 @@
 module LaForge
   # `WriterError` is raised once a forge has assigned every forged value, when writers of the record raised for the
-  # values they were assigned. `forge` and `forge!` raise it.
+  # values they were assigned. `forge`, `forge!` and `forge_diff(through_setters: true)` raise it.
   #
   # - `record`: the record forged
   # - `errors`: { attribute name => what its writer raised }, in the order the forge assigned them, such as an

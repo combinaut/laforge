@@ -89,6 +89,21 @@ describe 'Writers that raise during a forge' do
     expect(landmark.reload.count).to be_nil
   end
 
+  it 'raises the same error from `forge_diff(through_setters: true)`, and leaves the record as it was' do
+    record.record_data_entries({ count: -1, active: false }, cadastre)
+    record.record_data_entries({ name: '' }, business_directory)
+
+    error = raised { record.forge_diff(through_setters: true) }
+
+    expect(error.message).to start_with("2 writers of ActiveRecordMock #{record.id} raised while a forge assigned the forged values: ")
+    expect(error.errors.transform_values(&:message)).to eq('name' => 'name must not be blank', 'count' => 'count must not be negative')
+    expect(error.record).to be(record)
+    expect(record.attributes).to include('name' => 'Original', 'active' => true, 'count' => 1)
+    expect(record).not_to be_changed
+    expect(ActiveRecord::Base.connection.open_transactions).to eq(0)
+    expect(record.forge_diff).to eq('name' => ['Original', ''], 'count' => [1, -1], 'active' => [true, false]) # the raw comparison assigns nothing
+  end
+
   it 'names the source that decided the group for an attribute that source leaves out' do
     grouped = Class.new(model) { laforged attribute_groups: { occupancy: %i[name count] } }
     listed = grouped.create!(name: 'Original', count: 1)
