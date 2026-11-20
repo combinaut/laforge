@@ -17,9 +17,12 @@ module LaForge
     # Assign attributes and tracked associations based on the data entries. The record's ruleset is selected once,
     # before any attribute is assigned, so attributes and associations rank alike even when forging changes what the
     # selector reads. Associations are forged before the attributes are assigned, so each member selects its ruleset
-    # from the record as the forge found it, as `forge_diff` does.
+    # from the record as the forge found it, as `forge_diff` does. Every record ranked during the forge, the members
+    # included, goes on ranking by the ruleset it first ranked by until the forge ends (see CurrentRulesets), unless
+    # the forge runs inside another, whose rulesets it then shares.
     def forge(attributes: nil, sources: nil)
-      with_one_ruleset do
+      LaForge.with_current_rulesets do
+        resolver # selects the record's ruleset now, unless an enclosing forge has
         forged = forge_attributes(attributes: attributes, sources: sources)
         forge_associations(associations: attributes)
         record.attributes = forged
@@ -50,10 +53,13 @@ module LaForge
       settings.each { |rule, (attributes, remade, marked)| rule.assign_attributes(attributes); rule.remade_state = remade; LaForge::ActiveRecord.set_marked_for_destruction(rule, marked) }
     end
 
-    # Returns a hash of the attribute changes between the saved record and the data entries, selecting the ruleset once
-    # as `forge` does
+    # Returns a hash of the attribute changes between the saved record and the data entries, selecting each record's
+    # ruleset once as `forge` does
     def forge_diff(**forge_options)
-      with_one_ruleset { diff_in_ruleset(**forge_options) }
+      LaForge.with_current_rulesets do
+        resolver # selects the record's ruleset now, unless an enclosing forge or `forge_diff` has
+        diff_in_ruleset(**forge_options)
+      end
     end
 
     # Returns a hash of the attributes generated from the record's the data entries

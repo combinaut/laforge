@@ -194,6 +194,102 @@ describe 'Rulesets' do
     end
   end
 
+  # A tenant's unit selects its ruleset here. In north the cadastre's name outranks the map editor's, which the base
+  # rules rank first.
+  describe 'ranking each record by one ruleset for the duration of a forge' do
+    before do
+      LaForge.ruleset_selector = ->(record) { record.try(:unit) }
+      Tenant.update_precedence_order([cadastre], attribute: :name, ruleset: 'north')
+    end
+
+    # A new tenant in `unit` that both sources name
+    def unsaved_tenant(unit)
+      Tenant.new(unit: unit).tap do |tenant|
+        tenant.record_data_entries({ name: 'From Cadastre' }, cadastre)
+        tenant.record_data_entries({ name: 'From Map Editor' }, map_editor)
+      end
+    end
+
+    it "ranks a member by the ruleset its forge selected for the rest of its owner's forge, when that forge changes what its selector reads", capability: 'C237' do
+      north_place.record_data_entries({ tenants: [{ name: 'Corner Café', unit: 'north' }] }, map_editor)
+      north_place.forge!
+      tenant = north_place.tenants.sole
+      north_place.record_data_entries({ tenants: [{ id: tenant.id, name: 'From Cadastre' }] }, cadastre)
+      north_place.record_data_entries({ tenants: [{ id: tenant.id, name: 'From Map Editor', unit: 'south' }], name: 'Harbor Hall' }, map_editor) # moves the tenant to south
+      north_place.save!
+      inspected = []
+      north_place.define_singleton_method(:name=) do |name| # assigned after the tenant is forged
+        super(name)
+        inspected << member_sources(:tenants, id: tenant.id)[:attributes]['name']
+      end
+
+      north_place.forge!
+
+      expect(north_place.tenants.sole).to have_attributes(unit: 'south', name: 'From Cadastre') # forged by north
+      expect(inspected).to eq([cadastre]) # as the forge ranked it, not by south
+      expect(north_place.member_sources(:tenants, id: tenant.id)[:attributes]['name']).to eq(map_editor) # selected again after the forge
+    end
+
+    it 'keeps the ruleset of a new record, which has no id, apart from that of another new record', capability: 'C238' do
+      tenant = unsaved_tenant('north')
+      other = unsaved_tenant(nil)
+
+      LaForge.with_current_rulesets do
+        expect([tenant, other].map { |record| record.resolved_source(:name) }).to eq([cadastre, map_editor])
+        tenant.unit = nil
+        other.unit = 'north'
+        expect([tenant, other].map { |record| record.resolved_source(:name) }).to eq([cadastre, map_editor])
+        expect(tenant.precedence_order(:name).first).to include(source: cadastre, ruleset: 'north')
+      end
+    end
+
+    it 'keeps a ruleset selected in a nested block until the outermost block ends', capability: 'C239' do
+      tenant = unsaved_tenant('north')
+
+      LaForge.with_current_rulesets do
+        LaForge.with_current_rulesets { expect(tenant.resolved_source(:name)).to eq(cadastre) }
+        tenant.unit = 'south'
+        expect(tenant.resolved_source(:name)).to eq(cadastre)
+        LaForge.with_current_rulesets { expect(tenant.forge_diff).to eq('name' => [nil, 'From Cadastre']) } # a forge_diff inside joins the block
+        expect(LaForge::CurrentRulesets).to be_active
+      end
+      expect(LaForge::CurrentRulesets).not_to be_active
+    end
+
+    it 'selects the ruleset again at each call outside a block', capability: 'C240' do
+      tenant = unsaved_tenant('north')
+      expect(tenant.resolved_source(:name)).to eq(cadastre)
+
+      tenant.unit = 'south'
+      expect(tenant.resolved_source(:name)).to eq(map_editor)
+      expect(tenant.forge_diff).to eq('name' => [nil, 'From Map Editor'])
+    end
+
+    it 'keeps the rulesets of one thread apart from those of another', capability: 'C241' do
+      tenant = unsaved_tenant('north')
+
+      LaForge.with_current_rulesets do
+        held = tenant.laforge.resolver
+        in_thread = Thread.new do
+          [LaForge::CurrentRulesets.active?, LaForge.with_current_rulesets { LaForge::CurrentRulesets.fetch(tenant) { :its_own } }, LaForge::CurrentRulesets.active?]
+        end.value
+
+        expect(in_thread).to eq([false, :its_own, false])
+        expect(LaForge::CurrentRulesets.fetch(tenant) { :another }).to be(held)
+      end
+    end
+
+    it 'selects again once the block has ended, also when it raised', capability: 'C242' do
+      tenant = unsaved_tenant('north')
+      select_then_raise = -> { LaForge.with_current_rulesets { tenant.resolved_source(:name); raise ArgumentError, 'stop' } }
+
+      expect(&select_then_raise).to raise_error(ArgumentError, 'stop')
+      expect(LaForge::CurrentRulesets).not_to be_active
+      tenant.unit = 'south'
+      expect(tenant.resolved_source(:name)).to eq(map_editor)
+    end
+  end
+
   describe 'forking on first write' do
     before do
       record_names(north_place)

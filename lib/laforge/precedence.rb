@@ -52,9 +52,10 @@ module LaForge
     # precedence is that rule's, or nil with a nil level. The ruleset is the one ranked by, nil for the base rules, at
     # the :record level, or with a nil level.
     def precedence_order(attribute)
-      # Not the last forge's resolver, so the ruleset and rules as they are now count
-      resolver = PrecedenceRule::Resolver.new(record.class, ruleset: LaForge.ruleset_for(record))
-      DataSource.precedence_order(attribute, resolver: resolver, record: record)
+      # Outside a forge, a resolver made now and not kept: the ruleset and rules as they are now count, and
+      # `DataEntry#effective_precedence` and `DataEntry.in_precedence_order` go on ranking by the resolver they had
+      current = CurrentRulesets.active? ? resolver : new_resolver
+      DataSource.precedence_order(attribute, resolver: current, record: record)
     end
 
     # Returns `{ attribute_name => { source => precedence } }` for this record's own rules, unsaved ones included and
@@ -134,22 +135,6 @@ module LaForge
     end
 
     # @api private
-    # Yields with the record's ruleset selected once, now, and held while the block runs. Inside an outer call, yields
-    # with the ruleset the outer call holds.
-    def with_one_ruleset
-      return yield if @ruleset_held
-
-      begin
-        @resolver = nil
-        resolver
-        @ruleset_held = true
-        yield
-      ensure
-        @ruleset_held = false
-      end
-    end
-
-    # @api private
     # Returns the effective precedence of `data_entry` on the record
     def precedence_of(data_entry)
       resolver.precedence(record, data_entry.attribute_name, data_entry.source_id)
@@ -169,17 +154,26 @@ module LaForge
     end
 
     # @api private
-    # Returns the precedence resolver the record ranks by, made with the ruleset its selector selects when the resolver
-    # is first needed after `reset_resolver_unless_held` or a reload forgot it
+    # Returns the precedence resolver the record ranks by. Inside a forge it is the one made when the record was first
+    # ranked there (see `LaForge.with_current_rulesets`). Outside, it is made with the ruleset the record's selector
+    # selects when the resolver is first needed after `reset_resolver_unless_held` or a reload forgot it.
     def resolver
-      @resolver ||= PrecedenceRule::Resolver.new(record.class, ruleset: LaForge.ruleset_for(record))
+      return @resolver ||= new_resolver unless CurrentRulesets.active?
+
+      @resolver = CurrentRulesets.fetch(record) { new_resolver }
     end
 
     # @api private
-    # Forgets the resolver, so the next ranking selects the ruleset and reads the model-wide and global rules again,
-    # unless `with_one_ruleset` holds the ruleset
+    # Forgets the resolver, so the next ranking selects the ruleset and reads the model-wide and global rules again.
+    # Does nothing inside a forge under way, which holds each record's resolver (see `LaForge.with_current_rulesets`).
     def reset_resolver_unless_held
-      @resolver = nil unless @ruleset_held
+      @resolver = nil unless CurrentRulesets.active?
+    end
+
+    # @api private
+    # Returns a resolver made with the ruleset the record's selector selects now
+    def new_resolver
+      PrecedenceRule::Resolver.new(record.class, ruleset: LaForge.ruleset_for(record))
     end
 
     class_methods do
