@@ -1334,6 +1334,67 @@ describe 'Association tracking capabilities' do
         .to raise_error(ArgumentError, /Place#tenants: the source has a complete list, which covers every member, so forgetting tombstone "#{tombstone.to_h['tombstone']}" would exclude it/)
     end
 
+    it 'forgets its own tombstone when a source includes a new member the tombstone matcher matches to it, and builds the member', capability: 'C233' do
+      exclude_corner_cafe
+      place.reload.record_data_entries({ tenants: { include: [{ new: 'draft-1', name: 'Corner Café', unit: '1A' }] } }, top, mode: :edit)
+
+      expect(place.tombstones(:tenants)).to be_empty # forgotten when the inclusion is recorded, as `forget:` forgets it
+      expect(place.forge_diff['tenants']).to include(added: [{ 'name' => 'Corner Café', 'unit' => '1A' }], removed: [])
+      place.forge
+      corner_cafe = place.new_member(:tenants, 'draft-1')
+      expect(corner_cafe).to be_new_record
+      place.save!
+
+      expect(place.reload.tenants.pluck(:id, :name, :unit)).to contain_exactly([corner_cafe.id, 'Corner Café', '1A'], [Tenant.find_by!(name: 'Harbor Books').id, 'Harbor Books', nil])
+      expect(place.data_entries.tombstones(:tenants)).to be_empty
+      expect(place.member_sources(:tenants, id: corner_cafe.id)).to include(membership: top, listed_by: [top], excluded_by: [])
+      place.forge! # the member stays through later forges
+      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Corner Café', 'Harbor Books')
+    end
+
+    it 'forgets its own tombstone for a new member a partial list includes, and keeps its other tombstones', capability: 'C234' do
+      exclude_corner_cafe
+      place.reload.record_data_entries({ tenants: { exclude: [{ id: Tenant.find_by!(name: 'Harbor Books').id }] } }, top, mode: :edit)
+      place.forge!
+      expect(Tenant.count).to eq(0)
+
+      place.reload.record_data_entries({ tenants: [{ new: 'draft-1', name: 'Corner Café' }] }, top, mode: :partial)
+      expect(place.tombstones(:tenants).map { |tombstone| tombstone.attributes['name'] }).to eq(['Harbor Books'])
+      expect(place.forge_diff['tenants']).to include(added: [{ 'name' => 'Corner Café' }])
+      place.forge!
+
+      expect(place.new_member(:tenants, 'draft-1')).to eq(Tenant.sole)
+      expect(Tenant.sole.name).to eq('Corner Café')
+      expect(place.reload.data_entries.tombstones(:tenants).map { |tombstone| tombstone.attributes['name'] }).to eq(['Harbor Books'])
+    end
+
+    it "keeps another source's tombstone, which keeps the new member out while that source outranks the one including it", capability: 'C235' do
+      exclude_corner_cafe # top's tombstone
+      place.reload.record_data_entries({ tenants: { include: [{ new: 'draft-1', name: 'Corner Café' }] } }, high, mode: :edit)
+
+      expect(place.tombstones(:tenants).map(&:source)).to eq([top])
+      expect(place.forge_diff['tenants']).to include(added: [])
+      place.forge!
+      expect(place.new_member(:tenants, 'draft-1')).to be_nil
+      expect(place.reload.tenants.pluck(:name)).to eq(['Harbor Books'])
+      expect(place.data_entries.tombstones(:tenants).map(&:source)).to eq([top])
+    end
+
+    it "builds a new member matched to another source's tombstone when the source including it outranks that source", capability: 'C236' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
+      place.forge!
+      place.record_data_entries({ tenants: { exclude: [{ id: Tenant.sole.id }] } }, high, mode: :edit) # high's tombstone
+      place.forge!
+
+      place.reload.record_data_entries({ tenants: { include: [{ new: 'draft-1', name: 'Corner Café' }] } }, top, mode: :edit)
+      expect(place.tombstones(:tenants).map(&:source)).to eq([high]) # not top's to forget
+      expect(place.forge_diff['tenants']).to include(added: [{ 'name' => 'Corner Café' }])
+      place.forge!
+
+      expect(place.new_member(:tenants, 'draft-1')).to eq(Tenant.sole)
+      expect(place.reload.data_entries.tombstones(:tenants)).to be_empty # the member has a row again
+    end
+
     it 'raises, saying what to declare, for an exclusion that could not outlast its row', capability: 'C95' do
       stub_const('UnmatchedPlace', Class.new(ActiveRecord::Base))
       UnmatchedPlace.table_name = 'places'
