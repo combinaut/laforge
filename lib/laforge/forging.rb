@@ -18,11 +18,13 @@ module LaForge
     # before any attribute is assigned, so attributes and associations rank alike even when forging changes what the
     # selector reads. Associations are forged before the attributes are assigned, so each member selects its ruleset
     # from the record as the forge found it, as `forge_diff` does.
+    # A writer that raises a StandardError does not stop the forge. The remaining attributes are assigned, and the forge
+    # then raises one `WriterError` for every writer that raised, so `forge!` saves nothing.
     def forge(attributes: nil, sources: nil)
       with_one_ruleset do
-        forged = forge_attributes(attributes: attributes, sources: sources)
+        forged = forged_entries(attributes: attributes, sources: sources)
         forge_associations(associations: attributes)
-        record.attributes = forged
+        assign_forged(record, forged)
       end
     end
 
@@ -50,10 +52,24 @@ module LaForge
       settings.each { |rule, (attributes, remade, marked)| rule.assign_attributes(attributes); rule.remade_state = remade; LaForge::ActiveRecord.set_marked_for_destruction(rule, marked) }
     end
 
-    # Returns a hash of the attribute changes between the saved record and the data entries, selecting the ruleset once
-    # as `forge` does
-    def forge_diff(**forge_options)
-      with_one_ruleset { diff_in_ruleset(**forge_options) }
+    # Returns { attribute name => [the record's value, the forged value] } for each attribute whose forged value
+    # differs from what the record reads, and each tracked association's membership diff (see `TrackedAssociation#diff`)
+    # by its name. Takes the options `forge_attributes` takes, and selects the ruleset once as `forge` does.
+    #
+    # The forged value is compared as it was recorded, so an attribute whose writer changes what it is given is reported
+    # although a forge would leave it as it is, such as a date recorded as text, or a name the writer strips.
+    #
+    # `through_setters: true` compares what the record would read once a forge had assigned the forged values. It
+    # assigns every forged value, in the order a forge does, to an unsaved copy of the record, a `dup` marked read-only,
+    # and reads each attribute back from the copy. It reports the attributes that read differently from the record,
+    # with the value the copy reads. The copy is never validated or saved. The assignment runs inside a transaction that
+    # is rolled back, a savepoint inside an open one, so what a writer writes to the database is undone. Nothing else a
+    # writer does is undone. A writer finds no id on the copy, and callbacks that run on save do not run, so a value one
+    # of them would change is still reported. Raises `WriterError` for the writers that raised, as `forge` does, among
+    # them a writer that saves or destroys the copy, whose error is an `ActiveRecord::ReadOnlyRecord` saying so.
+    # Membership diffs are returned as without the option, and no association is assigned to the copy.
+    def forge_diff(through_setters: false, **forge_options)
+      with_one_ruleset { diff_in_ruleset(through_setters: through_setters, **forge_options) }
     end
 
     # Returns a hash of the attributes generated from the record's the data entries
@@ -69,26 +85,7 @@ module LaForge
     # A group's attributes all come from one source, so an attribute that source has no entry for is nil rather than
     # falling back to another source's value.
     def forge_attributes(attributes: nil, sources: nil, except_sources: nil)
-      # Each forge selects the ruleset and reads the model-wide and global rules again (see PrecedenceCache)
-      reset_resolver_unless_held
-      forged_attrs = {}
-      attributes = self.class.with_groups(attributes) unless attributes.nil?
-      data_entries = forging_entries(attributes: attributes, sources: sources, except_sources: except_sources).reject { |data_entry| data_entry.marked_for_destruction? || associations.key?(data_entry.attribute_name) }
-      resolved = resolve_entries(data_entries)
-
-      # The hash's key order is the order `forge` calls the setters, which matters when one setter
-      # resets another attribute. It is by the rank of each attribute's highest-ranked entry, highest first,
-      # and a group's attributes come together where the first of them would. Attributes whose entries
-      # rank equally come in no defined order.
-      assignment_order = self.class.with_groups(data_entries.sort_by { |data_entry| rank_of(data_entry) }.reverse.map(&:attribute_name).uniq)
-
-      assignment_order.each do |attribute_name|
-        next unless record.respond_to?("#{attribute_name}=")
-
-        forged_attrs[attribute_name] = resolved.fetch(attribute_name).last&.value
-      end
-
-      return forged_attrs
+      forged_entries(attributes: attributes, sources: sources, except_sources: except_sources).transform_values { |_, entry| entry&.value }
     end
 
     # Returns the entry `forge` takes for the attribute, or nil (see `resolved_entries`)
@@ -179,10 +176,52 @@ module LaForge
 
     private
 
+    # Returns { attribute name => [deciding entry, resolved entry] } for the attributes `forge_attributes` returns, with
+    # its options and in its order (see `resolve_entries`)
+    def forged_entries(attributes: nil, sources: nil, except_sources: nil)
+      # Each forge selects the ruleset and reads the model-wide and global rules again (see PrecedenceCache)
+      reset_resolver_unless_held
+      attributes = self.class.with_groups(attributes) unless attributes.nil?
+      data_entries = forging_entries(attributes: attributes, sources: sources, except_sources: except_sources).reject { |data_entry| data_entry.marked_for_destruction? || associations.key?(data_entry.attribute_name) }
+      resolved = resolve_entries(data_entries)
+
+      # The hash's key order is the order `forge` calls the setters, which matters when one setter
+      # resets another attribute. It is by the rank of each attribute's highest-ranked entry, highest first,
+      # and a group's attributes come together where the first of them would. Attributes whose entries
+      # rank equally come in no defined order.
+      assignment_order = self.class.with_groups(data_entries.sort_by { |data_entry| rank_of(data_entry) }.reverse.map(&:attribute_name).uniq)
+
+      assignment_order.select { |attribute_name| record.respond_to?("#{attribute_name}=") }.index_with { |attribute_name| resolved.fetch(attribute_name) }
+    end
+
+    # Assigns each resolved entry's value among `forged`, as `forged_entries` returns them, to `target`, the record or
+    # the read-only copy `read_through_setters` made of it, in order. A writer that raises a StandardError does not stop
+    # the rest. Raises one `WriterError` afterwards for every writer that raised, each with its value and the source of
+    # its resolved entry, or of its group's deciding entry where that source leaves the attribute out. A writer that
+    # saves or destroys the copy is among them, with an error saying so.
+    def assign_forged(target, forged)
+      failures = forged.each_with_object({}) do |(attribute_name, (deciding, resolved)), failed|
+        target.public_send("#{attribute_name}=", resolved&.value)
+      rescue StandardError => error
+        error = saved_copy_error(attribute_name) if error.is_a?(::ActiveRecord::ReadOnlyRecord) && !target.equal?(record)
+        failed[attribute_name] = { error: error, value: resolved&.value, source: (resolved || deciding).source }
+      end
+      raise WriterError.new(record, failures) if failures.any?
+    end
+
+    # Returns the error for a writer that saved or destroyed the read-only copy `read_through_setters` assigns to
+    def saved_copy_error(attribute_name)
+      ::ActiveRecord::ReadOnlyRecord.new(
+        "#{record.class.name}##{attribute_name}= saved or destroyed the record while forge_diff(through_setters: true) assigned it to a read-only copy. " \
+        "Compare #{record.class.name}##{attribute_name} with forge_diff, or keep the writer from saving, as by leaving the save to the forge's caller"
+      )
+    end
+
     # Returns `forge_diff` within the ruleset already selected
-    def diff_in_ruleset(**forge_options)
+    def diff_in_ruleset(through_setters: false, **forge_options)
       diff = {}
-      forge_attrs = forge_attributes(**forge_options)
+      forged = forged_entries(**forge_options)
+      forge_attrs = through_setters ? read_through_setters(forged) : forged.transform_values { |_, entry| entry&.value }
       record_attrs = record.slice(*forge_attrs.keys)
 
       record_attrs.each do |key, value|
@@ -196,6 +235,23 @@ module LaForge
       end
 
       return diff
+    end
+
+    # Returns { attribute name => value } for the attributes of `forged`, as `forged_entries` returns them, each as an
+    # unsaved read-only copy of the record reads it once `assign_forged` has assigned them to the copy. The transaction
+    # is rolled back, so what the writers and readers wrote to the database is undone, also when a writer raises.
+    def read_through_setters(forged)
+      return {} if forged.empty?
+
+      copy = record.dup
+      copy.readonly!
+      read = nil
+      record.class.transaction(requires_new: true) do
+        assign_forged(copy, forged)
+        read = forged.keys.index_with { |attribute_name| copy.public_send(attribute_name) }
+        raise ::ActiveRecord::Rollback
+      end
+      read
     end
 
     # Whether the entry has expired, or, for an attribute of a group, whether any of its source's entries for the group

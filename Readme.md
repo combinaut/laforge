@@ -321,6 +321,55 @@ To see what an import would change before saving, use `forge_attributes` (the va
     place.forge_diff # => { 'land_use' => ['Commercial', 'Mixed Use'] }
   ```
 
+`forge_diff` compares each forged value, as it was recorded, with what the record reads.
+
+#### When a writer changes what it is given
+
+A model's writers often change the value they are assigned. A date column casts text to a date, a boolean column casts `'1'` to `true`, and a writer of the application's own may strip spaces, shorten a postcode or turn nil into a default. `forge_diff` then reports the attribute after every forge, although the next forge would leave it as it is, because the recorded value never equals what the record reads.
+
+`through_setters: true` reports what the next forge would change. It takes the same options.
+
+  ```ruby
+    place.record_data_entries({ name: ' Harbor Building ', surveyed_on: '2024-05-01' }, cadastre)
+    place.forge!
+
+    place.forge_diff                        # => { 'name' => ['Harbor Building', ' Harbor Building '], 'surveyed_on' => [Wed, 01 May 2024, '2024-05-01'] }
+    place.forge_diff(through_setters: true) # => {}
+  ```
+
+It assigns every forged value, in the order a forge assigns them, to an unsaved copy of the record, a `dup` marked read-only, and reads each attribute back from the copy. An attribute is reported when the copy reads differently from the record, with the value the copy reads. The copy is never validated or saved, and the record, its entries and its rules are left as they are. The assignment runs inside a transaction that is rolled back, which is a savepoint when a transaction is already open, so rows a writer creates, updates or destroys are restored.
+
+A tracked association's membership is reported as it is without the option, and no association is assigned to the copy.
+
+The writers do run, so the option is only as safe as they are:
+
+- **Only the database is rolled back.** A job a writer enqueues outside the database, an HTTP call, an in-memory cache and class-level state are not undone. Neither is a write to another database.
+- **Callbacks that run on save do not run.** A value that a `before_validation` or `before_save` callback would change is reported as the writer left it.
+- **The copy has no id.** A writer that reads the record's id, or builds through an association that needs a saved owner, finds none.
+- **A writer that saves or destroys the record raises.** The copy is read-only, so that writer's error is an `ActiveRecord::ReadOnlyRecord` saying so, raised with the others once the transaction is rolled back (see [When a writer refuses a value](#when-a-writer-refuses-a-value)).
+
+#### When a writer refuses a value
+
+A writer can raise for a value it does not take, as an enum does for a value outside it. A forge does not stop there. It assigns the remaining attributes, then raises one `LaForge::WriterError` naming every writer that raised, with the value it was assigned and the source the value came from.
+
+  ```ruby
+    place.record_data_entries({ land_use: 'Orbital', floor_area: 420 }, cadastre)
+    place.forge!
+    # => LaForge::WriterError: A writer of Place 7 raised while a forge assigned the forged values:
+    #    Place#land_use= given "Orbital" from Cadastre raised ArgumentError ('Orbital' is not a valid land_use). ...
+  ```
+
+`forge!` saves nothing when it raises, and `forge_diff(through_setters: true)` raises the same error once its transaction is rolled back. The error gives each attribute's details, so an application can turn them into validation errors.
+
+  ```ruby
+    rescue LaForge::WriterError => error
+      error.errors  # => { 'land_use' => #<ArgumentError: 'Orbital' is not a valid land_use> }
+      error.values  # => { 'land_use' => 'Orbital' }
+      error.sources # => { 'land_use' => cadastre }
+  ```
+
+Only a `StandardError` is collected. After `forge` raises, the record holds the values the other writers took, as it does after any forge that is not saved. A member's writer that raises while its owner is forged raises for the member, and stops the owner's forge.
+
 Recorded attributes do not have to be columns. Any attribute with a setter can be recorded and forged, such as a `phone_number=` that maintains a phone number association. Values are stored as JSON, so record strings, numbers, booleans, dates, `nil`, or arrays and hashes of those; anything else, such as an object, raises `LaForge::InvalidValue` rather than coming back as something different.
 
 ### Editor overrides
