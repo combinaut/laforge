@@ -134,9 +134,11 @@ module LaForge
     end
 
     # @api private
-    # Yields with the record's ruleset selected once, now, and held while the block runs. Inside an outer call, yields
-    # with the ruleset the outer call holds.
-    def with_one_ruleset
+    # Yields with the record's current ruleset, which is selected once, now, and held while the block runs, so everything
+    # the block ranks on the record uses that one ruleset. Inside an outer call on the record, yields with the ruleset
+    # the outer call holds. Only this record's ruleset is held. Each member of a tracked association holds its own
+    # during its own forge.
+    def with_current_ruleset
       return yield if @ruleset_held
 
       begin
@@ -177,7 +179,7 @@ module LaForge
 
     # @api private
     # Forgets the resolver, so the next ranking selects the ruleset and reads the model-wide and global rules again,
-    # unless `with_one_ruleset` holds the ruleset
+    # unless `with_current_ruleset` holds the ruleset
     def reset_resolver_unless_held
       @resolver = nil unless @ruleset_held
     end
