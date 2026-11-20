@@ -9,6 +9,7 @@ require 'spec_helper'
 # - association names as keys in `record_data_entries`
 # - `source_values`
 # - `member_sources`
+# - `new_member`
 #
 # A forge removes a row only where assigning the resolved collection to the association would. A comment starting
 # `noted:` marks an example's line that checks a removed row. The rows removed are:
@@ -991,6 +992,160 @@ describe 'Association tracking capabilities' do
     end
   end
 
+  describe 'placeholder keys given by the caller' do
+    def member_list_of(source) = place.data_entries.with_source(source).with_attribute(:tenants).sole.value
+
+    it "names a new member by the placeholder key given as 'new', and generates one only when none is given", capability: 'C220' do
+      place.record_data_entries({ tenants: [{ new: 'draft-1', name: 'Corner Café' }, { name: 'Harbor Books' }] }, low)
+      place.save!
+
+      given, generated = member_list_of(low)['include']
+      expect(given).to eq('new' => 'draft-1')
+      expect(generated).to match('new' => /\A\h{16}\z/)
+      expect(place.forge_diff['tenants']).to include(added: [{ 'name' => 'Corner Café' }, { 'name' => 'Harbor Books' }])
+    end
+
+    it 'returns the member a forge built for a placeholder key, which has its id once the owner is saved', capability: 'C221' do
+      place.record_data_entries({ tenants: { include: [{ new: 'draft-1', name: 'Corner Café' }] } }, low, mode: :edit)
+      expect(place.new_member(:tenants, 'draft-1')).to be_nil # no forge has built it yet
+
+      place.forge
+      corner_cafe = place.new_member(:tenants, 'draft-1')
+      expect(corner_cafe).to be(place.tenants.target.sole).and be_new_record
+      expect(place.new_member(:tenants, 'draft-2')).to be_nil
+
+      corner_cafe.status = 'closed' # an attribute no source provides, assigned before the save
+      place.save!
+      expect(place.new_member(:tenants, 'draft-1')).to be(corner_cafe)
+      expect(Tenant.pluck(:id, :name, :status)).to eq([[corner_cafe.id, 'Corner Café', 'closed']])
+      expect(place.reload.new_member(:tenants, 'draft-1')).to be_nil # a reloaded owner has no forge to ask
+    end
+
+    it 'returns the same member after a second forge before the save', capability: 'C222' do
+      place.record_data_entries({ tenants: [{ new: 'draft-1', name: 'Corner Café' }] }, low)
+      place.forge
+      corner_cafe = place.new_member(:tenants, 'draft-1')
+      place.forge
+
+      expect(place.new_member(:tenants, 'draft-1')).to be(corner_cafe)
+      place.save!
+      expect(Tenant.pluck(:id)).to eq([corner_cafe.id])
+    end
+
+    it 'returns the saved member after `forge!`, so a caller maps each placeholder key to an id', capability: 'C223' do
+      place.record_data_entries({ tenants: { include: [{ new: 'draft-1', name: 'Corner Café' }, { new: 'draft-2', name: 'Harbor Books' }] } }, low, mode: :edit)
+      place.forge!
+
+      ids = %w[draft-1 draft-2].index_with { |token| place.new_member(:tenants, token).id }
+      expect(ids).to eq('draft-1' => Tenant.find_by!(name: 'Corner Café').id, 'draft-2' => Tenant.find_by!(name: 'Harbor Books').id)
+      expect(member_list_of(low)['include']).to eq(ids.values.map { |id| { 'id' => id } })
+    end
+
+    it 'still returns the unsaved member when the save fails validation, and the saved one once a later save succeeds', capability: 'C224' do
+      place.record_data_entries({ tenants: { include: [{ new: 'draft-1', unit: '1A' }] } }, low, mode: :edit) # a tenant needs a name
+      expect { place.forge! }.to raise_error(ActiveRecord::RecordInvalid)
+      unnamed = place.new_member(:tenants, 'draft-1')
+      expect(unnamed).to be_new_record
+      expect(Tenant.count).to eq(0)
+
+      place.record_data_entries({ tenants: { include: [{ new: 'draft-1', name: 'Corner Café' }] } }, low, mode: :edit)
+      place.forge!
+      expect(place.new_member(:tenants, 'draft-1')).to be(unnamed)
+      expect(Tenant.pluck(:id, :name, :unit)).to eq([[unnamed.id, 'Corner Café', '1A']])
+    end
+
+    it 'records a placeholder key given twice before the save on the one new member', capability: 'C225' do
+      place.record_data_entries({ tenants: [{ new: 'draft-1', name: 'Corner Café', unit: '1A' }] }, low)
+      place.record_data_entries({ tenants: [{ new: 'draft-1', name: 'Corner Café & Co' }] }, low) # a complete list replaces what the first said
+      expect(place.forge_diff['tenants']).to include(added: [{ 'name' => 'Corner Café & Co' }])
+
+      place.forge
+      corner_cafe = place.new_member(:tenants, 'draft-1')
+      place.record_data_entries({ tenants: [{ new: 'draft-1', name: 'Corner Café Ltd' }] }, low) # after a forge, on the member it built
+      place.record_data_entries({ tenants: { include: [{ new: 'draft-1', unit: '2B' }] } }, low, mode: :edit) # an edit adds to it
+      place.forge!
+
+      expect(place.new_member(:tenants, 'draft-1')).to be(corner_cafe)
+      expect(Tenant.pluck(:id, :name, :unit)).to eq([[corner_cafe.id, 'Corner Café Ltd', '2B']])
+    end
+
+    it 'names another new member by a placeholder key given again after the save', capability: 'C226' do
+      place.record_data_entries({ tenants: { include: [{ new: 'draft-1', name: 'Corner Café' }] } }, low, mode: :edit)
+      place.forge!
+      corner_cafe = place.new_member(:tenants, 'draft-1')
+
+      place.record_data_entries({ tenants: { include: [{ new: 'draft-1', name: 'Harbor Books' }] } }, low, mode: :edit)
+      expect(place.new_member(:tenants, 'draft-1')).to be_nil # the key names a new member no forge has built
+      place.forge!
+
+      expect(place.new_member(:tenants, 'draft-1')).not_to be(corner_cafe)
+      expect(Tenant.pluck(:name)).to eq(['Corner Café', 'Harbor Books'])
+    end
+
+    it 'raises for a token that is not a non-blank String, or that comes with an id', capability: 'C227' do
+      [7, :draft, '', ' ', nil].each do |token|
+        expect { place.record_data_entries({ tenants: [{ new: token, name: 'Corner Café' }] }, low) }
+          .to raise_error(ArgumentError, /Place#tenants: a token must be a non-blank String, not #{Regexp.escape(token.inspect)}\. Pass 'new' => a String that names only this new member, such as SecureRandom\.uuid, or leave 'new' out/)
+      end
+
+      corner_cafe = place.tenants.create!(name: 'Corner Café')
+      expect { place.record_data_entries({ tenants: [{ id: corner_cafe.id, new: 'draft-1' }] }, low) }
+        .to raise_error(ArgumentError, /Place#tenants names a member by both id #{corner_cafe.id} and the token "draft-1"\. Name a member that exists by its id, or a new member by 'new'/)
+      expect { place.record_data_entries({ tenants: [{ new: 'draft-1', name: 'A' }, { new: 'draft-1', name: 'B' }] }, low) }
+        .to raise_error(ArgumentError, /lists the same member more than once \(token "draft-1"\)/)
+      expect { place.record_data_entries({ place_categories: [{ new: 'draft-1', category_id: cafe.id }] }, low) }
+        .to raise_error(ArgumentError, /Place#place_categories members are keyed by category_id, so a new member is named by that, not by 'new'/)
+    end
+
+    it "raises for a token that names a new member of another source's member list, naming the source", capability: 'C228' do
+      place.record_data_entries({ tenants: [{ new: 'draft-1', name: 'Corner Café' }] }, low)
+
+      [[{ tenants: [{ new: 'draft-1', name: 'Harbor Books' }] }, {}], [{ tenants: { include: [{ new: 'draft-1', name: 'Harbor Books' }] } }, { mode: :edit }]].each do |payload, options|
+        expect { place.record_data_entries(payload, high, **options) }
+          .to raise_error(ArgumentError, /Place#tenants: the token "draft-1" already names a new member in low's member list\. Pass another token for this new member, or name the one low listed by its id once Place #{place.id} is saved/)
+      end
+      place.forge
+      expect { place.record_data_entries({ tenants: [{ new: 'draft-1', name: 'Harbor Books' }] }, high) }.to raise_error(ArgumentError, /already names a new member in low's member list/)
+
+      place.save! # low's member list names the tenant by its id now
+      place.record_data_entries({ tenants: [{ new: 'draft-1', name: 'Harbor Books' }] }, high, mode: :partial)
+      place.forge!
+      expect(Tenant.pluck(:name)).to eq(['Corner Café', 'Harbor Books'])
+    end
+
+    it 'returns the member built for a placeholder key that the tombstone matcher matched to a tombstone', capability: 'C229' do
+      place.record_data_entries({ tenants: [{ name: 'Corner Café' }] }, low)
+      place.forge!
+      place.record_data_entries({ tenants: { exclude: [{ id: Tenant.sole.id }] } }, high, mode: :edit)
+      place.forge!
+      expect(Tenant.count).to eq(0)
+
+      place.record_data_entries({ tenants: [{ new: 'draft-1', name: 'Corner Café' }] }, low) # outranked by the exclusion
+      place.forge
+      expect(place.new_member(:tenants, 'draft-1')).to be_nil
+
+      place.record_data_entries({ tenants: { include: [{ new: 'draft-2', name: 'Corner Café' }] } }, top, mode: :edit) # outranks it
+      place.forge
+      corner_cafe = place.new_member(:tenants, 'draft-2')
+      expect(corner_cafe).to be(place.tenants.target.sole)
+      place.save!
+      expect(place.new_member(:tenants, 'draft-2')).to be(corner_cafe)
+      expect(Tenant.pluck(:id, :name)).to eq([[corner_cafe.id, 'Corner Café']])
+    end
+
+    it "takes a placeholder key in a Rails form's row", capability: 'C230' do
+      place.record_data_entries({ tenants_attributes: { '0' => { new: 'draft-1', name: 'Corner Café' } } }, low, mode: :edit)
+      place.forge!
+
+      expect(place.new_member(:tenants, 'draft-1')).to eq(Tenant.sole)
+    end
+
+    it 'raises for an association whose members are not keyed by primary key', capability: 'C231' do
+      expect { place.new_member(:place_categories, 'draft-1') }
+        .to raise_error(ArgumentError, /Place#place_categories members are keyed by category_id, so no new member has a token\. Find the member in Place#place_categories by its key/)
+    end
+  end
+
   describe 'Rails form payloads' do
     # Returns a place model accepting nested attributes for its tenants and marker with the given options
     def form_place_model(**options, &body)
@@ -1168,6 +1323,76 @@ describe 'Association tracking capabilities' do
       place.record_data_entries({ tenants: { forget: [tombstone.to_h] } }, top, mode: :edit)
       place.save!
       expect(place.reload.data_entries.tombstones(:tenants)).to be_empty
+    end
+
+    it 'names a tombstone by its token in an error', capability: 'C232' do
+      exclude_corner_cafe
+      tombstone = place.reload.data_entries.tombstones(:tenants).sole
+      place.record_data_entries({ tenants: [tenant('T-2')] }, low)
+
+      expect { place.record_data_entries({ tenants: { forget: [tombstone] } }, low, mode: :edit) }
+        .to raise_error(ArgumentError, /Place#tenants: the source has a complete list, which covers every member, so forgetting tombstone "#{tombstone.to_h['tombstone']}" would exclude it/)
+    end
+
+    it 'forgets its own tombstone when a source includes a new member the tombstone matcher matches to it, and builds the member', capability: 'C233' do
+      exclude_corner_cafe
+      place.reload.record_data_entries({ tenants: { include: [{ new: 'draft-1', name: 'Corner Café', unit: '1A' }] } }, top, mode: :edit)
+
+      expect(place.tombstones(:tenants)).to be_empty # forgotten when the inclusion is recorded, as `forget:` forgets it
+      expect(place.forge_diff['tenants']).to include(added: [{ 'name' => 'Corner Café', 'unit' => '1A' }], removed: [])
+      place.forge
+      corner_cafe = place.new_member(:tenants, 'draft-1')
+      expect(corner_cafe).to be_new_record
+      place.save!
+
+      expect(place.reload.tenants.pluck(:id, :name, :unit)).to contain_exactly([corner_cafe.id, 'Corner Café', '1A'], [Tenant.find_by!(name: 'Harbor Books').id, 'Harbor Books', nil])
+      expect(place.data_entries.tombstones(:tenants)).to be_empty
+      expect(place.member_sources(:tenants, id: corner_cafe.id)).to include(membership: top, listed_by: [top], excluded_by: [])
+      place.forge! # the member stays through later forges
+      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Corner Café', 'Harbor Books')
+    end
+
+    it 'forgets its own tombstone for a new member a partial list includes, and keeps its other tombstones', capability: 'C234' do
+      exclude_corner_cafe
+      place.reload.record_data_entries({ tenants: { exclude: [{ id: Tenant.find_by!(name: 'Harbor Books').id }] } }, top, mode: :edit)
+      place.forge!
+      expect(Tenant.count).to eq(0)
+
+      place.reload.record_data_entries({ tenants: [{ new: 'draft-1', name: 'Corner Café' }] }, top, mode: :partial)
+      expect(place.tombstones(:tenants).map { |tombstone| tombstone.attributes['name'] }).to eq(['Harbor Books'])
+      expect(place.forge_diff['tenants']).to include(added: [{ 'name' => 'Corner Café' }])
+      place.forge!
+
+      expect(place.new_member(:tenants, 'draft-1')).to eq(Tenant.sole)
+      expect(Tenant.sole.name).to eq('Corner Café')
+      expect(place.reload.data_entries.tombstones(:tenants).map { |tombstone| tombstone.attributes['name'] }).to eq(['Harbor Books'])
+    end
+
+    it "keeps another source's tombstone, which keeps the new member out while that source outranks the one including it", capability: 'C235' do
+      exclude_corner_cafe # top's tombstone
+      place.reload.record_data_entries({ tenants: { include: [{ new: 'draft-1', name: 'Corner Café' }] } }, high, mode: :edit)
+
+      expect(place.tombstones(:tenants).map(&:source)).to eq([top])
+      expect(place.forge_diff['tenants']).to include(added: [])
+      place.forge!
+      expect(place.new_member(:tenants, 'draft-1')).to be_nil
+      expect(place.reload.tenants.pluck(:name)).to eq(['Harbor Books'])
+      expect(place.data_entries.tombstones(:tenants).map(&:source)).to eq([top])
+    end
+
+    it "builds a new member matched to another source's tombstone when the source including it outranks that source", capability: 'C236' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low)
+      place.forge!
+      place.record_data_entries({ tenants: { exclude: [{ id: Tenant.sole.id }] } }, high, mode: :edit) # high's tombstone
+      place.forge!
+
+      place.reload.record_data_entries({ tenants: { include: [{ new: 'draft-1', name: 'Corner Café' }] } }, top, mode: :edit)
+      expect(place.tombstones(:tenants).map(&:source)).to eq([high]) # not top's to forget
+      expect(place.forge_diff['tenants']).to include(added: [{ 'name' => 'Corner Café' }])
+      place.forge!
+
+      expect(place.new_member(:tenants, 'draft-1')).to eq(Tenant.sole)
+      expect(place.reload.data_entries.tombstones(:tenants)).to be_empty # the member has a row again
     end
 
     it 'raises, saying what to declare, for an exclusion that could not outlast its row', capability: 'C95' do

@@ -122,10 +122,19 @@ module LaForge
     end
 
     # @api private
-    # Makes the record's pending writes, then drops them
+    # Makes the record's pending writes, then drops them, keeping the new members the save created in
+    # `saved_new_members`
     def write_pending_writes!
+      pending_writes.new_members.each { |name, created| (saved_new_members[name] ||= {}).merge!(created.select { |_, member| member.persisted? }) }
       pending_writes.write!
       @pending_writes = nil
+    end
+
+    # @api private
+    # Returns { association name => { token => member } } for the new members the record's saves created, by the token
+    # of the placeholder key each was named by until then (see AssociationConfig). A reloaded record has none.
+    def saved_new_members
+      @saved_new_members ||= {}
     end
 
     # @api private

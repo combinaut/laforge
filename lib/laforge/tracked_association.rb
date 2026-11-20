@@ -167,20 +167,23 @@ module LaForge
     # rule's, and both are given to every attribute the member list's pending items record. A wrapped member or
     # exclusion takes its wrapper's settings instead, and an expiry of its own other than the member list's is kept
     # among the member list's expiries (see MemberList). It replaces the previous member list as
-    # `MemberList::Complete.replacing` and `MemberList::Partial.replacing` do. Raises for a partial list of a has_one, and
-    # for members AssociationConfig rejects.
+    # `MemberList::Complete.replacing` and `MemberList::Partial.replacing` do, once the previous one has forgotten the
+    # source's own tombstones of the new members included (see `forgetting_own_tombstones`). Raises for a partial list
+    # of a has_one, and for members AssociationConfig rejects.
     def record(members, source, settings: RecordingSettings::DEFAULT, partial: false, recorded_at: Time.current)
       raise ArgumentError, "#{owner.class.name}##{config.name} is a has_one, which takes a complete list. Record it without mode: :partial" if partial && !config.collection?
 
       included, excluded = partial ? partial_members(members, settings) : [normalize_with_settings(members, settings), []]
       keys = included.map(&:first)
       config.assert_references_exist!(owner, keys)
+      assert_placeholder_keys_unused!(keys, source)
       pending = included.map { |key_hash, attributes, member_settings| MemberList.pending_item(key_hash, attributes, recorded_at, settings: member_settings) }
       expiries = member_expiries(included + excluded, settings, recorded_at)
 
+      previous = forgetting_own_tombstones(member_list(source), source, included)
       value =
-        if partial then MemberList::Partial.replacing(member_list(source), config, include: keys, exclude: excluded.map(&:first), pending: pending, expiries: expiries)
-        else MemberList::Complete.replacing(member_list(source), config, include: keys, pending: pending, expiries: expiries)
+        if partial then MemberList::Partial.replacing(previous, config, include: keys, exclude: excluded.map(&:first), pending: pending, expiries: expiries)
+        else MemberList::Complete.replacing(previous, config, include: keys, pending: pending, expiries: expiries)
         end
       owner.laforge.write_data_entry(config.name, value, source, settings: settings, recorded_at: recorded_at)
     end
@@ -188,7 +191,8 @@ module LaForge
     # Changes the source's member list for one member. A source with no member list, or an expired one, gets a partial
     # one. `action` is one of:
     # - :include: includes the member, and adds what the edit says about it as a pending item after the earlier ones, so
-    #   each edit changes only the attributes it names. Its nested lists are edits too.
+    #   each edit changes only the attributes it names. Its nested lists are edits too. A new member that is one of the
+    #   source's own tombstones has that tombstone forgotten first (see `forgetting_own_tombstones`).
     # - :exclude: leaves the member out of a complete list, or adds it to a partial list's exclusions
     # - :forget: drops the member from a partial list, and the member list's tombstone when the member is one. Raises
     #   for a complete list, which covers every member.
@@ -203,8 +207,10 @@ module LaForge
 
       (member, attributes, member_settings), = normalize_with_settings([member], settings, attributes: action == :include, edit: true)
       config.assert_references_exist!(owner, [member]) if action == :include
+      assert_placeholder_keys_unused!([member], source) if action == :include
       config.assert_excludable!(owner, [member]) if action == :exclude
       previous = member_list(source)
+      previous = forgetting_own_tombstones(previous, source, [[member, attributes]]) if action == :include
       assert_editable!(previous, member, action, member_settings)
 
       expiry = MemberList.expiry_item(config.key_hash(member), member_settings, recorded_at) if member_settings.expiring?
@@ -320,6 +326,24 @@ module LaForge
       names.empty? ? list : MemberList.new(list.renamed(config, names))
     end
 
+    # Returns the member a forge built for the new member named by the placeholder key with `token`, or nil when none
+    # has. It is the unsaved one in the owner's pending writes, or the one the owner's save created, unless a member
+    # list names a new member by the placeholder key again since. A new member a forge named by a tombstone's key is the
+    # member built for that key. Raises unless members are keyed by primary key.
+    def built_member(token)
+      unless config.primary_keyed?
+        reason = config.key.any? ? "members are keyed by #{config.key.join(', ')}" : 'has a single member with no key'
+        raise ArgumentError, "#{owner.class.name}##{config.name} #{reason}, so no new member has a token. Find the member in #{owner.class.name}##{config.name} by its key"
+      end
+
+      key = [AssociationConfig::NEW_MEMBER, token]
+      built = owner.laforge.pending_writes.new_members.dig(config.name, token)
+      return built if built
+
+      listed_again = owner.laforge.filter_data_entries_in_memory(attributes: config.name).any? { |entry| MemberList.new(entry.value).includes?(config, key) }
+      owner.laforge.saved_new_members.dig(config.name, token) unless listed_again
+    end
+
     # Returns an unsaved member pointing at the owner, with the association scope's attributes and the member model's
     # columns among `attributes`, except its primary key.
     def unsaved_member(attributes)
@@ -395,6 +419,47 @@ module LaForge
       end
     end
 
+    # Raises when one of `members`, key hashes the source's member list is to include, is a new member whose placeholder
+    # key another source's member list includes, naming that source. The two sources' new members would otherwise be
+    # one member. Member lists that have expired or are marked for destruction are left out, as are the nested member
+    # lists a forge records from pending items, which were recorded before the forge could check them.
+    def assert_placeholder_keys_unused!(members, source)
+      placeholders = members.select { |member| config.new_member?(member) }.map { |member| config.key_of(member) }
+      return if placeholders.empty? || owner.laforge.replaying?
+
+      source_id = DataSource.normalize_source_id(source)
+      owner.laforge.filter_data_entries_in_memory(attributes: config.name).each do |entry|
+        next if entry.source_id == source_id || entry.marked_for_destruction? || entry.expired?
+
+        list = MemberList.new(entry.value)
+        used = placeholders.find { |key| list.includes?(config, key) }
+        next unless used
+
+        raise ArgumentError, "#{owner.class.name}##{config.name}: the #{config.describe_key(used)} already names a new member in #{entry.source.name}'s member list. " \
+                             "Pass another token for this new member, or name the one #{entry.source.name} listed by its #{config.klass.primary_key} " \
+                             "once #{owner.class.name} #{owner.id.inspect} is saved"
+      end
+    end
+
+    # Returns `previous`, the source's member list, having forgotten each of its tombstones that the tombstone matcher
+    # matches to a new member among `included`, given as [[key hash, attributes], ...]. The source excluded the member
+    # and now includes it, and the later of the two counts, so the tombstone goes as a `forget:` edit drops it, and a
+    # forge builds the member as a new one. Other sources' tombstones are left for the forge to match (see
+    # `recognize_tombstones`), which decides the member by precedence. Tombstones whose exclusion has expired are left
+    # too.
+    def forgetting_own_tombstones(previous, source, included)
+      return previous unless config.tombstone_matcher && previous.tombstones.any?
+
+      source_id = DataSource.normalize_source_id(source)
+      included.inject(previous) do |list, (member, attributes)|
+        next list unless config.new_member?(member)
+
+        own = list.counting_tombstones(config).map { |item| Tombstone.new(owner, config, source_id, item) }
+        found = match_tombstone(unsaved_member(attributes), own)
+        found ? MemberList.new(list.forgetting(config, found.key)) : list
+      end
+    end
+
     # Raises when the source's `previous` member list cannot take the edit `action` of `member`, with `member_settings`:
     # - forgetting a member of a complete list, which covers every member
     # - excluding a member from a complete list with an expiry, since that exclusion cannot expire
@@ -420,8 +485,9 @@ module LaForge
 
     # Names each new member whose pending item the tombstone matcher matches to a tombstone by that tombstone's key in
     # the member lists, so membership decides it as the excluded member it was. With `save: true` the entries take the
-    # renamed member lists too, to be saved with the owner. Leaves the member lists as they are when the association has
-    # no tombstone matcher or no tombstones.
+    # renamed member lists too, to be saved with the owner, and the owner's pending writes keep which placeholder key
+    # became which tombstone's key. Leaves the member lists as they are when the association has no tombstone matcher or
+    # no tombstones.
     def recognize_tombstones(save:)
       return unless config.tombstone_matcher
 
@@ -436,6 +502,7 @@ module LaForge
 
         value = list.renamed(config, names)
         entry.value = value if save
+        owner.laforge.pending_writes.recognized_members(config).merge!(names.transform_values { |tombstone| config.key_of(tombstone) }) if save
         [entry, MemberList.new(value)]
       end
     end

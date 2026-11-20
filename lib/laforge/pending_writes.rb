@@ -12,6 +12,7 @@ module LaForge
       @replaced_members = []
       @withdrawn_entries = []
       @created_members = {}
+      @recognized_members = {}
     end
 
     # Adds the removal of a collection member a forge no longer includes, as assigning the collection without it would,
@@ -56,6 +57,23 @@ module LaForge
     # key (see AssociationConfig)
     def created_members(config)
       @created_members[config.name] ||= {}
+    end
+
+    # Returns the placeholder keys of the new members a forge named by a tombstone's key (see
+    # `TrackedAssociation#recognize_tombstones`), as { ['new', token] => ['tombstone', token] }, each key as
+    # `AssociationConfig#key_of` returns it, so the member built for the tombstone's key is still found by the
+    # placeholder key its source gave
+    def recognized_members(config)
+      @recognized_members[config.name] ||= {}
+    end
+
+    # Returns { association name => { token => member } } for the new members forges built and the record has not saved
+    # yet, by the token of the placeholder key a source named each one by
+    def new_members
+      @created_members.to_h do |name, created|
+        recognized = (@recognized_members[name] || {}).transform_values { |key| created[key] }.compact
+        [name, recognized.merge(created).select { |(field, _), _| field == AssociationConfig::NEW_MEMBER }.transform_keys(&:last)]
+      end
     end
 
     # Makes the pending writes, once the record is saved:

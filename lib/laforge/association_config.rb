@@ -10,7 +10,11 @@ module LaForge
   #
   # Where members are keyed by primary key, a member a source names without one is a new member. Member lists name it by
   # a placeholder key, `{ 'new' => token }`, until the owner is saved after the forge that builds it, and by its id
-  # after.
+  # after. A token is a string that stands in for an id while a member has no row. A new member's placeholder key holds
+  # one, and so does a removed member's tombstone key (below). The token identifies the new member, and lets the caller
+  # reference it before it is saved. A caller that gives one, as `'new' => token`, can name the same new member again
+  # before that save, and ask for the member a forge built for it (see `Inspection#new_member`). Without one, LaForge
+  # makes a random token.
   #
   # A member keyed by primary key that a partial list excludes is removed like any other, and every member list then
   # names it by a tombstone key, `{ 'tombstone' => token }` (see Tombstone). `tombstone_matcher:` is a callable given a
@@ -70,10 +74,14 @@ module LaForge
       members.transform_values(&:first)
     end
 
-    # Returns a key's values as error messages name them, such as `external_id "T-1"`, or "no key" for a has_one's
-    # single member, or "no id" for a new member.
+    # Returns `values`, a member's key as `key_of` or `record_key` returns it, as error messages name it:
+    # - each key column with its value, such as `external_id "T-1"` or `id 7`
+    # - `token "draft-1"` for a new member
+    # - `tombstone "9f2c4e1a7b3d5f60"` for a tombstone, by its token
+    # - "no key" for the single member of a has_one that has no key
     def describe_key(values)
-      return 'no id' if values.first == NEW_MEMBER
+      return "token #{values.last.inspect}" if values.first == NEW_MEMBER
+      return "tombstone #{values.last.inspect}" if values.first == TOMBSTONE
 
       key.zip(values).map { |column, value| "#{column} #{value.inspect}" }.join(', ').presence || 'no key'
     end
@@ -162,7 +170,7 @@ module LaForge
     # Returns [key hash, attributes] for each of `members`, where the attributes are what the source says about the
     # member besides its key. Raises when a member is invalid or listed twice. A member is one of:
     # - a hash of its key and attributes, nested tracked associations included. Where members are keyed by primary key,
-    #   a hash without one is a new member, given a placeholder key.
+    #   a hash without one is a new member, whose placeholder key holds the token it gives as 'new', or a random one.
     # - a saved record, which gives only its key
     # - a tombstone, or its `to_h`, which gives only its key and can only be named
     # A has_one takes one member, or nil for none, in place of the list. Options:
@@ -276,15 +284,35 @@ module LaForge
       [member.slice(TOMBSTONE), {}]
     end
 
-    # Returns `member` with its key values cast to the key columns' types, and with a placeholder key when it is a new
-    # member. Raises for a new member when `attributes` is false, since it can only be named by its primary key.
+    # Returns `member` with its key values cast to the key columns' types, and, when it is a new member, with the token
+    # it gives as 'new' or a random one. Raises for a new member when `attributes` is false, since it can only be named
+    # by its primary key, and for a token `assert_placeholder_key!` refuses.
     def keyed_member(member, attributes:)
       key.each { |column| member[column] = klass.type_for_attribute(column).cast(member[column]) if member.key?(column) } # ids from params are strings
+      assert_placeholder_key!(member) if member.key?(NEW_MEMBER)
       return member unless primary_keyed? && member[klass.primary_key].nil?
 
       raise ArgumentError, "#{owner_class.name}##{name} members are named here by #{klass.primary_key}, which a new member does not have yet" unless attributes
 
-      member.merge(NEW_MEMBER => SecureRandom.hex(8))
+      member.key?(NEW_MEMBER) ? member : member.merge(NEW_MEMBER => SecureRandom.hex(8))
+    end
+
+    # Raises for the token `member` gives as 'new' unless members are keyed by primary key, the member gives no primary
+    # key with it, and the token is a non-blank String
+    def assert_placeholder_key!(member)
+      token = member[NEW_MEMBER]
+      unless primary_keyed?
+        reason = key.any? ? "members are keyed by #{key.join(', ')}, so a new member is named by that" : 'has a single member with no key, which nothing names'
+        raise ArgumentError, "#{owner_class.name}##{name} #{reason}, not by '#{NEW_MEMBER}'. Remove '#{NEW_MEMBER}' from the member"
+      end
+      unless member[klass.primary_key].nil?
+        raise ArgumentError, "#{owner_class.name}##{name} names a member by both #{klass.primary_key} #{member[klass.primary_key].inspect} and the token #{token.inspect}. " \
+                             "Name a member that exists by its #{klass.primary_key}, or a new member by '#{NEW_MEMBER}'"
+      end
+      return if token.is_a?(String) && token.present?
+
+      raise ArgumentError, "#{owner_class.name}##{name}: a token must be a non-blank String, not #{token.inspect}. " \
+                           "Pass '#{NEW_MEMBER}' => a String that names only this new member, such as SecureRandom.uuid, or leave '#{NEW_MEMBER}' out for LaForge to generate one"
     end
 
     # Raises unless `field` of a member is its key, its placeholder key, or, when `attributes` is true, a nested tracked
