@@ -21,7 +21,7 @@ module LaForge
     # A writer that raises a StandardError does not stop the forge. The remaining attributes are assigned, and the forge
     # then raises one `WriterError` for every writer that raised, so `forge!` saves nothing.
     def forge(attributes: nil, sources: nil)
-      with_one_ruleset do
+      with_current_ruleset do
         forged = forged_entries(attributes: attributes, sources: sources)
         forge_associations(associations: attributes)
         assign_forged(record, forged)
@@ -69,7 +69,7 @@ module LaForge
     # them a writer that saves or destroys the copy, whose error is an `ActiveRecord::ReadOnlyRecord` saying so.
     # Membership diffs are returned as without the option, and no association is assigned to the copy.
     def forge_diff(through_setters: false, **forge_options)
-      with_one_ruleset { diff_in_ruleset(through_setters: through_setters, **forge_options) }
+      with_current_ruleset { diff_in_ruleset(through_setters: through_setters, **forge_options) }
     end
 
     # Returns a hash of the attributes generated from the record's the data entries
