@@ -18,11 +18,13 @@ module LaForge
     # before any attribute is assigned, so attributes and associations rank alike even when forging changes what the
     # selector reads. Associations are forged before the attributes are assigned, so each member selects its ruleset
     # from the record as the forge found it, as `forge_diff` does.
+    # A writer that raises a StandardError does not stop the forge. The remaining attributes are assigned, and the forge
+    # then raises one `WriterError` for every writer that raised, so `forge!` saves nothing.
     def forge(attributes: nil, sources: nil)
       with_one_ruleset do
-        forged = forge_attributes(attributes: attributes, sources: sources)
+        forged = forged_entries(attributes: attributes, sources: sources)
         forge_associations(associations: attributes)
-        record.attributes = forged
+        assign_forged(forged)
       end
     end
 
@@ -69,26 +71,7 @@ module LaForge
     # A group's attributes all come from one source, so an attribute that source has no entry for is nil rather than
     # falling back to another source's value.
     def forge_attributes(attributes: nil, sources: nil, except_sources: nil)
-      # Each forge selects the ruleset and reads the model-wide and global rules again (see PrecedenceCache)
-      reset_resolver_unless_held
-      forged_attrs = {}
-      attributes = self.class.with_groups(attributes) unless attributes.nil?
-      data_entries = forging_entries(attributes: attributes, sources: sources, except_sources: except_sources).reject { |data_entry| data_entry.marked_for_destruction? || associations.key?(data_entry.attribute_name) }
-      resolved = resolve_entries(data_entries)
-
-      # The hash's key order is the order `forge` calls the setters, which matters when one setter
-      # resets another attribute. It is by the rank of each attribute's highest-ranked entry, highest first,
-      # and a group's attributes come together where the first of them would. Attributes whose entries
-      # rank equally come in no defined order.
-      assignment_order = self.class.with_groups(data_entries.sort_by { |data_entry| rank_of(data_entry) }.reverse.map(&:attribute_name).uniq)
-
-      assignment_order.each do |attribute_name|
-        next unless record.respond_to?("#{attribute_name}=")
-
-        forged_attrs[attribute_name] = resolved.fetch(attribute_name).last&.value
-      end
-
-      return forged_attrs
+      forged_entries(attributes: attributes, sources: sources, except_sources: except_sources).transform_values { |_, entry| entry&.value }
     end
 
     # Returns the entry `forge` takes for the attribute, or nil (see `resolved_entries`)
@@ -169,6 +152,37 @@ module LaForge
     end
 
     private
+
+    # Returns { attribute name => [deciding entry, resolved entry] } for the attributes `forge_attributes` returns, with
+    # its options and in its order (see `resolve_entries`)
+    def forged_entries(attributes: nil, sources: nil, except_sources: nil)
+      # Each forge selects the ruleset and reads the model-wide and global rules again (see PrecedenceCache)
+      reset_resolver_unless_held
+      attributes = self.class.with_groups(attributes) unless attributes.nil?
+      data_entries = forging_entries(attributes: attributes, sources: sources, except_sources: except_sources).reject { |data_entry| data_entry.marked_for_destruction? || associations.key?(data_entry.attribute_name) }
+      resolved = resolve_entries(data_entries)
+
+      # The hash's key order is the order `forge` calls the setters, which matters when one setter
+      # resets another attribute. It is by the rank of each attribute's highest-ranked entry, highest first,
+      # and a group's attributes come together where the first of them would. Attributes whose entries
+      # rank equally come in no defined order.
+      assignment_order = self.class.with_groups(data_entries.sort_by { |data_entry| rank_of(data_entry) }.reverse.map(&:attribute_name).uniq)
+
+      assignment_order.select { |attribute_name| record.respond_to?("#{attribute_name}=") }.index_with { |attribute_name| resolved.fetch(attribute_name) }
+    end
+
+    # Assigns each resolved entry's value among `forged`, as `forged_entries` returns them, to the record, in order. A
+    # writer that raises a StandardError does not stop the rest. Raises one `WriterError` afterwards for every writer
+    # that raised, each with its value and the source of its resolved entry, or of its group's deciding entry where that
+    # source leaves the attribute out.
+    def assign_forged(forged)
+      failures = forged.each_with_object({}) do |(attribute_name, (deciding, resolved)), failed|
+        record.public_send("#{attribute_name}=", resolved&.value)
+      rescue StandardError => error
+        failed[attribute_name] = { error: error, value: resolved&.value, source: (resolved || deciding).source }
+      end
+      raise WriterError.new(record, failures) if failures.any?
+    end
 
     # Returns `forge_diff` within the ruleset already selected
     def diff_in_ruleset(**forge_options)
