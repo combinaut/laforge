@@ -1,14 +1,16 @@
 module LaForge
-  # `PrecedenceRule` is one rule ranking a source's values at one of four levels, from most to least specific:
+  # `PrecedenceRule` is one rule ranking a source's values at one of five levels, from most to least specific:
   #
   #   record_type  record_id  attribute_name  applies to
   #   'Tenant'     1          'name'          one attribute of one record
+  #   'Tenant'     1          ''              every attribute of one record
   #   'Tenant'     0          'name'          one attribute of every record of a model
   #   'Tenant'     0          ''              every attribute of every record of a model
   #   ''           0          ''              everything (the source's global precedence)
   #
-  # The middle two levels are a model's model-wide rules, and the first is a record's own rules. A value's effective
-  # precedence is that of the most specific rule for its record, attribute and source.
+  # The first two levels are a record's own rules, and the next two a model's model-wide rules. A value's effective
+  # precedence is that of the most specific rule for its record, attribute and source. `LEVELS` names the levels in
+  # this order.
   #
   # Sources rank by level first. A source with a rule at a more specific level outranks every source whose most specific
   # rule is less specific, precedences are compared only within a level, and global precedence breaks a tie. A
@@ -33,6 +35,11 @@ module LaForge
     ANY_ID = 0
     ANY_ATTRIBUTE = ''.freeze
     BASE = ''.freeze
+    # LEVELS name the levels from most to least specific, each after the call that sets it, as :record for
+    # `record.update_precedence_order(sources)` and :model_attribute for `Model.update_precedence_order(sources,
+    # attribute:)`. RECORD_LEVELS are a record's own, whose rules belong to no ruleset.
+    LEVELS = %i[record_attribute record model_attribute model global].freeze
+    RECORD_LEVELS = %i[record_attribute record].freeze
     # RULESET_LENGTH bounds a ruleset's name so the unique index on the scope, source and ruleset stays within MySQL's
     # 3072-byte index limit under utf8mb4, alongside the two 255-character strings
     RULESET_LENGTH = 100
@@ -49,7 +56,7 @@ module LaForge
     validates :precedence, presence: true, numericality: { only_integer: true }
     validates :source_id, uniqueness: { scope: %i[record_type record_id attribute_name ruleset] }
     validates :precedence, uniqueness: { scope: :ruleset, conditions: -> { where(record_type: ANY_TYPE) } }, if: -> { global? && ruleset != BASE }
-    validate :scope_is_one_of_the_four_levels
+    validate :global_rule_names_no_record_or_attribute
     validate :expires_only_on_one_record
     # Checked on update too, as `update!(ruleset:)` or `update!(record_id:)` could otherwise move a rule where LaForge
     # would never write it
@@ -101,6 +108,7 @@ module LaForge
       scope.pluck(:record_id, :attribute_name, :source_id, :precedence).to_h { |record_id, attribute_name, source_id, precedence| [[record_id, attribute_name, source_id], precedence] }
     end
 
+    # @api private
     # Used to rank a source's value for one attribute of a record. It reads a model's model-wide rules and the global
     # rules once, through `PrecedenceCache`, and takes a record's own rules from its in-memory association, so unsaved
     # rules count, and rules marked for destruction or expired do not. The model-wide and global rules are those of the
@@ -120,29 +128,29 @@ module LaForge
       end
 
       # Returns the source's rank for the attribute on `record`, which compares with `<=>` to other sources' ranks for
-      # the same attribute and record. It holds a precedence for each of the record, attribute and model levels, which
-      # is that of the source's most specific rule at that rule's level and `-Float::INFINITY` at the others, then the
-      # source's global precedence. A source with only a model-wide rule of 3 and a global precedence of 7 ranks
-      # `[-Infinity, -Infinity, 3, 7]`. A nil `record` has no rules of its own.
+      # the same attribute and record. It holds a precedence for each of `LEVELS`, in order: the global level's is the
+      # source's global precedence, the level of the source's most specific other rule has that rule's, and the rest
+      # `-Float::INFINITY`. A source with only a model-wide rule of 3 and a global precedence of 7 ranks
+      # `[-Infinity, -Infinity, -Infinity, 3, 7]`. A nil `record` has no rules of its own. For `ANY_ATTRIBUTE`, the
+      # rules for every attribute are the only ones, so the levels for one attribute stay empty.
       def rank(record, attribute_name, source_id)
         attribute_name = rule_name(attribute_name)
-        attribute_rule = @model_rules[[ANY_ID, attribute_name, source_id]] unless attribute_name == ANY_ATTRIBUTE # its rule is the model level
-        levels = [record_rule(record, attribute_name, source_id), attribute_rule, @model_rules[[ANY_ID, ANY_ATTRIBUTE, source_id]]]
-        specific = levels.index { |precedence| !precedence.nil? }
-        levels.each_with_index.map { |precedence, index| index == specific ? precedence : -Float::INFINITY } + [global_precedence(source_id)]
+        one_attribute = attribute_name != ANY_ATTRIBUTE
+        rules = { record_attribute: (record_rule(record, attribute_name, source_id) if one_attribute), record: record_rule(record, ANY_ATTRIBUTE, source_id),
+                  model_attribute: (@model_rules[[ANY_ID, attribute_name, source_id]] if one_attribute), model: @model_rules[[ANY_ID, ANY_ATTRIBUTE, source_id]] }
+        specific = LEVELS.find { |level| rules[level] }
+        LEVELS.map { |level| level == :global ? global_precedence(source_id) : (level == specific ? rules[level] : -Float::INFINITY) }
       end
 
-      # Returns the precedence of the source's most specific rule for the attribute on `record`, or its global
-      # precedence (see `global_precedence`) when it has no other
+      # Returns the ruleset the rules at `level` come from, which is nil for the base rules and for a record's own levels
+      def ruleset_at(level)
+        ruleset unless RECORD_LEVELS.include?(level)
+      end
+
+      # Returns the precedence of the source's most specific rule for the attribute on `record`, which is the first
+      # level of its `rank` with one, or its global precedence (see `global_precedence`) when it has no other
       def precedence(record, attribute_name, source_id)
-        attribute_name = rule_name(attribute_name)
-        record_rule(record, attribute_name, source_id) || model_precedence(attribute_name, source_id) || global_precedence(source_id)
-      end
-
-      # Returns the precedence of the most specific model-wide rule for the attribute and source, or nil when there is
-      # none
-      def model_precedence(attribute_name, source_id)
-        @model_rules[[ANY_ID, rule_name(attribute_name), source_id]] || @model_rules[[ANY_ID, ANY_ATTRIBUTE, source_id]]
+        rank(record, attribute_name, source_id).find { |precedence| precedence != -Float::INFINITY } || -Float::INFINITY
       end
 
       # Returns the source's global precedence, or `-Float::INFINITY` when it has none, as for the entries of a deleted
@@ -167,12 +175,10 @@ module LaForge
 
     private
 
-    def scope_is_one_of_the_four_levels
-      if record_type == ANY_TYPE
-        errors.add(:base, 'a global rule cannot name a record or attribute') unless record_id == ANY_ID && attribute_name == ANY_ATTRIBUTE
-      elsif record_id != ANY_ID && attribute_name == ANY_ATTRIBUTE
-        errors.add(:attribute_name, 'is required for a rule on one record')
-      end
+    def global_rule_names_no_record_or_attribute
+      return unless record_type == ANY_TYPE && (record_id != ANY_ID || attribute_name != ANY_ATTRIBUTE)
+
+      errors.add(:base, 'a global rule cannot name a record or attribute')
     end
 
     # Raises for a rule on one record given a ruleset, and for a rule in a ruleset not yet in use, which LaForge forks

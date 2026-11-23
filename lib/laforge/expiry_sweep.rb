@@ -44,8 +44,11 @@ module LaForge
       fire(states)
     end
 
-    # Returns what the sweep noted for the row's attribute, attribute group or association
+    # Returns what the sweep noted for the row's attribute, attribute group or association, or everything it noted for
+    # a precedence rule for every attribute
     def recorded_for(row)
+      return @recorded if row.attribute_name == PrecedenceRule::ANY_ATTRIBUTE
+
       rule_name = laforge.class.group_of(row.attribute_name) || row.attribute_name
       @recorded.select { |recorded| recorded.rule_name == rule_name }
     end
