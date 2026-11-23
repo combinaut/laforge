@@ -576,6 +576,21 @@ A precedence rule has no value of its own, so it compares its source's entry for
     place.update_precedence_order(:name, [map_editor], expires_on: cadastre, expires_when: :matches)
   ```
 
+##### Expiring a correction and its precedence together
+
+A correction that should hold until the source agrees with it, and outrank that source on this record until then, takes two changes with the same expiry: the corrected value, and an order that lists only the correcting source.
+
+  ```ruby
+    # Keep the map editor's name, ranked above the cadastre's, until the cadastre provides the same name
+    place.record_data_entry(:name, 'Harbor Building', map_editor, expires_on: cadastre, expires_when: :matches)
+    place.update_precedence_order(:name, [map_editor], expires_on: cadastre, expires_when: :matches)
+  ```
+
+- **The order lists only the correcting source.** Sources not listed rank below it, in the order of the next level down, so `[map_editor]` ranks the same as an order listing the map editor first and every other source after it in that order.
+- **The `expires_on:` source is not listed.** Each rule in an order compares its own source's entry with the `expires_on:` source's, so a rule for the cadastre would compare its entry with itself, and a rule for a source with no entry on the record has nothing to compare. Both raise.
+- **Both end together.** The entry and the rule both compare the map editor's name with the cadastre's, so the cadastre value that matches ends both.
+- **The entry doesn't need the rule.** It expires when the cadastre agrees, wherever the map editor ranks, so where the map editor already outranks the cadastre, record the value alone.
+
 ##### Tracked associations
 
 Tracked associations raise for `expires_when: :matches`, naming the association, since a member list has no value to compare. That goes for a member list, an edit, a wrapped member and a precedence on the association. A wrapper around an attribute of a member is an attribute's value, so it can match. It is recorded on the member when the owner is forged, and compares with what the source has provided by then.
