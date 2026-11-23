@@ -15,7 +15,7 @@ How LaForge's README, code comments, spec descriptions, error messages, commit m
 | **precedence** | How sources rank against each other. A source with a higher precedence outranks one with a lower. | priority, weight, source of truth |
 | **resolves**, **resolved entry**, **outranks** | Forging resolves an attribute to one source's entry, its resolved entry, whose value the attribute takes. A source outranks another when its precedence is higher. | wins, winner, overrides, beats |
 | **precedence rule** | A source's precedence at one level. | override, setting |
-| **level** | One attribute of one record, one attribute of a model, a whole model, or global. | scope, tier |
+| **level** | One attribute of one record, a whole record, one attribute of a model, a whole model, or global. `precedence_order` names them `:record_attribute`, `:record`, `:model_attribute`, `:model` and `:global`, after the call that sets each. | scope, tier |
 | **precedence order** | The sources in order at one level. | ranking, priority list |
 | **ruleset**, **base rules** | Defined, with the rest of the ruleset vocabulary, in the comment on `class << self` in `lib/laforge/rulesets.rb`. | profile, domain |
 | **inactive source** | A source whose entries are kept but left out of forging. | disabled, paused |
