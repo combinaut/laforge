@@ -24,6 +24,9 @@ module LaForge
   #   `Tombstone` and `tombstone_item`). Every member list that has not expired names the member by the tombstone's
   #   key from then on. A tombstone is kept until its source forgets the member, provides a complete list, or is
   #   withdrawn from the owner (see `withdrawing_all`).
+  # - no_tombstone: the members a partial list excludes with `tombstone: false`. The first forge that leaves such a
+  #   member out of the association forgets it, as a `forget:` edit would, so the member list keeps neither the
+  #   exclusion nor a tombstone (see `TrackedAssociation#forget_removed_without_tombstone`).
   # - expiries: the inclusions and exclusions given an expiry of their own, by an edit or by `LaForge.with_settings`
   #   (see `expiry_item` and `Expiring`). Once one has expired, a partial list no longer covers that member, and the
   #   member's pending items and tombstone stop counting (see `counting_pending` and `counting_tombstones`). A complete
@@ -34,7 +37,7 @@ module LaForge
   # or `withdrawing_all`, returns the stored value of the changed member list for the caller to write, and leaves this
   # member list as it is.
   class MemberList
-    attr_reader :include, :exclude, :withdrawn, :pending, :tombstones, :expiries
+    attr_reader :include, :exclude, :withdrawn, :pending, :tombstones, :no_tombstone, :expiries
 
     # Reads a member list from its stored value, as a `Complete` or a `Partial`. `marked: true` reads the member list of
     # an entry marked for destruction as a partial list that covers no member, which withdraws every member it
@@ -88,7 +91,8 @@ module LaForge
       pending = self.pending.map { |item| item.merge('key' => rename.(item['key'])) }
       tombstones = self.tombstones.reject { |item| names.key?(config.key_of(item['key'])) }
       expiries = self.expiries.map { |item| item.merge('key' => rename.(item['key'])) }.uniq { |item| config.key_of(item['key']) }
-      with(include: unique.(include), exclude: unique.(exclude), withdrawn: unique.(withdrawn), pending: pending, tombstones: tombstones, expiries: expiries)
+      with(include: unique.(include), exclude: unique.(exclude), withdrawn: unique.(withdrawn), pending: pending, tombstones: tombstones, no_tombstone: unique.(no_tombstone),
+           expiries: expiries)
     end
 
     # Returns the stored value for this member list including the member named by the key hash `member`, with `item` as
@@ -97,7 +101,7 @@ module LaForge
     def including(config, member, item, expiry: nil)
       key = config.key_of(member)
       with(include: others(config, include, key) + [member], exclude: others(config, exclude, key), withdrawn: others(config, withdrawn, key), pending: pending + [item],
-           expiries: expiries_with(config, key, expiry))
+           no_tombstone: others(config, no_tombstone, key), expiries: expiries_with(config, key, expiry))
     end
 
     # Returns the stored value for this member list with each expiries item that expires on `source_id` and was made
@@ -160,6 +164,11 @@ module LaForge
       withdrawn.any? { |member| config.key_of(member) == key }
     end
 
+    # Whether this member list excludes the member with the given key with `tombstone: false`
+    def excludes_without_tombstone?(config, key)
+      no_tombstone.any? { |member| config.key_of(member) == key }
+    end
+
     # Returns :include or :exclude for the member with the given key as this member list was recorded, or nil when it
     # doesn't cover the member. An inclusion or exclusion that has expired still counts. A complete list excludes every
     # member it does not include.
@@ -182,8 +191,9 @@ module LaForge
 
     # Returns the stored value for a member list of this kind with the given lists in place of this member list's own
     # (see `value` on each kind)
-    def with(include: self.include, exclude: self.exclude, withdrawn: self.withdrawn, pending: self.pending, tombstones: self.tombstones, expiries: self.expiries)
-      self.class.value(include: include, exclude: exclude, withdrawn: withdrawn, pending: pending, tombstones: tombstones, expiries: expiries)
+    def with(include: self.include, exclude: self.exclude, withdrawn: self.withdrawn, pending: self.pending, tombstones: self.tombstones, no_tombstone: self.no_tombstone,
+             expiries: self.expiries)
+      self.class.value(include: include, exclude: exclude, withdrawn: withdrawn, pending: pending, tombstones: tombstones, no_tombstone: no_tombstone, expiries: expiries)
     end
 
     private

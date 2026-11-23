@@ -382,15 +382,15 @@ describe 'Association tracking capabilities' do
       expect(place.reload.tenants.pluck(:name)).to eq(['Harbor Books'])
     end
 
-    it 'rejects edits that are not a list or { include:, exclude:, forget: }, and unknown modes', capability: 'C88' do
-      expect { place.record_data_entries({ tenants: { add: [] } }, top, mode: :edit) }.to raise_error(ArgumentError, /edits are a list of members, or \{ include:, exclude:, forget: \}, not add/)
+    it 'rejects edits that are not a list or { include:, exclude:, forget:, tombstone: }, and unknown modes', capability: 'C88' do
+      expect { place.record_data_entries({ tenants: { add: [] } }, top, mode: :edit) }.to raise_error(ArgumentError, /edits are a list of members, or \{ include:, exclude:, forget:, tombstone: \}, not add/)
       expect { place.record_data_entries({ tenants: [{ name: 'Corner Café', opening_hours: { add: [] } }] }, top, mode: :edit) }.to raise_error(ArgumentError, /opening_hours edits are/)
       expect { place.record_data_entries({ tenants: [] }, top, mode: :edits) }.to raise_error(ArgumentError, /Unknown mode :edits; pass :complete, :partial or :edit/)
     end
 
-    it 'rejects a partial list given as a hash with keys other than include: and exclude:', capability: 'C168' do
+    it 'rejects a partial list given as a hash with keys other than include:, exclude: and tombstone:', capability: 'C168' do
       expect { place.record_data_entries({ place_categories: { include: categories(cafe), forget: categories(bakery) } }, low, mode: :partial) }
-        .to raise_error(ArgumentError, /Place#place_categories: a partial list is given as a list of members or as \{ include:, exclude: \}, not with forget. To forget a member, record it with mode: :edit/)
+        .to raise_error(ArgumentError, /Place#place_categories: a partial list is given as a list of members or as \{ include:, exclude:, tombstone: \}, not with forget. To forget a member, record it with mode: :edit/)
       expect { place.record_data_entries({ place_categories: { 'includes' => categories(cafe) } }, low, mode: :partial) }.to raise_error(ArgumentError, /not with includes\./)
     end
 
@@ -1478,7 +1478,7 @@ describe 'Association tracking capabilities' do
       unmatched_place = UnmatchedPlace.create!(name: 'Harbor Building')
       corner_cafe = unmatched_place.tenants.create!(name: 'Corner Café')
 
-      message = /Cannot exclude Tenant #{corner_cafe.id} from UnmatchedPlace #{unmatched_place.id}'s tenants: excluding it removes it per `dependent:`.*Declare tombstone_matcher: on UnmatchedPlace's tenants.*tombstone_matcher: ->\(tenant, tombstones\)/
+      message = /Cannot exclude Tenant #{corner_cafe.id} from UnmatchedPlace #{unmatched_place.id}'s tenants: excluding it removes it per `dependent:`.*Declare tombstone_matcher: on UnmatchedPlace's tenants.*tombstone_matcher: ->\(tenant, tombstones\).*Or exclude it with tombstone: false, to remove it without keeping it out/
       expect { unmatched_place.record_data_entries({ tenants: { exclude: [corner_cafe] } }, top, mode: :edit) }.to raise_error(ArgumentError, message)
       expect { unmatched_place.record_data_entries({ tenants: { exclude: [corner_cafe] } }, top, mode: :partial) }.to raise_error(ArgumentError, message)
       expect { unmatched_place.record_data_entries({ tenants_attributes: [{ id: corner_cafe.id, _destroy: '1' }] }, top, mode: :edit) }.to raise_error(ArgumentError, message)
@@ -1597,6 +1597,203 @@ describe 'Association tracking capabilities' do
         expect(UnvalidatedTenant.pluck(:name, :unit)).to contain_exactly(['Harbor Books', nil], ['Corner Café', '2B'])
         expect(unvalidated_place.reload.data_entries.tombstones(:tenants)).to be_empty
       end
+    end
+  end
+
+  # A source removes a member and keeps nothing that keeps it out, for a member no other source lists
+  describe 'exclusions without a tombstone' do
+    let!(:corner_cafe) { place.tenants.create!(name: 'Corner Café', unit: '1A') } # a row no member list names
+    let!(:harbor_books) { place.tenants.create!(name: 'Harbor Books') }
+
+    def member_list_of(source) = place.reload.data_entries.with_source(source).with_attribute(:tenants).first&.then { |entry| LaForge::MemberList.new(entry.value) }
+    def exclude_without_tombstone(member, source = top) = place.record_data_entries({ tenants: { exclude: [{ id: member.id }], tombstone: false } }, source, mode: :edit)
+
+    it 'removes the member, keeping neither the exclusion nor a tombstone, and drops a member list left with nothing else', capability: 'C243' do
+      exclude_without_tombstone(corner_cafe)
+      place.forge!
+
+      expect(place.reload.tenants).to eq([harbor_books])
+      expect(Tenant.exists?(corner_cafe.id)).to be(false)
+      expect(place.data_entries.tombstones(:tenants)).to be_empty
+      expect(member_list_of(top)).to be_nil
+    end
+
+    it "keeps the rest of the source's member list as it was", capability: 'C244' do
+      place.record_data_entries({ tenants: { include: [{ id: harbor_books.id }], exclude: [{ id: corner_cafe.id }], tombstone: false } }, top, mode: :partial)
+      place.forge!
+
+      expect(place.reload.tenants).to eq([harbor_books])
+      expect(place.data_entries.with_source(top).sole.value).to eq('partial' => true, 'include' => [{ 'id' => harbor_books.id }], 'exclude' => [], 'withdrawn' => [])
+    end
+
+    it 'adds the member back as a new one when any source lists it again, whatever its precedence', capability: 'C245' do
+      exclude_without_tombstone(corner_cafe)
+      place.forge!
+
+      place.reload.record_data_entries({ tenants: [{ new: 'draft-1', name: 'Corner Café' }] }, low, mode: :partial) # low ranks below top
+      expect(place.tombstones(:tenants)).to be_empty
+      expect(place.forge_diff['tenants']).to include(added: [{ 'name' => 'Corner Café' }])
+      place.forge!
+
+      expect(place.new_member(:tenants, 'draft-1')).to have_attributes(name: 'Corner Café')
+      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Corner Café', 'Harbor Books')
+      expect(place.tenants.find_by!(name: 'Corner Café').id).not_to eq(corner_cafe.id)
+    end
+
+    it 'shows the removal in forge_diff and member_sources until the forge, and nothing after', capability: 'C246' do
+      exclude_without_tombstone(corner_cafe)
+
+      expect(place.forge_diff['tenants']).to include(removed: [{ 'id' => corner_cafe.id }])
+      expect(place.member_sources(:tenants, id: corner_cafe.id)).to include(membership: nil, listed_by: [], excluded_by: [top])
+      place.forge!
+
+      expect(place.reload.member_sources(:tenants, id: corner_cafe.id)).to include(membership: nil, listed_by: [], excluded_by: [])
+      expect(place.forge_diff['tenants']).to be_nil # no source has a member list left
+    end
+
+    it "raises, naming the source, while another source's member list includes the member, active or not, and records nothing", capability: 'C247' do
+      place.record_data_entries({ tenants: [{ id: corner_cafe.id }] }, low, mode: :partial)
+      place.save!
+      message = /Cannot exclude id #{corner_cafe.id} from Place #{place.id}'s tenants with tombstone: false: low's member list includes it, and would still name it once a forge removed it. Leave out tombstone: false to keep it out, or exclude it this way once low's member list no longer includes it/
+
+      expect { exclude_without_tombstone(corner_cafe) }.to raise_error(ArgumentError, message)
+      expect { place.record_data_entries({ tenants: { exclude: [{ id: corner_cafe.id }], tombstone: false } }, top, mode: :partial) }.to raise_error(ArgumentError, message)
+      low.update!(active: false)
+      expect { exclude_without_tombstone(corner_cafe) }.to raise_error(ArgumentError, message)
+      expect(place.data_entries.with_source(top)).to be_empty
+
+      low.update!(active: true)
+      exclude_without_tombstone(corner_cafe, low) # replaces its own inclusion
+      place.save!
+      expect(member_list_of(low)).to have_attributes(include: [], no_tombstone: [{ 'id' => corner_cafe.id }])
+    ensure
+      low.update!(active: true)
+    end
+
+    it 'ignores an expired inclusion, or the member list of another source that expired, when checking', capability: 'C248' do
+      place.record_data_entries({ tenants: [{ id: corner_cafe.id }] }, low, mode: :partial, expires_at: 1.day.from_now)
+      place.record_data_entries({ tenants: [LaForge.with_settings({ id: harbor_books.id }, expires_at: 1.day.from_now)] }, high, mode: :partial)
+      place.save!
+
+      travel 2.days do
+        place.record_data_entries({ tenants: { exclude: [{ id: corner_cafe.id }, { id: harbor_books.id }], tombstone: false } }, top, mode: :edit)
+        place.forge!
+        expect(place.reload.tenants).to be_empty
+      end
+    end
+
+    it 'raises for a complete list, a has_one, and a tombstone: other than true or false, saying what to pass', capability: 'C249' do
+      place.record_data_entries({ tenants: [{ id: harbor_books.id }] }, top)
+      expect { exclude_without_tombstone(corner_cafe) }
+        .to raise_error(ArgumentError, /Place#tenants: the source has a complete list, which goes on excluding id #{corner_cafe.id} once it leaves it out, so tombstone: false would still keep it out. Record the member list with mode: :partial first, or leave out tombstone: false/)
+      expect { place.record_data_entries({ tenants: { exclude: [{ id: corner_cafe.id }], tombstone: 'no' } }, high, mode: :edit) }
+        .to raise_error(ArgumentError, /Place#tenants: tombstone: takes false, to remove the excluded members and keep nothing that keeps them out, or true, the default, not "no"/)
+      expect { place.record_data_entries({ marker: { exclude: [], tombstone: false } }, high, mode: :edit) }
+        .to raise_error(ArgumentError, /Place#marker is a has_one, whose edit is its single member, so it has no exclusions. Record nil to remove its member/)
+      expect { place.record_data_entries({ marker: { exclude: [] } }, high, mode: :partial) }.to raise_error(ArgumentError, /is a has_one, which takes a complete list/)
+    end
+
+    it 'excludes a member keyed by primary key from an association with no tombstone_matcher', capability: 'C250' do
+      stub_const('UnmatchedPlace', Class.new(ActiveRecord::Base))
+      UnmatchedPlace.table_name = 'places'
+      UnmatchedPlace.has_many :tenants, as: :occupiable, dependent: :destroy
+      UnmatchedPlace.laforged(associations: { tenants: {} })
+      unmatched_place = UnmatchedPlace.create!(name: 'Harbor Building')
+      cafe_tenant = unmatched_place.tenants.create!(name: 'Corner Café')
+
+      unmatched_place.record_data_entries({ tenants: { exclude: [{ id: cafe_tenant.id }], tombstone: false } }, top, mode: :edit)
+      unmatched_place.forge!
+
+      expect(unmatched_place.reload.tenants).to be_empty
+      expect(unmatched_place.data_entries).to be_empty
+    end
+
+    it "lets a lower source's later list add back a member keyed by its columns, which a plain exclusion keeps out", capability: 'C251' do
+      place.record_data_entries({ place_categories: categories(cafe, bakery) }, top, mode: :partial)
+      place.forge!
+      place.record_data_entries({ place_categories: { exclude: categories(cafe), tombstone: false } }, top, mode: :edit)
+      place.record_data_entries({ place_categories: { exclude: categories(bakery) } }, top, mode: :edit)
+      place.forge!
+      expect(categories_of(place)).to be_empty
+      expect(member_list_of(top)).to be_nil
+      expect(LaForge::MemberList.new(place.data_entries.with_source(top).with_attribute(:place_categories).sole.value).exclude).to eq(categories(bakery).map(&:stringify_keys))
+
+      place.reload.record_data_entries({ place_categories: categories(cafe, bakery) }, low, mode: :partial)
+      place.forge!
+
+      expect(categories_of(place)).to eq([cafe])
+    end
+
+    it 'forgets an exclusion of a member that does not exist at the next forge, which leaves the member out anyway', capability: 'C252' do
+      place.record_data_entries({ place_categories: { exclude: categories(florist), tombstone: false } }, top, mode: :edit)
+      place.forge!
+
+      expect(place.reload.data_entries.with_source(top)).to be_empty
+    end
+
+    it "removes the member with another source's tombstone, which that source keeps, and keeps none of its own", capability: 'C253' do
+      place.record_data_entries({ tenants: { exclude: [{ id: corner_cafe.id }] } }, high, mode: :edit)
+      exclude_without_tombstone(corner_cafe)
+      place.forge!
+
+      expect(place.reload.data_entries.tombstones(:tenants).map(&:source)).to eq([high])
+      expect(member_list_of(top)).to be_nil
+    end
+
+    it 'leaves the member, and keeps the expired exclusion, when the exclusion expired before the forge', capability: 'C254' do
+      place.record_data_entries({ tenants: { exclude: [LaForge.with_settings({ id: corner_cafe.id }, expires_at: 1.day.from_now)], tombstone: false } }, top, mode: :edit)
+      place.save!
+
+      travel 2.days do
+        place.reload.forge!
+        expect(place.reload.tenants).to contain_exactly(corner_cafe, harbor_books)
+        expect(member_list_of(top)).to have_attributes(exclude: [{ 'id' => corner_cafe.id }], no_tombstone: [{ 'id' => corner_cafe.id }])
+      end
+    end
+
+    it 'leaves the member when a forget: edit drops the exclusion before the forge', capability: 'C258' do
+      exclude_without_tombstone(harbor_books)
+      place.record_data_entries({ tenants: { forget: [{ id: harbor_books.id }] } }, top, mode: :edit)
+      place.forge!
+
+      expect(place.reload.tenants).to contain_exactly(corner_cafe, harbor_books)
+      expect(member_list_of(top)).to be_nil
+    end
+
+    it "drops the source's own tombstone when it excludes the tombstone's key this way, so a lower source can list the member again", capability: 'C255' do
+      place.record_data_entries({ tenants: { exclude: [{ id: corner_cafe.id }] } }, top, mode: :edit)
+      place.forge!
+      tombstone = place.reload.data_entries.tombstones(:tenants).sole
+
+      place.record_data_entries({ tenants: { exclude: [tombstone], tombstone: false } }, top, mode: :edit)
+      place.forge!
+      expect(place.reload.data_entries.tombstones(:tenants)).to be_empty
+
+      place.reload.record_data_entries({ tenants: [{ name: 'Corner Café' }] }, low, mode: :partial)
+      place.forge!
+      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Corner Café', 'Harbor Books')
+    end
+
+    it "applies to a member's nested list, recorded when the owner is forged", capability: 'C256' do
+      corner_cafe.opening_hours.create!(day: 1, opens_at: '08:00')
+      place.record_data_entries({ tenants: [{ id: corner_cafe.id, opening_hours: { exclude: [{ day: 1 }], tombstone: false } }] }, top, mode: :edit)
+      place.forge!
+
+      expect(corner_cafe.reload.opening_hours).to be_empty
+      expect(corner_cafe.data_entries.with_attribute(:opening_hours)).to be_empty
+    end
+
+    it 'carries the exclusion through a merge, and the forge after it removes the member', capability: 'C257' do
+      duplicate = Place.create!(name: 'Harbor Bldg')
+      bakery_tenant = duplicate.tenants.create!(name: 'Harbor Bakery')
+      duplicate.record_data_entries({ tenants: { exclude: [{ id: bakery_tenant.id }], tombstone: false } }, top, mode: :edit)
+      duplicate.save!
+
+      LaForge.merge(place, duplicate)
+      place.reload.forge!
+
+      expect(place.reload.tenants).to contain_exactly(corner_cafe, harbor_books)
+      expect(place.data_entries.with_source(top)).to be_empty
     end
   end
 

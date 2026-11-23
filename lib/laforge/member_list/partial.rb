@@ -4,25 +4,28 @@ module LaForge
     class Partial < MemberList
       # Returns the value stored for a partial list with the given lists. Pending items whose attributes are empty are
       # left out.
-      def self.value(include: [], exclude: [], withdrawn: [], pending: [], tombstones: [], expiries: [])
+      def self.value(include: [], exclude: [], withdrawn: [], pending: [], tombstones: [], no_tombstone: [], expiries: [])
         pending = pending.reject { |item| item['attributes'].empty? }
         value = { 'partial' => true, 'include' => include, 'exclude' => exclude, 'withdrawn' => withdrawn }
         value['tombstones'] = tombstones if tombstones.any?
+        value['no_tombstone'] = no_tombstone if no_tombstone.any?
         value['expiries'] = expiries if expiries.any?
         value['pending'] = pending if pending.any?
         value
       end
 
       # Returns the stored value for a partial list of `include` and `exclude` replacing `previous`, withdrawing what
-      # `previous` included or withdrew and this one does not name (see `MemberList#left_out_by`). It keeps the
-      # tombstones of `previous`, and its exclusions of tombstones this one does not name, with their expiries.
-      def self.replacing(previous, config, include:, exclude:, pending:, expiries:)
+      # `previous` included or withdrew and this one does not name (see `MemberList#left_out_by`). Each exclusion keeps
+      # nothing once it removes its member when `tombstone` is false. It keeps the tombstones of `previous`, and its
+      # exclusions of tombstones this one does not name, with their expiries and `tombstone: false`.
+      def self.replacing(previous, config, include:, exclude:, pending:, expiries:, tombstone: true)
         listed = (include + exclude).map { |member| config.key_of(member) }
         kept = previous.exclude.select { |member| config.tombstone?(member) && !listed.include?(config.key_of(member)) }
         kept_keys = kept.map { |member| config.key_of(member) }
         kept_expiries = previous.expiries.select { |item| kept_keys.include?(config.key_of(item['key'])) }
+        no_tombstone = (tombstone ? [] : exclude) + previous.no_tombstone.select { |member| kept_keys.include?(config.key_of(member)) }
         value(include: include, exclude: exclude + kept, withdrawn: previous.left_out_by(config, include + exclude), pending: pending, tombstones: previous.tombstones,
-              expiries: expiries + kept_expiries)
+              no_tombstone: no_tombstone, expiries: expiries + kept_expiries)
       end
 
       def initialize(value)
@@ -31,6 +34,7 @@ module LaForge
         @withdrawn = Array(value['withdrawn'])
         @pending = Array(value['pending'])
         @tombstones = Array(value['tombstones'])
+        @no_tombstone = Array(value['no_tombstone'])
         @expiries = Array(value['expiries'])
       end
 
@@ -56,11 +60,13 @@ module LaForge
       end
 
       # Returns the stored value for this member list with the member named by the key hash `member` added to its
-      # exclusions, without its pending items. The member's expiry is replaced as `including` replaces it.
-      def excluding(config, member, expiry: nil)
+      # exclusions, without its pending items. The member's expiry is replaced as `including` replaces it, and so is
+      # whether the exclusion keeps nothing once it removes the member, which it does when `tombstone` is false.
+      def excluding(config, member, expiry: nil, tombstone: true)
         key = config.key_of(member)
         with(include: others(config, include, key), exclude: others(config, exclude, key) + [config.key_hash(member)], withdrawn: others(config, withdrawn, key),
-             pending: items_without(config, pending, key), expiries: expiries_with(config, key, expiry))
+             pending: items_without(config, pending, key), no_tombstone: others(config, no_tombstone, key) + (tombstone ? [] : [config.key_hash(member)]),
+             expiries: expiries_with(config, key, expiry))
       end
 
       # Returns the stored value for this member list no longer covering the member named by the key hash `member`. It
@@ -69,7 +75,8 @@ module LaForge
       def forgetting(config, member)
         key = config.key_of(member)
         with(include: others(config, include, key), exclude: others(config, exclude, key), withdrawn: withdrawn_with(config, member),
-             pending: items_without(config, pending, key), tombstones: items_without(config, tombstones, key), expiries: items_without(config, expiries, key))
+             pending: items_without(config, pending, key), tombstones: items_without(config, tombstones, key), no_tombstone: others(config, no_tombstone, key),
+             expiries: items_without(config, expiries, key))
       end
     end
   end

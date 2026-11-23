@@ -163,7 +163,8 @@ module LaForge
     # - withdrawn: both member lists' withdrawn members that the result does not include
     # - pending: both member lists' items
     # - tombstones, for a partial result: both member lists' tombstones
-    # - expiries: the preferred list's, and the other's for members the preferred list neither includes nor excludes
+    # - no_tombstone and expiries: the preferred list's, and the other's for members the preferred list neither includes
+    #   nor excludes
     def combined_member_list(config, preferred, other)
       by_key = ->(list) { list.uniq { |member| config.key_of(member) } }
       included = by_key.(preferred.include + other.include.reject { |member| preferred.partial? && preferred.decision(config, config.key_of(member)) == :exclude })
@@ -173,9 +174,10 @@ module LaForge
       tombstones = (preferred.tombstones + other.tombstones).uniq { |item| config.key_of(item['key']) }
       preferred_keys = (preferred.include + preferred.exclude).map { |member| config.key_of(member) }
       expiries = preferred.expiries + other.expiries.reject { |item| preferred_keys.include?(config.key_of(item['key'])) }
+      no_tombstone = preferred.no_tombstone + other.no_tombstone.reject { |member| preferred_keys.include?(config.key_of(member)) }
 
       preferred.with(include: included, exclude: excluded, withdrawn: withdrawn, pending: preferred.pending + other.pending, tombstones: tombstones,
-                     expiries: expiries)
+                     no_tombstone: no_tombstone, expiries: expiries)
     end
 
     def assert_mergeable!(survivor, duplicate)

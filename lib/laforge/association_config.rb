@@ -16,10 +16,10 @@ module LaForge
   # before that save, and ask for the member a forge built for it (see `Inspection#new_member`). Without one, LaForge
   # makes a random token.
   #
-  # A member keyed by primary key that a partial list excludes is removed like any other, and every member list then
-  # names it by a tombstone key, `{ 'tombstone' => token }` (see Tombstone). `tombstone_matcher:` is a callable given a
-  # member a source lists and the tombstones' records, which returns the record that member is, or nil. Only a has_many
-  # keyed by primary key takes one.
+  # A member keyed by primary key that a partial list excludes is removed like any other, and unless the exclusion has
+  # `tombstone: false` (see MemberList), every member list then names it by a tombstone key, `{ 'tombstone' => token }`
+  # (see Tombstone). `tombstone_matcher:` is a callable given a member a source lists and the tombstones' records, which
+  # returns the record that member is, or nil. Only a has_many keyed by primary key takes one.
   #
   # Member order is written to `order_column:` when given, or else to the integer column the association scope orders
   # by, unless it identifies the member or its owner. `order_column: false` writes none.
@@ -152,8 +152,9 @@ module LaForge
       unsaved?(member) ? {} : key_hash(member)
     end
 
-    # Raises when `members` include a member keyed by primary key and the association has no `tombstone_matcher:`. An
-    # excluded member is removed, and only the matcher can recognize it when a source lists it again.
+    # Raises when `members`, exclusions that keep a tombstone, include a member keyed by primary key and the association
+    # has no `tombstone_matcher:`. An excluded member is removed, and only the matcher can recognize it when a source
+    # lists it again.
     def assert_excludable!(owner, members)
       return unless primary_keyed? && !tombstone_matcher
 
@@ -164,7 +165,8 @@ module LaForge
                            "and without a tombstone_matcher LaForge could not recognize it when a source lists it again, so it would come back. " \
                            "Declare tombstone_matcher: on #{owner_class.name}'s #{name}, a callable given the listed #{klass.name} and the excluded ones " \
                            "that returns the one it is, or nil, such as " \
-                           "`laforged associations: { #{name}: { tombstone_matcher: ->(#{klass.model_name.element}, tombstones) { tombstones.find { |tombstone| ... } } } }`"
+                           "`laforged associations: { #{name}: { tombstone_matcher: ->(#{klass.model_name.element}, tombstones) { tombstones.find { |tombstone| ... } } } }`. " \
+                           'Or exclude it with tombstone: false, to remove it without keeping it out'
     end
 
     # Returns [key hash, attributes] for each of `members`, where the attributes are what the source says about the
@@ -193,21 +195,36 @@ module LaForge
       normalized
     end
 
-    # Returns [[action, member], ...] for a source's edits, given as a list of members to include or as
-    # { include: [...], exclude: [...], forget: [...] }. Raises for a has_one.
+    # Returns [[action, member, tombstone], ...] for a source's edits, given as a list of members to include or as
+    # { include: [...], exclude: [...], forget: [...] }, with `tombstone: false` for exclusions that keep nothing once
+    # they remove their member (see `tombstone_option`). `tombstone` is that option, true unless given. Raises for a
+    # has_one.
     def edits(value)
       raise ArgumentError, "#{owner_class.name}##{name} is a has_one, which takes a complete list" unless collection?
 
       lists = value.is_a?(Hash) ? value.to_h.stringify_keys : { 'include' => value }
-      unknown = lists.keys - %w[include exclude forget]
-      raise ArgumentError, "#{owner_class.name}##{name} edits are a list of members, or { include:, exclude:, forget: }, not #{unknown.join(', ')}" if unknown.any?
+      unknown = lists.keys - %w[include exclude forget tombstone]
+      raise ArgumentError, "#{owner_class.name}##{name} edits are a list of members, or { include:, exclude:, forget:, tombstone: }, not #{unknown.join(', ')}" if unknown.any?
 
-      lists.flat_map do |action, members|
+      tombstone = tombstone_option(lists)
+      lists.except('tombstone').flat_map do |action, members|
         raise ArgumentError, "#{owner_class.name}##{name}: LaForge.with_settings can wrap each member, or the association's whole value, not the #{action} list" if RecordingSettings.wrapped?(members)
         raise ArgumentError, "#{owner_class.name}##{name} edits must list members as an array for #{action}" unless members.is_a?(Array)
 
-        members.map { |member| [action.to_sym, member] }
+        members.map { |member| [action.to_sym, member, tombstone] }
       end
+    end
+
+    # Returns the `tombstone:` option of `lists`, a partial list or edits given as a hash: false when its exclusions keep
+    # neither a tombstone nor the exclusion once a forge has removed their member, and true, the default, when they keep
+    # the member out. Raises for any other value.
+    # The name stands for whatever keeps the member out after the forge: a member keyed by primary key would get a
+    # tombstone, and a member keyed by its columns, which never gets one, keeps the exclusion, which plays the same role.
+    def tombstone_option(lists)
+      tombstone = lists.fetch('tombstone', true)
+      return tombstone if [true, false].include?(tombstone)
+
+      raise ArgumentError, "#{owner_class.name}##{name}: tombstone: takes false, to remove the excluded members and keep nothing that keeps them out, or true, the default, not #{tombstone.inspect}"
     end
 
     # Raises when a member references a record that does not exist, or is named by an id that is not one of the owner's
@@ -351,7 +368,7 @@ module LaForge
         unwrapped
       end
       if edit && nested.collection? && !value.nil?
-        nested.edits(value).each { |action, nested_member| nested.normalize_members([unwrap.(nested_member)], attributes: action == :include, edit: true) }
+        nested.edits(value).each { |action, nested_member, _| nested.normalize_members([unwrap.(nested_member)], attributes: action == :include, edit: true) }
       else
         nested.normalize_members(value.is_a?(Array) ? value.map(&unwrap) : unwrap.(value))
       end
