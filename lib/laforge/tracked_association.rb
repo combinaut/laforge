@@ -315,9 +315,9 @@ module LaForge
       end
     end
 
-    # Returns the tombstone the unsaved member `record` resolves to when the source with `source_id` lists it, which is
-    # the first one the tombstone matcher matches to it whose source outranks that source, or nil, which it also is when
-    # the association has no tombstone matcher
+    # Returns the tombstone that would decide the membership of the unsaved member `record` against the source with
+    # `source_id` listing it, as `LaForge.resolved_tombstone` does. That is the first one the tombstone matcher matches
+    # to it whose source outranks that source, or nil, which it also is when the association has no tombstone matcher.
     def resolved_tombstone(record, source_id)
       return unless config.tombstone_matcher
 
