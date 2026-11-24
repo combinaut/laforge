@@ -528,7 +528,7 @@ describe 'Usage' do
     end
 
     it "ranks by the record's own rules, unsaved ones included" do
-      record.update_precedence_order(:name, [cadastre])
+      record.update_precedence_order([cadastre], attribute: :name)
 
       expect(record.resolved_source(:name)).to eq(cadastre)
     end
@@ -919,29 +919,29 @@ describe 'Usage' do
     end
 
     it "sets one record's order for an attribute, saved with the record, ranking the sources it leaves out below" do
-      record.update_precedence_order(:name, [cadastre])
+      record.update_precedence_order([cadastre], attribute: :name)
       expect(record.precedence_rules.select(&:new_record?).size).to eq(1)
       record.forge!
 
       expect(record.reload).to have_attributes(name: 'From Cadastre', count: 9)
-      expect(record.precedence_order(:name).map { |item| item.values_at(:source, :level, :precedence) }.first(3))
-        .to eq([[cadastre, :record, 1], [map_editor, :global, 33], [business_directory, :global, 32]])
+      expect(record.precedence_order(attribute: :name).map { |item| item.values_at(:source, :level, :precedence) }.first(3))
+        .to eq([[cadastre, :record_attribute, 1], [map_editor, :global, 33], [business_directory, :global, 32]])
     end
 
     it 'replaces the order at that level, and removes it given nil' do
-      record.update_precedence_order(:name, [cadastre, business_directory])
-      record.update_precedence_order(:name, [business_directory])
+      record.update_precedence_order([cadastre, business_directory], attribute: :name)
+      record.update_precedence_order([business_directory], attribute: :name)
       record.forge!
       expect(record.reload.name).to eq('From Business Directory')
       expect(record.source_precedences).to eq('name' => { business_directory => 1 })
 
-      record.update_precedence_order(:name, nil)
+      record.update_precedence_order(nil, attribute: :name)
       record.forge!
       expect(record.reload.name).to eq('From Map Editor')
     end
 
     it 'ranks a source added later below an order set at a more specific level, whatever its global precedence' do
-      record.update_precedence_order(:name, [business_directory, cadastre])
+      record.update_precedence_order([business_directory, cadastre], attribute: :name)
       record.forge!
       geocoder = LaForge::DataSource.create!(name: 'Geocoder', precedence: 1000)
       record.reload.record_data_entries({ name: 'From Geocoder' }, geocoder)
@@ -957,7 +957,7 @@ describe 'Usage' do
 
       expect(record).to have_attributes(name: 'From Business Directory', count: 5)
       expect(ActiveRecordMock.precedence_order(attribute: :count).map { |item| item.values_at(:source, :level, :precedence) }.first(3))
-        .to eq([[cadastre, :attribute, 1], [business_directory, :model, 2], [map_editor, :global, 33]])
+        .to eq([[cadastre, :model_attribute, 1], [business_directory, :model, 2], [map_editor, :global, 33]])
     end
 
     it 'lists the model-wide order as the model level when asked for no attribute' do
@@ -989,10 +989,302 @@ describe 'Usage' do
     end
 
     it 'lists the records that have an order of their own' do
-      record.update_precedence_order(:name, [cadastre])
+      record.update_precedence_order([cadastre], attribute: :name)
       record.save!
 
       expect(LaForge::PrecedenceRule.for_records(ActiveRecordMock).pluck(:record_id, :attribute_name)).to eq([[record.id, 'name']])
+    end
+  end
+
+  # One record's order of sources for every attribute, below its orders for single attributes and above the model's
+  describe "a record's precedence for every attribute" do
+    before do
+      record.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+      record.record_data_entries({ name: 'From Business Directory', count: 7 }, business_directory)
+      record.record_data_entries({ name: 'From Map Editor', count: 9 }, map_editor)
+      record.save!
+    end
+
+    def ranked(order) = order.map { |item| item.values_at(:source, :level, :precedence) }
+
+    # Gives `source` a rule of `precedence` for the name at `level`, or leaves it its global precedence at :global
+    def rule_at(level, source, precedence)
+      case level
+      when :record_attribute then record.update_attribute_source_precedence(:name, source, precedence)
+      when :record then record.update_source_precedence(source, precedence)
+      when :model_attribute then ActiveRecordMock.update_attribute_source_precedence(:name, source, precedence)
+      when :model then ActiveRecordMock.update_source_precedence(source, precedence)
+      end
+    end
+
+    %i[record_attribute record model_attribute model global].combination(2).each do |specific, wider|
+      it "ranks a source with a rule at the #{specific} level above one whose most specific rule is at the #{wider} level, whatever the numbers" do
+        rule_at(specific, cadastre, 1)
+        rule_at(wider, map_editor, 100)
+        record.reload.forge!
+
+        expect(record.reload.name).to eq('From Cadastre')
+        expect(ranked(record.precedence_order(attribute: :name)).first(2)).to eq([[cadastre, specific, 1], [map_editor, wider, wider == :global ? 33 : 100]])
+      end
+    end
+
+    it "sets the record's order for every attribute, saved with the record, ranking the sources it leaves out below" do
+      record.update_precedence_order([cadastre, business_directory])
+      expect(record.precedence_rules.select(&:new_record?).map(&:attribute_name)).to eq(['', ''])
+      record.forge!
+
+      expect(record.reload).to have_attributes(name: 'From Cadastre', count: 5)
+      expect(ranked(record.precedence_order).first(3)).to eq([[cadastre, :record, 2], [business_directory, :record, 1], [map_editor, :global, 33]])
+      expect(ranked(record.precedence_order(attribute: :count)).first).to eq([cadastre, :record, 2])
+    end
+
+    it "ranks a source by the record's rule for the attribute over its own rule for every attribute" do
+      record.update_precedence_order([business_directory, cadastre])
+      record.update_precedence_order([map_editor], attribute: :name)
+      record.update_attribute_source_precedence(:count, business_directory, 1)
+      record.forge!
+
+      expect(record.reload).to have_attributes(name: 'From Map Editor', count: 7)
+      expect(ranked(record.precedence_order(attribute: :name)).first(3)).to eq([[map_editor, :record_attribute, 1], [business_directory, :record, 2], [cadastre, :record, 1]])
+      expect(ranked(record.precedence_order(attribute: :count)).first(2)).to eq([[business_directory, :record_attribute, 1], [cadastre, :record, 1]])
+    end
+
+    it "compares precedences only among sources whose most specific rule is the record's rule for every attribute" do
+      record.update_source_precedence(cadastre, 3)
+      record.update_source_precedence(business_directory, 8)
+      ActiveRecordMock.update_source_precedence(map_editor, 1000)
+      record.reload.forge!
+
+      expect(record.reload).to have_attributes(name: 'From Business Directory', count: 7)
+    end
+
+    it 'saves a precedence set with update_source_precedence at once on a saved record, and with a new record otherwise, and removes it given nil' do
+      record.update_source_precedence(cadastre, 4)
+      expect(LaForge::PrecedenceRule.for_records(ActiveRecordMock).pluck(:attribute_name, :precedence)).to eq([['', 4]])
+
+      new_record = ActiveRecordMock.new(name: 'New')
+      new_record.update_source_precedence(cadastre, 6)
+      expect(new_record.source_precedences).to eq('' => { cadastre => 6 })
+      new_record.save!
+      expect(new_record.reload.source_precedences).to eq('' => { cadastre => 6 })
+
+      record.update_source_precedence(cadastre, nil)
+      expect(record.reload.source_precedences).to eq({})
+    end
+
+    it "replaces only the record's order for every attribute, leaving orders for single attributes, and removes it given nil" do
+      record.update_precedence_order([map_editor], attribute: :name)
+      record.update_precedence_order([cadastre, business_directory])
+      record.update_precedence_order([business_directory])
+      record.forge!
+
+      expect(record.source_precedences).to eq('' => { business_directory => 1 }, 'name' => { map_editor => 1 })
+      expect(record.reload).to have_attributes(name: 'From Map Editor', count: 7)
+
+      record.update_precedence_order(nil)
+      record.forge!
+      expect(record.reload.source_precedences).to eq('name' => { map_editor => 1 })
+      expect(record.count).to eq(9)
+
+      record.update_precedence_order([cadastre])
+      record.update_precedence_order([], attribute: :name) # leaves the order for every attribute
+      record.forge!
+      expect(record.reload.source_precedences).to eq('' => { cadastre => 1 })
+      expect(record.name).to eq('From Cadastre')
+    end
+
+    it "outranks the model's orders, and applies to a source added later only when the order lists it" do
+      ActiveRecordMock.update_precedence_order([map_editor], attribute: :name)
+      ActiveRecordMock.update_precedence_order([map_editor])
+      record.update_precedence_order([business_directory])
+      geocoder = LaForge::DataSource.create!(name: 'Geocoder', precedence: 1000)
+      record.record_data_entries({ name: 'From Geocoder' }, geocoder)
+      record.forge!
+
+      expect(record.reload).to have_attributes(name: 'From Business Directory', count: 7)
+      expect(ranked(record.precedence_order(attribute: :name)).first(3)).to eq([[business_directory, :record, 1], [map_editor, :model_attribute, 1], [geocoder, :global, 1000]])
+      expect(ranked(record.precedence_order).first(2)).to eq([[business_directory, :record, 1], [map_editor, :model, 1]])
+    end
+
+    it 'counts unsaved rules, and leaves out rules marked for destruction' do
+      record.update_precedence_order([cadastre])
+      expect(record.forge_attributes).to include('name' => 'From Cadastre')
+
+      record.save!
+      record.update_precedence_order(nil)
+      expect(record.precedence_rules.sole).to be_marked_for_destruction
+      expect(record.forge_attributes).to include('name' => 'From Map Editor')
+      expect(record.source_precedences).to eq({})
+    end
+
+    it "reads the record's rules with the record inside a precedence cache, which keeps the model-wide rules it read" do
+      rule = ->(record_id) { { record_type: 'ActiveRecordMock', record_id: record_id, attribute_name: '', ruleset: '', recorded_at: Time.current } }
+      LaForge.with_precedence_cache do
+        record.forge!
+        # Written by SQL, as by another process, so nothing clears the cache
+        LaForge::PrecedenceRule.insert_all!([rule.(record.id).merge(source_id: cadastre.id, precedence: 1), rule.(0).merge(source_id: business_directory.id, precedence: 1)])
+
+        expect(ranked(record.reload.precedence_order).first(2)).to eq([[cadastre, :record, 1], [map_editor, :global, 33]])
+      end
+
+      expect(ranked(record.precedence_order).first(2)).to eq([[cadastre, :record, 1], [business_directory, :model, 1]])
+    end
+
+    it "lists the order for every attribute without the record's rules for single attributes" do
+      record.update_precedence_order([map_editor], attribute: :name)
+      record.update_precedence_order([business_directory, cadastre])
+
+      expect(ranked(record.precedence_order).first(3)).to eq([[business_directory, :record, 2], [cadastre, :record, 1], [map_editor, :global, 33]])
+    end
+
+    it 'stores a rule naming one record and no attribute, and still refuses a global rule naming a record or attribute' do
+      rule = LaForge::PrecedenceRule.create!(record_type: 'ActiveRecordMock', record_id: record.id, source: cadastre, precedence: 1)
+
+      expect(rule.attribute_name).to eq(LaForge::PrecedenceRule::ANY_ATTRIBUTE)
+      expect(record.reload.forge_attributes).to include('name' => 'From Cadastre', 'count' => 5)
+      expect { LaForge::PrecedenceRule.create!(record_id: record.id, source: business_directory, precedence: 1) }
+        .to raise_error(ActiveRecord::RecordInvalid, /a global rule cannot name a record or attribute/)
+    end
+
+    it "moves a record's rules for every attribute when merging duplicates" do
+      duplicate = ActiveRecordMock.create!(name: 'Duplicate')
+      duplicate.update_source_precedence(cadastre, 2)
+
+      result = LaForge.merge(record, duplicate)
+
+      expect(result).to include(precedence_rules_moved: 1)
+      expect(record.reload.source_precedences).to eq('' => { cadastre => 2 })
+    end
+
+    it "lists a conflict between both records' rules for every attribute under the blank attribute name when merging duplicates" do
+      duplicate = ActiveRecordMock.create!(name: 'Duplicate')
+      record.update_source_precedence(cadastre, 1)
+      duplicate.update_source_precedence(cadastre, 2)
+
+      result = LaForge.merge(record, duplicate)
+
+      expect(result[:precedence_rules_conflicting]).to eq([{ attribute: LaForge::PrecedenceRule::ANY_ATTRIBUTE, source: cadastre, kept: :duplicate }])
+      expect(record.reload.source_precedences).to eq('' => { cadastre => 2 })
+    end
+
+    it "shows the values a record's order for every attribute would change in forge_diff" do
+      record.forge!
+      record.update_precedence_order([cadastre])
+
+      expect(record.forge_diff).to eq('name' => ['From Map Editor', 'From Cadastre'], 'count' => [9, 5])
+      record.forge!
+      expect(record.reload).to have_attributes(name: 'From Cadastre', count: 5)
+      expect(record.forge_diff).to eq({})
+    end
+
+    it 'refuses a nil or blank attribute, which names none, rather than setting the rule for every attribute' do
+      precedence = "names no attribute. Pass an attribute's name, or set the precedence for every attribute with update_source_precedence(source, precedence)"
+      order = "names no attribute. Pass an attribute's name, or leave out attribute: for the order for every attribute"
+
+      expect { record.update_attribute_source_precedence(nil, cadastre, 5) }.to raise_error(ArgumentError, "ActiveRecordMock#update_attribute_source_precedence was given nil for the attribute, which #{precedence}")
+      expect { record.update_attribute_source_precedence('', cadastre, 5, expires_on: map_editor, expires_when: :matches) }
+        .to raise_error(ArgumentError, "ActiveRecordMock#update_attribute_source_precedence was given \"\" for the attribute, which #{precedence}")
+      expect { ActiveRecordMock.update_attribute_source_precedence(:'', cadastre, 5) }.to raise_error(ArgumentError, "ActiveRecordMock.update_attribute_source_precedence was given :\"\" for the attribute, which #{precedence}")
+      expect { record.update_precedence_order([cadastre], attribute: '') }.to raise_error(ArgumentError, "ActiveRecordMock#update_precedence_order was given \"\" for the attribute, which #{order}")
+      expect { record.update_precedence_order([cadastre], attribute: ' ') }.to raise_error(ArgumentError, "ActiveRecordMock#update_precedence_order was given \" \" for the attribute, which #{order}")
+      expect { ActiveRecordMock.update_precedence_order([cadastre], attribute: '') }.to raise_error(ArgumentError, "ActiveRecordMock.update_precedence_order was given \"\" for the attribute, which #{order}")
+      expect { record.precedence_order(attribute: '') }.to raise_error(ArgumentError, "ActiveRecordMock#precedence_order was given \"\" for the attribute, which #{order}")
+      expect { ActiveRecordMock.precedence_order(attribute: :'') }.to raise_error(ArgumentError, "ActiveRecordMock.precedence_order was given :\"\" for the attribute, which #{order}")
+
+      expect(record.reload.precedence_rules).to be_empty
+      expect(LaForge::PrecedenceRule.for_model(ActiveRecordMock)).to be_empty
+    end
+
+    it 'raises Ruby\'s ArgumentError for the attribute passed positionally before the sources' do
+      expect { record.update_precedence_order(:name, [cadastre]) }.to raise_error(ArgumentError, /wrong number of arguments \(given 2, expected 1\)/)
+      expect { record.precedence_order(:name) }.to raise_error(ArgumentError, /wrong number of arguments \(given 1, expected 0\)/)
+    end
+
+    context 'with an attribute group' do
+      let(:grouped_model) do
+        Class.new(ActiveRecordMock) do
+          def self.name = 'ActiveRecordMock'
+
+          laforged attribute_groups: { listing: %i[name count] }
+        end
+      end
+      let(:grouped) { grouped_model.create!(name: 'Original', count: 1) }
+
+      before do
+        grouped.record_data_entries({ name: 'From Cadastre', count: 5 }, cadastre)
+        grouped.record_data_entries({ name: 'From Map Editor', count: 9 }, map_editor)
+        grouped.save!
+      end
+
+      it "ranks the group by the record's order for every attribute, below the order set on the group, and raises for an order on one of its attributes" do
+        grouped.update_precedence_order([cadastre])
+        grouped.forge!
+        expect(grouped.reload).to have_attributes(name: 'From Cadastre', count: 5)
+        expect(grouped.precedence_order(attribute: :count).first).to include(source: cadastre, level: :record)
+
+        grouped.update_precedence_order([map_editor], attribute: :listing)
+        grouped.forge!
+        expect(grouped.reload).to have_attributes(name: 'From Map Editor', count: 9)
+
+        expect { grouped.update_precedence_order([cadastre], attribute: :count) }.to raise_error(ArgumentError, /ActiveRecordMock#count is in attribute group listing, which is ranked as a whole; set the precedence on listing/)
+      end
+    end
+
+    context 'expiring' do
+      include ActiveSupport::Testing::TimeHelpers
+
+      it "falls back to the next level once the record's order for every attribute expires at a time" do
+        record.update_precedence_order([cadastre], expires_at: 1.week.from_now)
+        record.forge!
+        expect(record.reload.name).to eq('From Cadastre')
+
+        travel 8.days do
+          record.reload.forge!
+          expect(record.reload).to have_attributes(name: 'From Map Editor', count: 9)
+          expect(record.source_precedences).to eq({})
+          expect(record.precedence_order.first).to include(source: map_editor, level: :global)
+        end
+      end
+
+      it 'expires on a source once it provides a different value for any attribute' do
+        record.update_source_precedence(cadastre, 5, expires_on: business_directory)
+        record.reload.forge!
+        expect(record.reload.name).to eq('From Cadastre')
+
+        record.record_data_entries({ name: 'From Business Directory', count: 7 }, business_directory) # the same values
+        record.forge!
+        expect(record.reload.precedence_rules.sole.expired?).to be(false)
+
+        record.record_data_entries({ count: 8 }, business_directory)
+        record.forge!
+        expect(record.reload.precedence_rules.sole.expired?).to be(true)
+        expect(record).to have_attributes(name: 'From Map Editor', count: 9)
+      end
+
+      it 'expires on a source with expires_when: :records once it provides any value' do
+        record.update_precedence_order([cadastre], expires_on: business_directory, expires_when: :records)
+        record.save!
+        record.record_data_entries({ count: 7 }, business_directory) # the same value
+        record.forge!
+
+        expect(record.reload.precedence_rules.sole.expired?).to be(true)
+        expect(record.name).to eq('From Map Editor')
+      end
+
+      it 'raises for expires_when: :matches, which compares values one attribute at a time, saying what to pass instead, and sets nothing' do
+        compares = "expires_when: :matches compares a rule's source's value for one attribute with that of expires_on:, and a rule for every attribute has no one value to compare."
+        expect { record.update_precedence_order([map_editor], expires_on: cadastre, expires_when: :matches) }
+          .to raise_error(ArgumentError, "ActiveRecordMock#update_precedence_order: #{compares} Pass attribute: for each attribute whose order should end on a match, or expire this one with expires_when: :changes or :records")
+        expect { record.update_source_precedence(map_editor, 5, expires_on: cadastre, expires_when: :matches) }
+          .to raise_error(ArgumentError, "ActiveRecordMock#update_source_precedence: #{compares} Use update_attribute_source_precedence(attribute, ...) for each attribute whose precedence " \
+                                         'should end on a match, or expire this one with expires_when: :changes or :records')
+        expect(record.precedence_rules).to be_empty
+      end
+
+      it 'raises for an expiry with nothing to expire' do
+        expect { record.update_precedence_order([], expires_at: 1.week.from_now) }.to raise_error(ArgumentError, /ActiveRecordMock#update_precedence_order with no sources removes it, so there is nothing to expire/)
+        expect { record.update_source_precedence(cadastre, nil, expires_on: map_editor) }.to raise_error(ArgumentError, /ActiveRecordMock#update_source_precedence with a nil precedence removes it/)
+      end
     end
   end
 
@@ -1080,8 +1372,8 @@ describe 'Usage' do
     end
 
     it "expires a record's precedence order, so the next level's order applies again" do
-      record.update_precedence_order(:name, [cadastre], expires_at: 1.week.from_now)
-      record.update_precedence_order(:count, [cadastre], expires_on: business_directory)
+      record.update_precedence_order([cadastre], attribute: :name, expires_at: 1.week.from_now)
+      record.update_precedence_order([cadastre], attribute: :count, expires_on: business_directory)
       record.forge!
       expect(record.reload).to have_attributes(name: 'From Cadastre', count: 5)
 
@@ -1092,7 +1384,7 @@ describe 'Usage' do
       travel 8.days do
         record.reload.forge!
         expect(record.reload.name).to eq('From Business Directory')
-        expect(record.precedence_order(:name).first).to eq(source: map_editor, level: :global, precedence: 33, ruleset: nil)
+        expect(record.precedence_order(attribute: :name).first).to eq(source: map_editor, level: :global, precedence: 33, ruleset: nil)
         expect(record.source_precedences).to eq({})
         expect(record.precedence_rules.size).to eq(2) # both expired rules are kept
       end
@@ -1113,10 +1405,10 @@ describe 'Usage' do
 
     it 'replaces the expiry when the value is recorded or the order set again, and clears it when left out' do
       record.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor, expires_at: 1.week.from_now)
-      record.update_precedence_order(:name, [map_editor], expires_on: cadastre)
+      record.update_precedence_order([map_editor], attribute: :name, expires_on: cadastre)
       record.save!
       record.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor, expires_at: 2.weeks.from_now)
-      record.update_precedence_order(:name, [map_editor])
+      record.update_precedence_order([map_editor], attribute: :name)
       record.save!
 
       expect(record.data_entries.with_source(map_editor).sole.expires_at).to be_within(1.minute).of(2.weeks.from_now)
@@ -1129,7 +1421,7 @@ describe 'Usage' do
 
     it 'lists what expires before a time, so the application can forge those records on time and warn ahead of it' do
       record.record_data_entries({ name: 'Renamed in the Map Editor' }, map_editor, expires_at: 3.days.from_now)
-      record.update_precedence_order(:count, [cadastre], expires_at: 10.days.from_now)
+      record.update_precedence_order([cadastre], attribute: :count, expires_at: 10.days.from_now)
       record.save!
 
       expect(LaForge::DataEntry.expiring(before: 1.week.from_now).pluck(:record_id, :attribute_name)).to eq([[record.id, 'name']])
@@ -1225,7 +1517,7 @@ describe 'Usage' do
     it 'raises for an expiry it cannot apply, saying what to pass' do
       expect { record.record_data_entries({ name: 'Renamed' }, map_editor, expires_at: '2030-01-01') }.to raise_error(ArgumentError, /expires_at: must be a time, such as 2.weeks.from_now, not "2030-01-01"/)
       expect { record.record_data_entries({ name: 'Renamed' }, map_editor, expires_on: map_editor) }.to raise_error(ArgumentError, /expires_on: names the source these values come from.*Pass another source, whose different values should end the change/)
-      expect { record.update_precedence_order(:name, [], expires_at: 1.week.from_now) }.to raise_error(ArgumentError, /update_precedence_order\(:name\) with no sources removes it, so there is nothing to expire/)
+      expect { record.update_precedence_order([], attribute: :name, expires_at: 1.week.from_now) }.to raise_error(ArgumentError, /update_precedence_order\(attribute: :name\) with no sources removes it, so there is nothing to expire/)
       expect { record.update_attribute_source_precedence(:name, cadastre, nil, expires_on: map_editor) }.to raise_error(ArgumentError, /with a nil precedence removes it/)
       expect { LaForge::PrecedenceRule.create!(record_type: 'ActiveRecordMock', attribute_name: 'name', source: cadastre, precedence: 1, expires_at: 1.week.from_now) }
         .to raise_error(ArgumentError, /Only a precedence rule on one record can expire, and this is a model-wide rule on ActiveRecordMock/)
@@ -1634,7 +1926,7 @@ describe 'Usage' do
       end
 
       it "expires a precedence rule on the group the same way, comparing its source's entries" do
-        grouped.update_precedence_order(:listing, [map_editor], expires_on: cadastre, expires_when: :matches)
+        grouped.update_precedence_order([map_editor], attribute: :listing, expires_on: cadastre, expires_when: :matches)
         grouped.save!
         record_and_save(grouped.reload, { name: 'Harbor Building', count: 9 }, cadastre)
 
@@ -1644,7 +1936,7 @@ describe 'Usage' do
       it "raises for a rule whose source has no entry for one of the group's attributes" do
         grouped.data_entries.with_source(map_editor).with_attribute(:count).delete_all
 
-        expect { grouped.reload.update_precedence_order(:listing, [map_editor], expires_on: cadastre, expires_when: :matches) }
+        expect { grouped.reload.update_precedence_order([map_editor], attribute: :listing, expires_on: cadastre, expires_when: :matches) }
           .to raise_error(ArgumentError, /ActiveRecordMock#listing: Map Editor provides no value for count on this record/)
       end
     end
@@ -1653,7 +1945,7 @@ describe 'Usage' do
       before { record_and_save(record, { name: 'Harbor Building' }, map_editor) }
 
       it "compares the entry of the rule's source for the same record and attribute" do
-        record.update_precedence_order(:name, [map_editor], expires_on: cadastre, expires_when: :matches)
+        record.update_precedence_order([map_editor], attribute: :name, expires_on: cadastre, expires_when: :matches)
         record.save!
         expect(record.precedence_rules.sole).to have_attributes(expires_at: nil, expires_when: 'matches')
 
@@ -1690,7 +1982,7 @@ describe 'Usage' do
         end
 
         it 'update_precedence_order checks only the rules it sets' do
-          record.update_precedence_order(:name, [cadastre], expires_on: business_directory, expires_when: :matches)
+          record.update_precedence_order([cadastre], attribute: :name, expires_on: business_directory, expires_when: :matches)
 
           expect(waiting.expires_at).to be_nil
           expect(record.precedence_rules.sole.expired?).to be(true)
@@ -1714,7 +2006,7 @@ describe 'Usage' do
       end
 
       it 'raises when the source has no entry for the attribute, naming both, and sets nothing' do
-        expect { record.update_precedence_order(:name, [map_editor, business_directory], expires_on: cadastre, expires_when: :matches) }
+        expect { record.update_precedence_order([map_editor, business_directory], attribute: :name, expires_on: cadastre, expires_when: :matches) }
           .to raise_error(ArgumentError, /ActiveRecordMock#name: Business Directory provides no value for name on this record.*Record a value from that source first, or leave out expires_when:/)
         expect { record.update_attribute_source_precedence(:count, map_editor, 5, expires_on: cadastre, expires_when: :matches) }
           .to raise_error(ArgumentError, /ActiveRecordMock#count: Map Editor provides no value for count on this record/)
@@ -1722,7 +2014,7 @@ describe 'Usage' do
       end
 
       it 'raises for a rule on the source it would compare with' do
-        expect { record.update_precedence_order(:name, [map_editor, cadastre], expires_on: cadastre, expires_when: :matches) }
+        expect { record.update_precedence_order([map_editor, cadastre], attribute: :name, expires_on: cadastre, expires_when: :matches) }
           .to raise_error(ArgumentError, /ActiveRecordMock#name: expires_when: :matches compares each source's value with that of expires_on:, which is one of these sources.*Leave that source out/)
       end
 
@@ -1742,7 +2034,7 @@ describe 'Usage' do
       expect { record.record_data_entries({ name: 'Renamed' }, map_editor, expires_at: 1.week.from_now, expires_when: :changes) }.to raise_error(ArgumentError, /so it needs expires_on:/)
       expect { record.record_data_entries({ name: 'Renamed' }, map_editor, expires_on: cadastre, expires_when: :agrees) }.to raise_error(ArgumentError, /expires_when: must be :changes, :matches or :records, not :agrees/)
       expect { LaForge.with_settings('Renamed', expires_when: :matches) }.to raise_error(ArgumentError, /LaForge.with_settings: expires_when: says when an expiry on a source fires/)
-      expect { record.update_precedence_order(:name, [], expires_on: cadastre, expires_when: :matches) }.to raise_error(ArgumentError, /with no sources removes it/)
+      expect { record.update_precedence_order([], attribute: :name, expires_on: cadastre, expires_when: :matches) }.to raise_error(ArgumentError, /with no sources removes it/)
       expect { record.update_attribute_source_precedence(:name, cadastre, nil, expires_when: :matches) }.to raise_error(ArgumentError, /with a nil precedence removes it/)
     end
   end

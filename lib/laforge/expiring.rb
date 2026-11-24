@@ -23,12 +23,16 @@ module LaForge
   # value from the source is recorded, the same value included, and when the change is recorded (see
   # `ExpiryTrigger::Matches`). A precedence rule has no value of its own, so it compares its source's entry for the same
   # record and attribute. A source with no entry, or an expired one, provides no value, so nothing matches it. A change
-  # that already matches expires at its own `recorded_at`. Tracked associations have no value to compare, so they raise.
+  # that already matches expires at its own `recorded_at`. Tracked associations have no value to compare, so they raise,
+  # and so does a record's precedence rule for every attribute (see PrecedenceRule), which has no one entry to compare.
   #
   # With `:records`, an expiry on a source fires the first time any value from that source is recorded after the change
   # was made, or for an attribute group, any of its values, the same value included. A member list fires it for the
   # member lists and rules of the association, and for a member when it covers the member, or for an edit, when the edit
   # names the member.
+  #
+  # A record's precedence rule for every attribute waits on every attribute and tracked association of the record, so
+  # with `:changes` or `:records`, a value recorded from the source for any of them counts.
   #
   # Forging leaves an expired row out, as it leaves out an inactive source's, and the row is kept, so it can still be
   # read. An expiry takes effect when the record is next forged. Forging records on time, and removing expired rows,

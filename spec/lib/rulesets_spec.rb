@@ -38,7 +38,7 @@ describe 'Rulesets' do
   end
 
   def forged_name(place) = place.reload.tap(&:forge!).reload.name
-  def order_of(place) = place.reload.precedence_order(:name).first(3).map { |item| [item[:source], item[:level], item[:ruleset]] }
+  def order_of(place) = place.reload.precedence_order(attribute: :name).first(3).map { |item| [item[:source], item[:level], item[:ruleset]] }
 
   describe 'choosing a ruleset' do
     before do
@@ -54,7 +54,7 @@ describe 'Rulesets' do
     it 'chooses a ruleset with the app-wide selector, a method name or a Proc given the record' do
       LaForge.ruleset_selector = :region
       expect(forged_name(north_place)).to eq('From Cadastre')
-      expect(order_of(north_place)).to eq([[cadastre, :attribute, 'north'], [map_editor, :global, 'north'], [business_directory, :global, 'north']])
+      expect(order_of(north_place)).to eq([[cadastre, :model_attribute, 'north'], [map_editor, :global, 'north'], [business_directory, :global, 'north']])
       expect(forged_name(south_place)).to eq('From Map Editor') # south has no rules, so its places rank by the base rules
 
       LaForge.ruleset_selector = ->(place) { place.region == 'south' ? :north : nil }
@@ -73,6 +73,26 @@ describe 'Rulesets' do
       expect(south_place.reload.resolved_source(:name)).to eq(map_editor)
       expect { north_place.resolved_entries(attributes: %i[name place_categories]) }.to raise_error(ArgumentError, /Place#place_categories is a tracked association/)
       expect { north_place.resolved_source(:place_categories) }.to raise_error(ArgumentError, /Place#place_categories is a tracked association, whose membership is decided member by member\. Ask which sources decide a member with member_sources\(:place_categories, \.\.\.\)/)
+    end
+
+    it "ranks a record's order for every attribute above its ruleset's rules, returning no ruleset for it" do
+      LaForge.ruleset_selector = :region
+      north_place.update_precedence_order([business_directory])
+      north_place.save!
+
+      expect(forged_name(north_place)).to eq('From Business Directory')
+      expect(order_of(north_place)).to eq([[business_directory, :record, nil], [cadastre, :model_attribute, 'north'], [map_editor, :global, 'north']])
+      expect(north_place.precedence_order.first(2).map { |item| item.values_at(:source, :level, :ruleset) }).to eq([[business_directory, :record, nil], [map_editor, :global, 'north']])
+    end
+
+    it "keeps ranking by the ruleset a forge selected when the record's order for every attribute changes inside it" do
+      LaForge.ruleset_selector = :region
+      north_place.update_precedence_order([map_editor])
+      north_place.save!
+      north_place.laforge.with_current_ruleset do
+        north_place.update_precedence_order(nil)
+        expect(north_place.laforge.resolved_source(:name)).to eq(cadastre) # the record's own rules apply as they are now
+      end
     end
 
     it "uses a model's own selector in place of the app-wide one, and false for the base rules" do
@@ -204,7 +224,7 @@ describe 'Rulesets' do
     it 'keeps the ranking it forked with, except for the rule written, and ignores later changes to the base rules' do
       before_fork = order_of(north_place)
       Place.update_attribute_source_precedence(:name, business_registry, 5, ruleset: 'north')
-      expect(order_of(north_place)).to eq([[business_registry, :attribute, 'north']] + before_fork.first(2).map { |source, level, _| [source, level, 'north'] })
+      expect(order_of(north_place)).to eq([[business_registry, :model_attribute, 'north']] + before_fork.first(2).map { |source, level, _| [source, level, 'north'] })
 
       Place.update_precedence_order([cadastre]) # the base rules change after the fork
       cadastre.update!(precedence: 45)
@@ -389,9 +409,12 @@ describe 'Rulesets' do
     expect { Place.update_precedence_order([cadastre], ruleset: 5) }.to raise_error(ArgumentError, /Place.update_precedence_order: ruleset: must be a String or Symbol naming the ruleset, or nil for the base rules, not Integer 5/)
     expect { LaForge.fork_ruleset('x' * 101) }.to raise_error(ArgumentError, /is longer than 100 characters/)
     expect { LaForge.fork_ruleset(nil) }.to raise_error(ArgumentError, /LaForge.fork_ruleset: pass the name of a ruleset; the base rules are not one/)
-    expect { north_place.update_precedence_order(:name, [cadastre], ruleset: 'north') }
+    expect { north_place.update_precedence_order([cadastre], attribute: :name, ruleset: 'north') }
       .to raise_error(ArgumentError, /Place#update_precedence_order sets this record's own rules, which apply whatever its ruleset, so it takes no ruleset:. Leave it out, or set the rule for every record in the ruleset with Place.update_precedence_order\(..., ruleset:\)/)
     expect { north_place.update_attribute_source_precedence(:name, cadastre, 5, ruleset: 'north') }.to raise_error(ArgumentError, /Place#update_attribute_source_precedence sets this record's own rules/)
+    expect { north_place.update_precedence_order([cadastre], ruleset: 'north') }.to raise_error(ArgumentError, /Place#update_precedence_order sets this record's own rules/)
+    expect { north_place.update_source_precedence(cadastre, 5, ruleset: 'north') }
+      .to raise_error(ArgumentError, /Place#update_source_precedence sets this record's own rules, which apply whatever its ruleset, so it takes no ruleset:. Leave it out, or set the rule for every record in the ruleset with Place.update_source_precedence\(..., ruleset:\)/)
     expect { LaForge.ruleset_selector = 'region' }.to raise_error(ArgumentError, /LaForge.ruleset_selector = takes a method name \(Symbol\) or a Proc given the record, or nil, not String "region"/)
     expect { Class.new(ActiveRecord::Base) { self.table_name = 'places'; def self.name = 'OtherPlace' }.laforged(ruleset_selector: 'region') }
       .to raise_error(ArgumentError, /OtherPlace laforged ruleset_selector: takes a method name \(Symbol\) or a Proc given the record, false for the base rules, or nil/)
@@ -405,7 +428,7 @@ describe 'Rulesets' do
 
   it 'raises for an update that moves a rule into a ruleset not in use, or puts a rule on one record in a ruleset' do
     Place.update_precedence_order([cadastre], attribute: :name, ruleset: 'north')
-    north_place.update_precedence_order(:name, [cadastre])
+    north_place.update_precedence_order([cadastre], attribute: :name)
     north_place.save!
     Place.update_attribute_source_precedence(:street, cadastre, 3)
     record_rule = LaForge::PrecedenceRule.for_records(Place).find_by!(record_id: north_place.id, source: cadastre)

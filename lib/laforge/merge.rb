@@ -202,7 +202,8 @@ module LaForge
   # included:
   # - entries_moved: how many entries moved to the survivor
   # - entries_conflicting: [{ attribute:, source:, kept: }] for each attribute entry both had with different values
-  # - precedence_rules_moved, precedence_rules_conflicting: the same for per-record precedence rules
+  # - precedence_rules_moved, precedence_rules_conflicting: the same for per-record precedence rules, where a record's
+  #   rule for every attribute has the attribute `PrecedenceRule::ANY_ATTRIBUTE`, `''`
   # - members_moved: { association name => [member ids] } moved to the survivor
   # - members_merged: { association name => [{ kept:, removed: }] } merged into one of the survivor's members
   def self.merge(survivor, duplicate)

@@ -617,6 +617,70 @@ describe 'Association tracking capabilities' do
       expect(place.reload.name).to eq('From High')
     end
 
+    it "decides membership by the owner's order for every attribute, above the model's order for the association", capability: 'C237' do
+      Place.update_precedence_order([high], attribute: :place_categories)
+      place.record_data_entries({ place_categories: categories(cafe) }, low)
+      place.record_data_entries({ place_categories: categories(florist) }, high)
+      place.update_precedence_order([low])
+      place.forge!
+
+      expect(categories_of(place)).to eq([cafe])
+      expect(place.precedence_order(attribute: :place_categories).first(2).map { |item| item.values_at(:source, :level) }).to eq([[low, :record], [high, :model_attribute]])
+    end
+
+    it "ranks by the owner's order for the association over its order for every attribute", capability: 'C238' do
+      place.record_data_entries({ place_categories: categories(cafe) }, low)
+      place.record_data_entries({ place_categories: categories(florist) }, high)
+      place.update_precedence_order([low])
+      place.update_precedence_order([high], attribute: :place_categories)
+      place.forge!
+
+      expect(categories_of(place)).to eq([florist])
+    end
+
+    it "leaves the members' own attributes to their own rules, not the owner's order for every attribute", capability: 'C239' do
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'From Low')] }, low)
+      place.forge!
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'From Low'), tenant('T-2', name: 'Only Low')] }, low)
+      place.record_data_entries({ tenants: [tenant('T-1', name: 'From High')] }, high)
+      place.update_source_precedence(low, 1)
+      place.forge!
+
+      expect(place.reload.tenants.order(:external_id).pluck(:external_id, :name)).to eq([['T-1', 'From High'], ['T-2', 'Only Low']]) # low's list decides membership
+      expect(place.tenants.map(&:source_precedences)).to eq([{}, {}])
+    end
+
+    it "expires the owner's rule for every attribute on a source once that source's member list covers some member differently", capability: 'C240' do
+      place.record_data_entries({ place_categories: categories(cafe) }, low)
+      place.record_data_entries({ place_categories: categories(florist) }, high)
+      place.update_source_precedence(low, 1, expires_on: high)
+      place.forge!
+      expect(categories_of(place)).to eq([cafe])
+
+      place.record_data_entries({ place_categories: categories(florist) }, high) # covers every member as before
+      place.forge!
+      expect(categories_of(place)).to eq([cafe])
+
+      place.record_data_entries({ place_categories: categories(florist, bakery) }, high)
+      place.forge!
+      expect(categories_of(place)).to contain_exactly(florist, bakery)
+      expect(place.precedence_rules.sole.expired?).to be(true)
+    end
+
+    it "expires the owner's rule for every attribute with expires_when: :records on any member list from the source", capability: 'C241' do
+      place.record_data_entries({ place_categories: categories(cafe) }, low)
+      place.record_data_entries({ place_categories: categories(florist) }, high)
+      place.update_source_precedence(low, 1, expires_on: high, expires_when: :records)
+      place.forge!
+      expect(categories_of(place)).to eq([cafe])
+
+      place.reload.record_data_entries({ place_categories: categories(florist) }, high) # covers every member as before
+      place.forge!
+
+      expect(categories_of(place)).to eq([florist])
+      expect(place.precedence_rules.sole.expired?).to be(true)
+    end
+
     it 'breaks precedence ties deterministically, regardless of the order entries were recorded in', capability: 'C44' do
       first = Place.create!(name: 'First')
       second = Place.create!(name: 'Second')
@@ -1395,6 +1459,17 @@ describe 'Association tracking capabilities' do
       expect(place.reload.data_entries.tombstones(:tenants)).to be_empty # the member has a row again
     end
 
+    it "lets the owner's order for every attribute decide whether a source outranks another's tombstone", capability: 'C242' do
+      exclude_corner_cafe # top's tombstone
+      place.reload.update_precedence_order([high])
+      place.record_data_entries({ tenants: { include: [{ new: 'draft-1', name: 'Corner Café' }] } }, high, mode: :edit)
+      expect(place.forge_diff['tenants']).to include(added: [{ 'name' => 'Corner Café' }])
+      place.forge!
+
+      expect(place.new_member(:tenants, 'draft-1')).to eq(Tenant.find_by!(name: 'Corner Café'))
+      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Corner Café', 'Harbor Books')
+    end
+
     it 'raises, saying what to declare, for an exclusion that could not outlast its row', capability: 'C95' do
       stub_const('UnmatchedPlace', Class.new(ActiveRecord::Base))
       UnmatchedPlace.table_name = 'places'
@@ -2076,12 +2151,12 @@ describe 'Association tracking capabilities' do
       corner_cafe = place.tenants.create!(name: 'Corner Café')
       travel_to(Time.utc(2026, 1, 1)) do
         corner_cafe.record_data_entries({ name: 'Corner Café' }, top, expires_on: low, expires_at: Time.utc(2026, 2, 1))
-        corner_cafe.update_precedence_order(:name, [top], expires_on: low, expires_at: Time.utc(2026, 2, 1))
+        corner_cafe.update_precedence_order([top], attribute: :name, expires_on: low, expires_at: Time.utc(2026, 2, 1))
         corner_cafe.save!
       end
       travel_to(Time.utc(2026, 1, 15)) do
         corner_cafe.record_data_entries({ name: 'Corner Café' }, top, expires_on: low, expires_at: Time.utc(2026, 3, 1)) # renewed
-        corner_cafe.update_precedence_order(:name, [top], expires_on: low, expires_at: Time.utc(2026, 3, 1))
+        corner_cafe.update_precedence_order([top], attribute: :name, expires_on: low, expires_at: Time.utc(2026, 3, 1))
         corner_cafe.record_data_entries({ name: 'Corner Café' }, low) # at the same instant
         corner_cafe.save!
       end
@@ -2359,7 +2434,7 @@ describe 'Association tracking capabilities' do
       expect { place.record_data_entries({ tenants: [LaForge.with_settings({ name: 'Florist' }, **matching)] }, top) }.to raise_error(ArgumentError, message)
       expect { place.record_data_entries({ tenants: { exclude: [LaForge.with_settings(corner_cafe, **matching)] } }, top, mode: :edit) }.to raise_error(ArgumentError, message)
       expect { place.record_data_entries({ marker: { label: 'Harbor' } }, top, **matching) }.to raise_error(ArgumentError, /Place#marker is a tracked association/)
-      expect { place.update_precedence_order(:tenants, [top], **matching) }.to raise_error(ArgumentError, message)
+      expect { place.update_precedence_order([top], attribute: :tenants, **matching) }.to raise_error(ArgumentError, message)
       expect { place.update_attribute_source_precedence(:tenants, top, 5, **matching) }.to raise_error(ArgumentError, message)
     end
 
@@ -2778,7 +2853,7 @@ describe 'Association tracking capabilities' do
       travel_to(Time.utc(2026, 1, 2)) do
         corner_cafe = Tenant.sole
         corner_cafe.record_data_entries({ name: 'Corner Café (renamed)' }, top, expires_on: low)
-        corner_cafe.update_precedence_order(:name, [top], expires_on: low)
+        corner_cafe.update_precedence_order([top], attribute: :name, expires_on: low)
         corner_cafe.save!
       end
       waiting = -> { [Tenant.sole.data_entries.with_source(top).sole.expires_at, Tenant.sole.precedence_rules.sole.expires_at] }
