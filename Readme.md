@@ -649,7 +649,7 @@ Two values of an attribute match when they read the same once saved and loaded a
 
 #### Expiring a member list
 
-An expired member list counts as if it did not exist, exactly as an inactive source's member list, and nothing is removed because of the expiry itself. A member list recorded whole, as a complete or partial list, expires as a whole with the call's expiry. A member only it named becomes a row no member list names, which is left alone; a member another member list excludes, such as a higher-ranked complete list that leaves it out, is removed by the next forge, since the expired list no longer includes it. An expired exclusion or tombstone no longer stops lower precedence sources from adding the member back. What the member list says about members is recorded on them with the same expiry, so their attributes fall back with it.
+An expired member list counts as if it did not exist, exactly as an inactive source's member list, and nothing is removed because of the expiry itself. A member list recorded whole, as a complete or partial list, expires as a whole with the call's expiry. A member only it named becomes a row no member list names, which is left alone; a member another member list excludes, such as a complete list from a lower precedence source that leaves it out, is removed by the next forge, since the expired list no longer includes it. An expired exclusion or tombstone no longer stops lower precedence sources from adding the member back. What the member list says about members is recorded on them with the same expiry, so their attributes fall back with it.
 
 #### Expiring one member
 
@@ -1004,7 +1004,7 @@ The same happens for a new member in a partial list. Only the source's own tombs
 
 #### Removing a member that sources can add back
 
-Some removals should last only until a source lists the member, such as an editor removing a tenant that no source lists, like one created before the association was tracked. Exclude it with `tombstone: false`, beside `exclude:` in an edit or a partial list. It applies to every exclusion in that hash. The option is named for what would otherwise stop a lower precedence source from adding the member back after the forge. For a tenant, which is keyed by primary key, that is a tombstone. A member keyed by its columns, such as a category, never gets one, so it is the exclusion itself, which `tombstone: false` drops all the same.
+Some removals should last only until a source lists the member. An editor might remove a tenant that no source lists, such as one created before the association was tracked. Exclude it with `tombstone: false`, beside `exclude:` in an edit or a partial list. It applies to every exclusion in that hash. The option is named for what would otherwise stop a lower precedence source from adding the member back after the forge. For a tenant, which is keyed by primary key, that is a tombstone. A member keyed by its columns, such as a category, never gets one. What would stop a lower precedence source is then the exclusion itself, and the option drops that instead.
 
   ```ruby
     place.record_data_entries({ tenants: { exclude: [corner_cafe], tombstone: false } }, map_editor, mode: :edit)
@@ -1016,13 +1016,14 @@ Some removals should last only until a source lists the member, such as an edito
   ```
 
 - **The forge removes the member** as any exclusion would, then the source's member list forgets it, as a `forget:` edit does. It keeps neither the exclusion nor a tombstone, and a member list left with nothing else is destroyed. Until then, `forge_diff` shows the member removed and `member_sources` shows the source excluding it.
-- **The forge adds the member back when any source lists it,** whatever that source's precedence, from its next member list that includes it. A member keyed by primary key comes back as a new member, with a new `id`. A member keyed by its columns, such as a category, comes back as it was.
+- **The forge adds the member back when a source lists it,** whatever that source's precedence, unless another source's exclusion or tombstone still stops it. A member keyed by primary key comes back as a new member, with a new `id`. A member keyed by its columns, such as a category, comes back as it was.
 - **It needs no `tombstone_matcher:`**, since nothing has to recognize the member later.
-- **An exclusion that doesn't decide the member at the forge stays,** such as one that has expired, until a forge removes the member or the source forgets it. Excluding the source's own tombstone this way drops the tombstone at the next forge.
+- **An exclusion that doesn't decide the member at the forge stays,** such as one that has expired, until a forge removes the member or the source forgets it.
+- **Excluding the source's own tombstone this way** drops the tombstone at the next forge.
 
 ##### When another source includes the member
 
-Recording `tombstone: false` raises while another source's member list includes the member, naming that source, whether it ranks above or below and whether it is active or not. That member list would still name the member once the forge removed it, and add it back at the next forge, or name a row that is gone. Leave out `tombstone: false` for an exclusion that stops lower precedence sources from adding the member back, or exclude it this way once that source's member list no longer includes it. A member list another source records after the exclusion and before the forge isn't checked. If it includes the member, a member keyed by its columns comes back at the next forge, and a member keyed by primary key stays named there by an `id` whose row is gone, which forges skip with a warning.
+Recording `tombstone: false` raises while another source's member list includes the member, naming that source, whether it ranks above or below and whether it is active or not, unless that member list or its inclusion has expired. That member list would still name the member once the forge removed it, so the next forge would add it back, or it would name a row that is gone. Leave out `tombstone: false` for an exclusion that stops lower precedence sources from adding the member back, or exclude it this way once that source's member list no longer includes it. A member list another source records after the exclusion and before the forge isn't checked. If it includes the member and outranks the excluding source, the forge keeps the member and the exclusion stays. If it ranks below, a member keyed by its columns comes back at the next forge, and a member keyed by primary key stays named there by an `id` whose row is gone, which forges skip with a warning.
 
 ##### Complete lists and has_one
 
@@ -1092,7 +1093,7 @@ When an import no longer provides a record at all, choose between two things, as
 Each source's member list for an association is one data entry on the owner, named after the association:
 
 - A complete list is stored as an array of member keys, such as `[{ 'id' => 7 }, { 'id' => 9 }]`, or as `{ 'include' => [...], 'withdrawn' => [...] }` while it remembers members it used to include.
-- A partial list is stored as `{ 'partial' => true, 'include' => [...], 'exclude' => [...], 'withdrawn' => [...] }`, with `'tombstones' => [...]` when it has excluded members whose rows are gone; they are excluded by `{ 'tombstone' => '<token>' }`. `'no_tombstone' => [...]` holds the keys of the members it excludes with `tombstone: false`, until a forge removes them. `withdrawn` holds the keys of members the source used to include, until the next forge has acted on them; see below.
+- A partial list is stored as `{ 'partial' => true, 'include' => [...], 'exclude' => [...], 'withdrawn' => [...] }`, with `'tombstones' => [...]` when it has excluded members whose rows are gone; they are excluded by `{ 'tombstone' => '<token>' }`. `'no_tombstone' => [...]` holds the keys of the members it excludes with `tombstone: false`, until a forge leaves them out. `withdrawn` holds the keys of members the source used to include, until the next forge has acted on them; see below.
 - What a source said about a member besides its key waits under `'pending'`, with when it was said, until a forge records it on the member. A complete list with anything pending is stored as `{ 'include' => [...], 'pending' => [...] }`.
 - A new member is keyed `{ 'new' => '<token>' }` until the forge that creates it is saved. The token is the one given as `new:`, or a random one.
 

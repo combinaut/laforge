@@ -36,7 +36,7 @@ How LaForge's README, code comments, spec descriptions, error messages, commit m
 | **withdraw a source** from a record | Take back everything the source provided for the record, its entries and its member lists' coverage alike. | remove, forget |
 | **pending** | Values a member list provides for an included member, waiting to be recorded on it. | queued, staged |
 | **tombstone** | What a partial list keeps of a member it excluded, once the member is removed. | archive, ghost |
-| a forge **adds back** a member | It makes a removed member a member again because a source lists it. An exclusion, or the tombstone that replaces it, **stops lower precedence sources from adding the member back**, so the forge doesn't add it back when one of them lists it. It does when a higher precedence source lists it, or when the excluding source itself lists it again, which replaces its exclusion. | keeps the member out or in, stays out, blocks, lets in |
+| a forge **adds back** a member | It makes a removed member a member again because a source lists it. An exclusion, or the tombstone that replaces it, **stops lower precedence sources from adding the member back**, so the forge doesn't add it back when one of them lists it. It does when a higher precedence source lists it, or when the excluding source itself lists it again, which replaces its exclusion or forgets its tombstone. | keeps the member out or in, stays out, blocks, lets in |
 
 ## Examples
 
