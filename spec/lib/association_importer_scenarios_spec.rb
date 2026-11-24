@@ -286,7 +286,7 @@ describe 'Association assignment by importers' do
       place.forge!
     end
 
-    it 'destroys the tenant and keeps it out of later imports that list it again as new, while new tenants still arrive' do
+    it 'destroys the tenant and does not add it back when later imports list it again as new, while new tenants still arrive' do
       expect(tenants_of(place).map(&:first)).to eq(%w[T-1]) # noted: destroyed per `dependent: :destroy`
       expect(place.reload.data_entries.tombstones(:tenants).map { |tombstone| [tombstone.source, tombstone.attributes['name']] }).to eq([[map_editor, 'Tenant T-2']])
 
@@ -316,13 +316,13 @@ describe 'Association assignment by importers' do
   end
 
   describe 'an importer that creates tenants itself, one row at a time' do
-    # Builds or finds one tenant and saves it directly, as many importers do. Returns :skipped for a new tenant a
-    # tombstone blocks, and :saved otherwise.
+    # Builds or finds one tenant and saves it directly, as many importers do. Returns :skipped for a new tenant that
+    # matches a tombstone of a source that outranks `source`, and :saved otherwise.
     def import_row(record, source, external_id)
       tenant = record.tenants.find_by(external_id: external_id) || record.tenants.build(external_id: external_id)
       tenant.record_data_entries({ name: "Tenant #{external_id}" }, source)
       tenant.forge
-      return :skipped if tenant.new_record? && LaForge.tombstone_blocking(tenant, source)
+      return :skipped if tenant.new_record? && LaForge.resolved_tombstone(tenant, source)
 
       tenant.save!
       :saved

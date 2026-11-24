@@ -51,13 +51,13 @@ module LaForge
         end
       end
 
-      # See `LaForge.tombstone_blocking`.
-      def tombstone_blocking(record, source)
-        raise ArgumentError, "#{record.class.name} #{record.id} already exists; tombstone_blocking checks a new member before it is created" if record.persisted?
+      # See `LaForge.resolved_tombstone`.
+      def resolved_tombstone(record, source)
+        raise ArgumentError, "#{record.class.name} #{record.id} already exists; resolved_tombstone checks a new member before it is created" if record.persisted?
 
         source_id = DataSource.normalize_source_id(source)
         tracked_associations_of(record).each do |tracked|
-          found = tracked.tombstone_blocking(record, source_id)
+          found = tracked.resolved_tombstone(record, source_id)
           return found if found
         end
         nil
@@ -147,14 +147,20 @@ module LaForge
     # Applies a source's edits to its member list with `edit_member`, one member at a time, and leaves the rest of the
     # member list as it is. `value` is what `AssociationConfig#edits` takes. The settings' precedence is set for the
     # source on the association, with their expiry, even when there is nothing to edit. Each member edited takes the
-    # settings, or its wrapper's. A has_one's edit is its single member, recorded as a complete list. `recorded_at`,
-    # when given, is when the edit was made, and its precedence rule is made at that time rather than now (see
-    # Expiring).
+    # settings, or its wrapper's. A has_one's edit is its single member, recorded as a complete list, so it raises for
+    # exclusions given as { exclude: [...] } unless the member model has an `exclude` attribute. `recorded_at`, when
+    # given, is when the edit was made, and its precedence rule is made at that time rather than now (see Expiring).
     def edit(value, source, settings: RecordingSettings::DEFAULT, recorded_at: nil)
       at = recorded_at || Time.current
-      return record(value, source, settings: settings, recorded_at: at) unless config.collection?
+      unless config.collection?
+        if value.is_a?(Hash) && value.stringify_keys.key?('exclude') && !config.klass.attribute_names.include?('exclude')
+          raise ArgumentError, "#{owner.class.name}##{config.name} is a has_one, whose edit is its single member, so it has no exclusions. Record nil to remove its member"
+        end
 
-      config.edits(value).each { |action, member| edit_member(member, source, action, recorded_at: at, settings: settings) }
+        return record(value, source, settings: settings, recorded_at: at)
+      end
+
+      config.edits(value).each { |action, member, tombstone| edit_member(member, source, action, recorded_at: at, settings: settings, tombstone: tombstone) }
       return unless settings.precedence_given?
 
       rule = owner.laforge.write_precedence_rule(config.name, source, settings, made_at: recorded_at)
@@ -162,18 +168,20 @@ module LaForge
     end
 
     # Writes the source's member list of `members`, replacing its previous one. `members` is a list of members, or for
-    # `partial: true` either a list to include or { include: [...], exclude: [...] }. `settings` are the member list's.
+    # `partial: true` either a list to include or { include: [...], exclude: [...] }, with `tombstone: false` for
+    # exclusions that keep nothing once they remove their member. `settings` are the member list's.
     # Their precedence is set for the source on the association, their expiry is the member list's entry's and that
     # rule's, and both are given to every attribute the member list's pending items record. A wrapped member or
     # exclusion takes its wrapper's settings instead, and an expiry of its own other than the member list's is kept
     # among the member list's expiries (see MemberList). It replaces the previous member list as
     # `MemberList::Complete.replacing` and `MemberList::Partial.replacing` do, once the previous one has forgotten the
     # source's own tombstones of the new members included (see `forgetting_own_tombstones`). Raises for a partial list
-    # of a has_one, and for members AssociationConfig rejects.
+    # of a has_one, for members AssociationConfig rejects, and as `assert_removable_without_tombstone!` does.
     def record(members, source, settings: RecordingSettings::DEFAULT, partial: false, recorded_at: Time.current)
       raise ArgumentError, "#{owner.class.name}##{config.name} is a has_one, which takes a complete list. Record it without mode: :partial" if partial && !config.collection?
 
-      included, excluded = partial ? partial_members(members, settings) : [normalize_with_settings(members, settings), []]
+      included, excluded, tombstone = partial ? partial_members(members, settings) : [normalize_with_settings(members, settings), [], true]
+      assert_removable_without_tombstone!(excluded.map(&:first), source) unless tombstone
       keys = included.map(&:first)
       config.assert_references_exist!(owner, keys)
       assert_placeholder_keys_unused!(keys, source)
@@ -182,7 +190,7 @@ module LaForge
 
       previous = forgetting_own_tombstones(member_list(source), source, included)
       value =
-        if partial then MemberList::Partial.replacing(previous, config, include: keys, exclude: excluded.map(&:first), pending: pending, expiries: expiries)
+        if partial then MemberList::Partial.replacing(previous, config, include: keys, exclude: excluded.map(&:first), pending: pending, expiries: expiries, tombstone: tombstone)
         else MemberList::Complete.replacing(previous, config, include: keys, pending: pending, expiries: expiries)
         end
       owner.laforge.write_data_entry(config.name, value, source, settings: settings, recorded_at: recorded_at)
@@ -193,7 +201,8 @@ module LaForge
     # - :include: includes the member, and adds what the edit says about it as a pending item after the earlier ones, so
     #   each edit changes only the attributes it names. Its nested lists are edits too. A new member that is one of the
     #   source's own tombstones has that tombstone forgotten first (see `forgetting_own_tombstones`).
-    # - :exclude: leaves the member out of a complete list, or adds it to a partial list's exclusions
+    # - :exclude: leaves the member out of a complete list, or adds it to a partial list's exclusions. With
+    #   `tombstone: false`, the exclusion keeps nothing once a forge has removed the member (see MemberList).
     # - :forget: drops the member from a partial list, and the member list's tombstone when the member is one. Raises
     #   for a complete list, which covers every member.
     # Excluding or forgetting a member drops its pending items, and may withdraw it (see
@@ -201,23 +210,27 @@ module LaForge
     # the settings' expiry as its own, in place of any an earlier edit gave it, and forgetting the member drops its
     # expiry. The member list's entry keeps its own expiry, unless it has expired, when the new member list has none.
     # Raises for an expiry on an exclusion from a complete list, which cannot expire, for a wrapper on a member to
-    # forget, and as `AssociationConfig#assert_references_exist!` and `AssociationConfig#assert_excludable!` do.
-    def edit_member(member, source, action, recorded_at: Time.current, settings: RecordingSettings::DEFAULT)
+    # forget, as `assert_editable!` and `assert_removable_without_tombstone!` do, and as
+    # `AssociationConfig#assert_references_exist!` and `AssociationConfig#assert_excludable!` do. `tombstone` applies to
+    # an exclusion alone.
+    def edit_member(member, source, action, recorded_at: Time.current, settings: RecordingSettings::DEFAULT, tombstone: true)
       raise ArgumentError, "#{owner.class.name}##{config.name}: forgetting a member takes no settings; remove LaForge.with_settings around it" if action == :forget && RecordingSettings.wrapped?(member)
 
+      tombstone = true unless action == :exclude
       (member, attributes, member_settings), = normalize_with_settings([member], settings, attributes: action == :include, edit: true)
       config.assert_references_exist!(owner, [member]) if action == :include
       assert_placeholder_keys_unused!([member], source) if action == :include
-      config.assert_excludable!(owner, [member]) if action == :exclude
+      config.assert_excludable!(owner, [member]) if action == :exclude && tombstone
       previous = member_list(source)
       previous = forgetting_own_tombstones(previous, source, [[member, attributes]]) if action == :include
-      assert_editable!(previous, member, action, member_settings)
+      assert_editable!(previous, member, action, member_settings, tombstone)
+      assert_removable_without_tombstone!([member], source) unless tombstone
 
       expiry = MemberList.expiry_item(config.key_hash(member), member_settings, recorded_at) if member_settings.expiring?
       value =
         case action
         when :include then previous.including(config, member, MemberList.pending_item(member, attributes, recorded_at, edit: true, settings: member_settings), expiry: expiry)
-        when :exclude then previous.excluding(config, member, expiry: expiry)
+        when :exclude then tombstone ? previous.excluding(config, member, expiry: expiry) : previous.excluding(config, member, expiry: expiry, tombstone: false)
         when :forget then previous.forgetting(config, member)
         end
       owner.laforge.write_data_entry(config.name, value, source, settings: edit_entry_settings(source, settings), recorded_at: recorded_at, edited: recognized_key(MemberList.new(value), member))
@@ -259,6 +272,7 @@ module LaForge
       forge_members(records)
       write_order(records) # after the members' forges, so list order replaces a position recorded on a member
       clear_pending
+      forget_removed_without_tombstone
       prune_withdrawn
       entomb if config.tombstone_matcher
       remove_unclaimed(records)
@@ -301,9 +315,10 @@ module LaForge
       end
     end
 
-    # Returns the first tombstone the tombstone matcher matches to the unsaved member `record` whose source outranks the
-    # source with `source_id`, or nil, which it also is when the association has no tombstone matcher
-    def tombstone_blocking(record, source_id)
+    # Returns the tombstone that would decide the membership of the unsaved member `record` against the source with
+    # `source_id` listing it, as `LaForge.resolved_tombstone` does. That is the first one the tombstone matcher matches
+    # to it whose source outranks that source, or nil, which it also is when the association has no tombstone matcher.
+    def resolved_tombstone(record, source_id)
       return unless config.tombstone_matcher
 
       outranking = tombstones.select { |tombstone| owner.laforge.outranks?(config.name, tombstone.source_id, source_id) }
@@ -368,21 +383,23 @@ module LaForge
 
     private
 
-    # Returns [included, excluded] for a partial list's `members`, a list to include or
-    # { include: [...], exclude: [...] }, both as `normalize_with_settings` returns them. Raises for other keys in the
-    # hash, and for an exclusion `AssociationConfig#assert_excludable!` rejects.
+    # Returns [included, excluded, tombstone] for a partial list's `members`, a list to include or
+    # { include: [...], exclude: [...], tombstone: false }, the members as `normalize_with_settings` returns them and
+    # `tombstone` as `AssociationConfig#tombstone_option` does. Raises for other keys in the hash, and for an exclusion
+    # with a tombstone that `AssociationConfig#assert_excludable!` rejects.
     def partial_members(members, settings)
       lists = members.is_a?(Hash) ? members.stringify_keys : { 'include' => members }
-      unknown = lists.keys - %w[include exclude]
+      unknown = lists.keys - %w[include exclude tombstone]
       if unknown.any?
-        raise ArgumentError, "#{owner.class.name}##{config.name}: a partial list is given as a list of members or as { include:, exclude: }, not with #{unknown.join(', ')}. " \
+        raise ArgumentError, "#{owner.class.name}##{config.name}: a partial list is given as a list of members or as { include:, exclude:, tombstone: }, not with #{unknown.join(', ')}. " \
                              'To forget a member, record it with mode: :edit'
       end
 
+      tombstone = config.tombstone_option(lists)
       included = normalize_with_settings(lists['include'] || [], settings)
       excluded = normalize_with_settings(lists['exclude'] || [], settings, attributes: false)
-      config.assert_excludable!(owner, excluded.map(&:first))
-      [included, excluded]
+      config.assert_excludable!(owner, excluded.map(&:first)) if tombstone
+      [included, excluded, tombstone]
     end
 
     # Returns [[key hash, attributes, settings], ...] for `members`, normalized as `AssociationConfig#normalize_members`
@@ -460,10 +477,13 @@ module LaForge
       end
     end
 
-    # Raises when the source's `previous` member list cannot take the edit `action` of `member`, with `member_settings`:
+    # Raises when the source's `previous` member list cannot take the edit `action` of `member`, with `member_settings`
+    # and `tombstone`:
     # - forgetting a member of a complete list, which covers every member
+    # - excluding a member from a complete list with `tombstone: false`, since a complete list goes on excluding every
+    #   member it leaves out
     # - excluding a member from a complete list with an expiry, since that exclusion cannot expire
-    def assert_editable!(previous, member, action, member_settings)
+    def assert_editable!(previous, member, action, member_settings, tombstone)
       return if previous.partial?
 
       described = config.describe_key(config.key_of(member))
@@ -471,10 +491,33 @@ module LaForge
         raise ArgumentError, "#{owner.class.name}##{config.name}: the source has a complete list, which covers every member, so forgetting #{described} " \
                              'would exclude it rather than leave it to other sources. Record the member list with mode: :partial first, or exclude the member'
       end
+      unless tombstone
+        raise ArgumentError, "#{owner.class.name}##{config.name}: the source has a complete list, which goes on excluding #{described} once it leaves it out, " \
+                             'so even with tombstone: false the forge would not add it back when a lower precedence source lists it. Record the member list with mode: :partial first, or leave out tombstone: false'
+      end
       return unless action == :exclude && member_settings.expiring?
 
       raise ArgumentError, "#{owner.class.name}##{config.name}: the source has a complete list, which excludes #{described} by leaving it out, " \
                            'and leaving a member out cannot expire. Record the member list with mode: :partial, or exclude the member from another source'
+    end
+
+    # Raises when another source's member list includes one of `members`, key hashes the source is to exclude with
+    # `tombstone: false`, naming that source. That member list would still name the member once a forge removed it,
+    # so the next forge would add it back, or it would name a row that is gone. Every other source's member list counts,
+    # inactive sources' too, except those that have expired or are marked for destruction, and an inclusion that has
+    # expired.
+    def assert_removable_without_tombstone!(members, source)
+      source_id = DataSource.normalize_source_id(source)
+      owner.laforge.association_member_lists(config, inactive: true).each do |entry, list|
+        next if entry.source_id == source_id || entry.marked_for_destruction? || entry.expired?
+
+        found = members.map { |member| config.key_of(member) }.find { |key| list.includes?(config, key) && !list.expired?(config, key) }
+        next unless found
+
+        raise ArgumentError, "Cannot exclude #{config.klass.name} #{config.describe_key(found)} from #{owner.class.name} #{owner.id.inspect}'s #{config.name} with tombstone: false, " \
+                             "since #{entry.source.name}'s member list includes it, and would still name it once a forge removed it. " \
+                             "Leave out tombstone: false for an exclusion that stops lower precedence sources from adding it back, or exclude it this way once #{entry.source.name}'s member list no longer includes it"
+      end
     end
 
     # Adds the members an earlier forge removed in the owner's pending writes to `existing`, so this forge can include
@@ -648,6 +691,20 @@ module LaForge
       end
     end
 
+    # Forgets, in each member list, each member it excludes with `tombstone: false` that the forge leaves out of the
+    # association, so the member list keeps neither the exclusion nor a tombstone for it (see
+    # `MemberList::Partial#forgetting`). Each member list keeps its recorded_at, since its source said nothing new.
+    def forget_removed_without_tombstone
+      kept = included_keys + undecided
+      member_lists.each do |entry, _|
+        next if entry.marked_for_destruction?
+
+        list = MemberList.new(entry.value)
+        removed = list.no_tombstone.reject { |member| kept.include?(config.key_of(member)) }
+        entry.value = removed.inject(entry.value) { |value, member| MemberList.new(value).forgetting(config, member) } if removed.any?
+      end
+    end
+
     # Empties each member list's withdrawn list, which the forge has applied. A partial list left with no members and no
     # pending items is marked for destruction, to go with the owner's save, whether or not it withdrew any.
     def prune_withdrawn
@@ -670,8 +727,7 @@ module LaForge
     #
     # The member lists name the member by the tombstone's key rather than keep its id, because a new row can take a
     # removed row's id, as when MySQL before 8.0 restarts and sets AUTO_INCREMENT to the highest id plus one, and the
-    # exclusion would then remove that row. The key also tells a member kept out on purpose from a row that went some
-    # other way.
+    # exclusion would then remove that row. The key also tells an excluded member from a row that went some other way.
     def entomb
       all_member_lists = owner.laforge.association_member_lists(config, inactive: true)
       existing.each_value do |record|

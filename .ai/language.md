@@ -13,7 +13,7 @@ How LaForge's README, code comments, spec descriptions, error messages, commit m
 | **data entry**, or **entry** | One source's recorded value for one attribute of one record. | report, datum |
 | **forge** | Combine a record's entries into its attributes and its tracked associations' membership. | build, sync |
 | **precedence** | How sources rank against each other. A source with a higher precedence outranks one with a lower. | priority, weight, source of truth |
-| **resolves**, **resolved entry**, **outranks** | Forging resolves an attribute to one source's entry, its resolved entry, whose value the attribute takes. A source outranks another when its precedence is higher. | wins, winner, overrides, beats |
+| **resolves**, **resolved entry**, **resolved tombstone**, **outranks** | Forging resolves an attribute to one source's entry, its resolved entry, whose value the attribute takes. It resolves a member of a tracked association to the member list or tombstone that decides its membership. A new member's resolved tombstone, for a source, is the tombstone that would decide its membership against that source listing it. A source outranks another when its precedence is higher. | wins, winner, overrides, beats |
 | **precedence rule** | A source's precedence at one level. | override, setting |
 | **level** | One attribute of one record, a whole record, one attribute of a model, a whole model, or global. `precedence_order` names them `:record_attribute`, `:record`, `:model_attribute`, `:model` and `:global`, after the call that sets each. | scope, tier |
 | **precedence order** | The sources in order at one level. | ranking, priority list |
@@ -36,6 +36,7 @@ How LaForge's README, code comments, spec descriptions, error messages, commit m
 | **withdraw a source** from a record | Take back everything the source provided for the record, its entries and its member lists' coverage alike. | remove, forget |
 | **pending** | Values a member list provides for an included member, waiting to be recorded on it. | queued, staged |
 | **tombstone** | What a partial list keeps of a member it excluded, once the member is removed. | archive, ghost |
+| a forge **adds back** a member | It makes a removed member a member again because a source lists it. An exclusion, or the tombstone that replaces it, **stops lower precedence sources from adding the member back**, so the forge doesn't add it back when one of them lists it. It does when a higher precedence source lists it, or when the excluding source itself lists it again, which replaces its exclusion or forgets its tombstone. | keeps the member out or in, stays out, blocks, lets in |
 
 ## Examples
 
@@ -50,6 +51,7 @@ Run a new concept past the maintainers before adding it to the example domain.
 
 - **American spelling:** behavior, recognize, summarize.
 - **People:** they/them for anyone whose pronouns you don't know.
+- **Membership:** say what a forge does with what sources list, and name which sources it concerns, such as lower precedence sources, the excluding source itself or higher precedence sources. Physical and gatekeeping metaphors, such as keeping a member out, blocking it or letting it in, say neither.
 - **Colons:** only to introduce a list, never inside a sentence.
 - **Errors:** say what the developer has to declare or pass to fix it, naming the model, association or option.
 - **README sections:** open with the common case. Put an unusual situation in a subsection named for the situation.

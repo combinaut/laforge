@@ -3,8 +3,8 @@ module LaForge
     # `Complete` is a complete list (see `MemberList`)
     class Complete < MemberList
       # Returns the value stored for a complete list with the given lists. It has no exclusions or tombstones, so
-      # those given are left out, and so are pending items whose attributes are empty.
-      def self.value(include: [], exclude: [], withdrawn: [], pending: [], tombstones: [], expiries: [])
+      # those given are left out, with `no_tombstone`, and so are pending items whose attributes are empty.
+      def self.value(include: [], exclude: [], withdrawn: [], pending: [], tombstones: [], no_tombstone: [], expiries: [])
         pending = pending.reject { |item| item['attributes'].empty? }
         return include if withdrawn.empty? && pending.empty? && expiries.empty?
 
@@ -27,6 +27,7 @@ module LaForge
         @withdrawn = Array(value.is_a?(Hash) ? value['withdrawn'] : nil)
         @pending = value.is_a?(Hash) ? Array(value['pending']) : []
         @tombstones = []
+        @no_tombstone = []
         @expiries = value.is_a?(Hash) ? Array(value['expiries']) : []
       end
 
