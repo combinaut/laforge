@@ -322,7 +322,7 @@ describe 'Association assignment by importers' do
       tenant = record.tenants.find_by(external_id: external_id) || record.tenants.build(external_id: external_id)
       tenant.record_data_entries({ name: "Tenant #{external_id}" }, source)
       tenant.forge
-      return :skipped if tenant.new_record? && LaForge.tombstone_blocking(tenant, source)
+      return :skipped if tenant.new_record? && LaForge.resolved_tombstone(tenant, source)
 
       tenant.save!
       :saved

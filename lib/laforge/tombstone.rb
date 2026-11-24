@@ -37,11 +37,12 @@ module LaForge
     end
   end
 
-  # Returns the first tombstone, in a tracked association the unsaved member `record` would join, that the association's
-  # tombstone matcher matches to it and whose source outranks `source` there, or nil when there is none. Code that
-  # creates members itself, such as an importer that saves a Tenant rather than listing it on its Place, calls it before
-  # saving one. Raises when `record` is saved, or when none of its owners tracks it.
-  def self.tombstone_blocking(record, source)
-    TrackedAssociation.tombstone_blocking(record, source)
+  # Returns the tombstone the unsaved member `record` resolves to when `source` lists it, or nil when there is none.
+  # That is the first tombstone, in a tracked association `record` would join, that the association's tombstone matcher
+  # matches to it and whose source outranks `source` there. Code that creates members itself, such as an importer that
+  # saves a Tenant rather than listing it on its Place, calls it before saving one. Changes nothing. Raises when
+  # `record` is saved, or when none of its owners tracks it.
+  def self.resolved_tombstone(record, source)
+    TrackedAssociation.resolved_tombstone(record, source)
   end
 end

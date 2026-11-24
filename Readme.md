@@ -523,7 +523,7 @@ A source that is no longer used can be deactivated. From each record's next forg
     place.forge! # coordinates fall back to the next source, or stay as they are
   ```
 
-In a tracked association, an inactive source's member lists are left out too. Members only it listed become rows no member list has named, which are left alone, and its exclusions and tombstones stop applying until it is active again. A tenant it excluded that another source listed as new meanwhile is removed, per `dependent:`, by the first forge after it is activated again. A tenant the application created itself meanwhile, after `LaForge.tombstone_blocking` returned nil for it, keeps its id and is not matched against the tombstone, so the exclusion does not apply to it.
+In a tracked association, an inactive source's member lists are left out too. Members only it listed become rows no member list has named, which are left alone, and its exclusions and tombstones stop applying until it is active again. A tenant it excluded that another source listed as new meanwhile is removed, per `dependent:`, by the first forge after it is activated again. A tenant the application created itself meanwhile, after `LaForge.resolved_tombstone` returned nil for it, keeps its id and is not matched against the tombstone, so the exclusion does not apply to it.
 
 ### Expiring a change
 
@@ -981,7 +981,7 @@ The matcher receives an unsaved member built from what a source provided, and an
   ```
 
 - **Each forge** checks the new members that member lists name against the tombstones, before membership is decided. A member a tombstone matches is decided as the excluded member, so the forge doesn't add it back when a source with a lower precedence than the excluding source's lists it, and does when one with a higher precedence lists it, which creates it and drops the tombstone.
-- **Code that creates members itself,** such as an importer that builds and saves a tenant rather than listing it on the place, asks before saving a new one. `LaForge.tombstone_blocking(tenant, source)` returns the tombstone that matches the tenant and whose source outranks `source`, or nil when there is none.
+- **Code that creates members itself,** such as an importer that builds and saves a tenant rather than listing it on the place, asks before saving a new one. `LaForge.resolved_tombstone(tenant, source)` returns the tombstone the tenant resolves to when `source` lists it, which is one that matches the tenant and whose source outranks `source`, or nil when there is none. It only reads, so the code decides whether to save the tenant.
 - **A tombstone lasts** through the excluding source's later lists, until the source forgets it with `place.record_data_entries({ tenants: { forget: [tombstone] } }, map_editor, mode: :edit)`. Once forgotten, the member comes back, as a new member, only when a source lists it again with its attributes. The same applies once the exclusion expires or while the excluding source is inactive. Withdrawing the source drops its tombstones too.
 - **Associations that need no tombstones:** join rows and associations with `key:` name something that outlasts the row, so their exclusions hold already, and a has_one takes only complete lists. Declaring `tombstone_matcher:` on one raises.
 

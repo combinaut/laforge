@@ -1491,19 +1491,19 @@ describe 'Association tracking capabilities' do
       expect { LaForge::AssociationConfig.new(Place, :tenants, tombstone_matcher: :name) }.to raise_error(ArgumentError, /tombstone_matcher: must respond to call/)
     end
 
-    it 'tells code that creates members itself whether a new member matches a tombstone of a source that outranks its own, raising when it cannot check', capability: 'C97' do
+    it 'tells code that creates members itself which tombstone a new member would resolve to, raising when it cannot check', capability: 'C97' do
       exclude_corner_cafe
       place.reload
 
-      expect(LaForge.tombstone_blocking(place.tenants.build(name: 'Corner Café'), low)).to have_attributes(source: top)
-      expect(LaForge.tombstone_blocking(place.tenants.build(name: 'Florist'), low)).to be_nil
-      expect(LaForge.tombstone_blocking(place.tenants.build(name: 'Corner Café'), top)).to be_nil # the source that excluded it may add it again
+      expect(LaForge.resolved_tombstone(place.tenants.build(name: 'Corner Café'), low)).to have_attributes(source: top)
+      expect(LaForge.resolved_tombstone(place.tenants.build(name: 'Florist'), low)).to be_nil
+      expect(LaForge.resolved_tombstone(place.tenants.build(name: 'Corner Café'), top)).to be_nil # the source that excluded it may add it again
 
-      expect { LaForge.tombstone_blocking(place.tenants.first, low) }.to raise_error(ArgumentError, /already exists; tombstone_blocking checks a new member before it is created/)
-      expect { LaForge.tombstone_blocking(Tenant.new(name: 'Corner Café'), low) }.to raise_error(ArgumentError, /Tenant is not a member of an association LaForge tracks \(checked occupiable, which is not set\)/)
+      expect { LaForge.resolved_tombstone(place.tenants.first, low) }.to raise_error(ArgumentError, /already exists; resolved_tombstone checks a new member before it is created/)
+      expect { LaForge.resolved_tombstone(Tenant.new(name: 'Corner Café'), low) }.to raise_error(ArgumentError, /Tenant is not a member of an association LaForge tracks \(checked occupiable, which is not set\)/)
 
       allow(Place.laforge.association(:tenants)).to receive(:tombstone_matcher).and_return(->(_tenant, _tombstones) { Tenant.new })
-      expect { LaForge.tombstone_blocking(place.tenants.build(name: 'Corner Café'), low) }.to raise_error(ArgumentError, /Place#tenants tombstone_matcher: returned .* which is not one of the tombstones it was given/)
+      expect { LaForge.resolved_tombstone(place.tenants.build(name: 'Corner Café'), low) }.to raise_error(ArgumentError, /Place#tenants tombstone_matcher: returned .* which is not one of the tombstones it was given/)
     end
 
     context 'when a member list names a tombstone whose exclusion no longer counts' do
@@ -1993,7 +1993,7 @@ describe 'Association tracking capabilities' do
       high.update!(active: false)
       top.update!(active: false)
       place.reload.forge!
-      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Harbor Books', 'Corner Café') # high's tenant stays though unnamed, and top's tombstone stops blocking
+      expect(place.reload.tenants.pluck(:name)).to contain_exactly('Harbor Books', 'Corner Café') # high's tenant stays though unnamed, and top's tombstone stops counting
 
       top.update!(active: true) # its exclusion applies again, to the tenant created meanwhile
       place.reload.forge!
@@ -2082,7 +2082,7 @@ describe 'Association tracking capabilities' do
 
       travel 8.days do
         place.reload
-        expect(LaForge.tombstone_blocking(place.tenants.build(name: 'Corner Café'), low)).to be_nil
+        expect(LaForge.resolved_tombstone(place.tenants.build(name: 'Corner Café'), low)).to be_nil
         place.reload.forge!
         expect(place.reload.tenants.pluck(:name)).to contain_exactly('Harbor Books', 'Corner Café')
         expect(place.data_entries.tombstones(:tenants)).to be_empty

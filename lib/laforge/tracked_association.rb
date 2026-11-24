@@ -51,13 +51,13 @@ module LaForge
         end
       end
 
-      # See `LaForge.tombstone_blocking`.
-      def tombstone_blocking(record, source)
-        raise ArgumentError, "#{record.class.name} #{record.id} already exists; tombstone_blocking checks a new member before it is created" if record.persisted?
+      # See `LaForge.resolved_tombstone`.
+      def resolved_tombstone(record, source)
+        raise ArgumentError, "#{record.class.name} #{record.id} already exists; resolved_tombstone checks a new member before it is created" if record.persisted?
 
         source_id = DataSource.normalize_source_id(source)
         tracked_associations_of(record).each do |tracked|
-          found = tracked.tombstone_blocking(record, source_id)
+          found = tracked.resolved_tombstone(record, source_id)
           return found if found
         end
         nil
@@ -315,9 +315,10 @@ module LaForge
       end
     end
 
-    # Returns the first tombstone the tombstone matcher matches to the unsaved member `record` whose source outranks the
-    # source with `source_id`, or nil, which it also is when the association has no tombstone matcher
-    def tombstone_blocking(record, source_id)
+    # Returns the tombstone the unsaved member `record` resolves to when the source with `source_id` lists it, which is
+    # the first one the tombstone matcher matches to it whose source outranks that source, or nil, which it also is when
+    # the association has no tombstone matcher
+    def resolved_tombstone(record, source_id)
       return unless config.tombstone_matcher
 
       outranking = tombstones.select { |tombstone| owner.laforge.outranks?(config.name, tombstone.source_id, source_id) }
