@@ -7,7 +7,7 @@ module LaForge
   # - `source_id`: the source whose member list excluded the member
   # - `record`: an unsaved member built from what the member was, which is what the tombstone matcher is given
   # - `to_h`: the tombstone's key. Pass it, or the tombstone, to a `forget:` edit from its source to drop the tombstone,
-  #   so it no longer keeps the member out.
+  #   so it no longer stops lower precedence sources from adding the member back.
   class Tombstone
     attr_reader :owner, :config, :source_id, :key, :attributes, :excluded_at
 
@@ -37,10 +37,10 @@ module LaForge
     end
   end
 
-  # Returns the tombstone that keeps the unsaved member `record` out, or nil. That is the first tombstone, in a tracked
-  # association `record` would join, that the association's tombstone matcher matches and whose source outranks `source`
-  # there. Code that creates members itself, such as an importer that saves a Tenant rather than listing it on its
-  # Place, calls it before saving one. Raises when `record` is saved, or when none of its owners tracks it.
+  # Returns the first tombstone, in a tracked association the unsaved member `record` would join, that the association's
+  # tombstone matcher matches to it and whose source outranks `source` there, or nil when there is none. Code that
+  # creates members itself, such as an importer that saves a Tenant rather than listing it on its Place, calls it before
+  # saving one. Raises when `record` is saved, or when none of its owners tracks it.
   def self.tombstone_blocking(record, source)
     TrackedAssociation.tombstone_blocking(record, source)
   end

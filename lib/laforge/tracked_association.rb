@@ -725,8 +725,7 @@ module LaForge
     #
     # The member lists name the member by the tombstone's key rather than keep its id, because a new row can take a
     # removed row's id, as when MySQL before 8.0 restarts and sets AUTO_INCREMENT to the highest id plus one, and the
-    # exclusion would then remove that row. The key also tells a member kept out on purpose from a row that went some
-    # other way.
+    # exclusion would then remove that row. The key also tells an excluded member from a row that went some other way.
     def entomb
       all_member_lists = owner.laforge.association_member_lists(config, inactive: true)
       existing.each_value do |record|

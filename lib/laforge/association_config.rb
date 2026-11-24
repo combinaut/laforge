@@ -215,11 +215,11 @@ module LaForge
       end
     end
 
-    # Returns the `tombstone:` option of `lists`, a partial list or edits given as a hash: false when its exclusions keep
-    # neither a tombstone nor the exclusion once a forge has removed their member, and true, the default, when they keep
-    # the member out. Raises for any other value.
-    # The name stands for whatever keeps the member out after the forge: a member keyed by primary key would get a
-    # tombstone, and a member keyed by its columns, which never gets one, keeps the exclusion, which plays the same role.
+    # Returns the `tombstone:` option of `lists`, a partial list or edits given as a hash, which is true by default. False
+    # is for exclusions that keep neither a tombstone nor the exclusion once a forge has removed their member, so a
+    # later forge adds the member back when any source lists it. Raises for any other value.
+    # It is named for what would otherwise stop lower precedence sources from adding the member back, a tombstone for a
+    # member keyed by primary key, and the exclusion itself for a member keyed by its columns, which never gets one.
     def tombstone_option(lists)
       tombstone = lists.fetch('tombstone', true)
       return tombstone if [true, false].include?(tombstone)
