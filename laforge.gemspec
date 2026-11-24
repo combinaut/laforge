@@ -16,7 +16,10 @@ Gem::Specification.new do |s|
 
   s.files = Dir["{app,config,db,lib}/**/*", "MIT-LICENSE", "Rakefile", "README.md"]
 
-  s.add_dependency 'rails', '>= 8.1.4.1'
+  s.add_dependency 'activemodel', '>= 8.1.4.1'
+  s.add_dependency 'activerecord', '>= 8.1.4.1'
+  s.add_dependency 'activesupport', '>= 8.1.4.1'
+  s.add_dependency 'railties', '>= 8.1.4.1'
 
   s.add_development_dependency 'combustion', '~> 1.3'
   s.add_development_dependency 'mysql2', '~> 0.5.5'

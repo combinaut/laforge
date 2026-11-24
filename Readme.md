@@ -64,7 +64,7 @@ Declare each association, attribute group and `match_by` attribute in one call o
 
 ### Upgrading from 0.0.1.alpha to 1.0
 
-1.0 requires Rails 8.1.4.1 or later.
+1.0 requires Rails 8.1.4.1 or later. It depends on Active Model, Active Record, Active Support and Railties only, so an application that relied on LaForge to install or load the rest of Rails must depend on `rails` itself.
 
 1. Move precedence into the precedence rules table. The migration moves each source's `priority` and each entry's `priority` into precedence rules and drops both columns. Before changing anything, it checks that every source has its own priority, that entries for the same record, attribute and source agree, and that every entry with a priority belongs to an existing source. It is reversible (see [Precedence](#precedence)).
 
