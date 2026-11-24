@@ -492,7 +492,7 @@ module LaForge
       end
       unless tombstone
         raise ArgumentError, "#{owner.class.name}##{config.name}: the source has a complete list, which goes on excluding #{described} once it leaves it out, " \
-                             'so tombstone: false would still keep it out. Record the member list with mode: :partial first, or leave out tombstone: false'
+                             'so even with tombstone: false the forge would not add it back when a lower precedence source lists it. Record the member list with mode: :partial first, or leave out tombstone: false'
       end
       return unless action == :exclude && member_settings.expiring?
 
@@ -514,7 +514,7 @@ module LaForge
 
         raise ArgumentError, "Cannot exclude #{config.describe_key(found)} from #{owner.class.name} #{owner.id.inspect}'s #{config.name} with tombstone: false: " \
                              "#{entry.source.name}'s member list includes it, and would still name it once a forge removed it. " \
-                             "Leave out tombstone: false to keep it out, or exclude it this way once #{entry.source.name}'s member list no longer includes it"
+                             "Leave out tombstone: false for an exclusion that stops lower precedence sources from adding it back, or exclude it this way once #{entry.source.name}'s member list no longer includes it"
       end
     end
 

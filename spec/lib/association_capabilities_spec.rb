@@ -1356,7 +1356,7 @@ describe 'Association tracking capabilities' do
       place.forge!
     end
 
-    it 'destroys an excluded member and keeps a tombstone that keeps it out when a lower source lists it again', capability: 'C92' do
+    it 'destroys an excluded member and keeps a tombstone, so the forge does not add it back when a lower source lists it again', capability: 'C92' do
       exclude_corner_cafe
       expect(Tenant.pluck(:name)).to eq(['Harbor Books'])
       tombstone = place.reload.data_entries.tombstones(:tenants).sole
@@ -1383,7 +1383,7 @@ describe 'Association tracking capabilities' do
       exclude_corner_cafe
       tombstone = place.reload.data_entries.tombstones(:tenants).sole
 
-      expect { place.record_data_entries({ tenants: { include: [tombstone] } }, top, mode: :edit) }.to raise_error(ArgumentError, /can only be forgotten, which lets sources add the member again/)
+      expect { place.record_data_entries({ tenants: { include: [tombstone] } }, top, mode: :edit) }.to raise_error(ArgumentError, /can only be forgotten, after which the forge adds the member back when a source lists it again/)
       place.record_data_entries({ tenants: { forget: [tombstone.to_h] } }, top, mode: :edit)
       place.save!
       expect(place.reload.data_entries.tombstones(:tenants)).to be_empty
@@ -1432,7 +1432,7 @@ describe 'Association tracking capabilities' do
       expect(place.reload.data_entries.tombstones(:tenants).map { |tombstone| tombstone.attributes['name'] }).to eq(['Harbor Books'])
     end
 
-    it "keeps another source's tombstone, which keeps the new member out while that source outranks the one including it", capability: 'C235' do
+    it "keeps another source's tombstone, so the forge does not add the new member while that source outranks the one including it", capability: 'C235' do
       exclude_corner_cafe # top's tombstone
       place.reload.record_data_entries({ tenants: { include: [{ new: 'draft-1', name: 'Corner Café' }] } }, high, mode: :edit)
 
@@ -1478,7 +1478,7 @@ describe 'Association tracking capabilities' do
       unmatched_place = UnmatchedPlace.create!(name: 'Harbor Building')
       corner_cafe = unmatched_place.tenants.create!(name: 'Corner Café')
 
-      message = /Cannot exclude Tenant #{corner_cafe.id} from UnmatchedPlace #{unmatched_place.id}'s tenants: excluding it removes it per `dependent:`.*Declare tombstone_matcher: on UnmatchedPlace's tenants.*tombstone_matcher: ->\(tenant, tombstones\).*Or exclude it with tombstone: false, to remove it without keeping it out/
+      message = /Cannot exclude Tenant #{corner_cafe.id} from UnmatchedPlace #{unmatched_place.id}'s tenants: excluding it removes it per `dependent:`.*Declare tombstone_matcher: on UnmatchedPlace's tenants.*tombstone_matcher: ->\(tenant, tombstones\).*Or exclude it with tombstone: false, to remove it and have the forge add it back when any source lists it again/
       expect { unmatched_place.record_data_entries({ tenants: { exclude: [corner_cafe] } }, top, mode: :edit) }.to raise_error(ArgumentError, message)
       expect { unmatched_place.record_data_entries({ tenants: { exclude: [corner_cafe] } }, top, mode: :partial) }.to raise_error(ArgumentError, message)
       expect { unmatched_place.record_data_entries({ tenants_attributes: [{ id: corner_cafe.id, _destroy: '1' }] }, top, mode: :edit) }.to raise_error(ArgumentError, message)
@@ -1491,7 +1491,7 @@ describe 'Association tracking capabilities' do
       expect { LaForge::AssociationConfig.new(Place, :tenants, tombstone_matcher: :name) }.to raise_error(ArgumentError, /tombstone_matcher: must respond to call/)
     end
 
-    it 'tells code that creates members itself whether a tombstone keeps a new member out, raising when it cannot check', capability: 'C97' do
+    it 'tells code that creates members itself whether a new member matches a tombstone of a source that outranks its own, raising when it cannot check', capability: 'C97' do
       exclude_corner_cafe
       place.reload
 
@@ -1587,7 +1587,7 @@ describe 'Association tracking capabilities' do
         harbor_books = UnvalidatedTenant.find_by!(name: 'Harbor Books')
         unvalidated_place.record_data_entries({ tenants: [{ name: 'Corner Café', unit: '2B' }, { id: harbor_books.id }] }, low)
         unvalidated_place.forge!
-        expect(UnvalidatedTenant.pluck(:name)).to eq(['Harbor Books']) # top's tombstone keeps the café out
+        expect(UnvalidatedTenant.pluck(:name)).to eq(['Harbor Books']) # top's tombstone stops low from adding the café back
         expect(lows_member_list.pending.map { |item| item['key'] }).to eq([tombstone.to_h]) # low describes the tombstone's member
 
         unvalidated_place.reload.record_data_entries({ tenants: { include: [] } }, low, mode: :edit, precedence: 50)
@@ -1600,7 +1600,7 @@ describe 'Association tracking capabilities' do
     end
   end
 
-  # A source removes a member and keeps nothing that keeps it out, for a member no other source lists
+  # A source removes a member no other source lists, and the forge adds it back when any source lists it
   describe 'exclusions without a tombstone' do
     let!(:corner_cafe) { place.tenants.create!(name: 'Corner Café', unit: '1A') } # a row no member list names
     let!(:harbor_books) { place.tenants.create!(name: 'Harbor Books') }
@@ -1654,7 +1654,7 @@ describe 'Association tracking capabilities' do
     it "raises, naming the source, while another source's member list includes the member, active or not, and records nothing", capability: 'C247' do
       place.record_data_entries({ tenants: [{ id: corner_cafe.id }] }, low, mode: :partial)
       place.save!
-      message = /Cannot exclude id #{corner_cafe.id} from Place #{place.id}'s tenants with tombstone: false: low's member list includes it, and would still name it once a forge removed it. Leave out tombstone: false to keep it out, or exclude it this way once low's member list no longer includes it/
+      message = /Cannot exclude id #{corner_cafe.id} from Place #{place.id}'s tenants with tombstone: false: low's member list includes it, and would still name it once a forge removed it. Leave out tombstone: false for an exclusion that stops lower precedence sources from adding it back, or exclude it this way once low's member list no longer includes it/
 
       expect { exclude_without_tombstone(corner_cafe) }.to raise_error(ArgumentError, message)
       expect { place.record_data_entries({ tenants: { exclude: [{ id: corner_cafe.id }], tombstone: false } }, top, mode: :partial) }.to raise_error(ArgumentError, message)
@@ -1685,9 +1685,9 @@ describe 'Association tracking capabilities' do
     it 'raises for a complete list, a has_one, and a tombstone: other than true or false, saying what to pass', capability: 'C249' do
       place.record_data_entries({ tenants: [{ id: harbor_books.id }] }, top)
       expect { exclude_without_tombstone(corner_cafe) }
-        .to raise_error(ArgumentError, /Place#tenants: the source has a complete list, which goes on excluding id #{corner_cafe.id} once it leaves it out, so tombstone: false would still keep it out. Record the member list with mode: :partial first, or leave out tombstone: false/)
+        .to raise_error(ArgumentError, /Place#tenants: the source has a complete list, which goes on excluding id #{corner_cafe.id} once it leaves it out, so even with tombstone: false the forge would not add it back when a lower precedence source lists it. Record the member list with mode: :partial first, or leave out tombstone: false/)
       expect { place.record_data_entries({ tenants: { exclude: [{ id: corner_cafe.id }], tombstone: 'no' } }, high, mode: :edit) }
-        .to raise_error(ArgumentError, /Place#tenants: tombstone: takes false, to remove the excluded members and keep nothing that keeps them out, or true, the default, not "no"/)
+        .to raise_error(ArgumentError, /Place#tenants: tombstone: takes false, for the forge to add the excluded members back when any source lists them again, or true, the default, for it not to when a lower precedence source does, not "no"/)
       expect { place.record_data_entries({ marker: { exclude: [], tombstone: false } }, high, mode: :edit) }
         .to raise_error(ArgumentError, /Place#marker is a has_one, whose edit is its single member, so it has no exclusions. Record nil to remove its member/)
       expect { place.record_data_entries({ marker: { exclude: [] } }, high, mode: :partial) }.to raise_error(ArgumentError, /is a has_one, which takes a complete list/)
@@ -1708,7 +1708,7 @@ describe 'Association tracking capabilities' do
       expect(unmatched_place.data_entries).to be_empty
     end
 
-    it "lets a lower source's later list add back a member keyed by its columns, which a plain exclusion keeps out", capability: 'C251' do
+    it "adds back a member keyed by its columns when a lower source later lists it, which a plain exclusion stops", capability: 'C251' do
       place.record_data_entries({ place_categories: categories(cafe, bakery) }, top, mode: :partial)
       place.forge!
       place.record_data_entries({ place_categories: { exclude: categories(cafe), tombstone: false } }, top, mode: :edit)

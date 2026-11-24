@@ -166,7 +166,7 @@ module LaForge
                            "Declare tombstone_matcher: on #{owner_class.name}'s #{name}, a callable given the listed #{klass.name} and the excluded ones " \
                            "that returns the one it is, or nil, such as " \
                            "`laforged associations: { #{name}: { tombstone_matcher: ->(#{klass.model_name.element}, tombstones) { tombstones.find { |tombstone| ... } } } }`. " \
-                           'Or exclude it with tombstone: false, to remove it without keeping it out'
+                           'Or exclude it with tombstone: false, to remove it and have the forge add it back when any source lists it again'
     end
 
     # Returns [key hash, attributes] for each of `members`, where the attributes are what the source says about the
@@ -224,7 +224,8 @@ module LaForge
       tombstone = lists.fetch('tombstone', true)
       return tombstone if [true, false].include?(tombstone)
 
-      raise ArgumentError, "#{owner_class.name}##{name}: tombstone: takes false, to remove the excluded members and keep nothing that keeps them out, or true, the default, not #{tombstone.inspect}"
+      raise ArgumentError, "#{owner_class.name}##{name}: tombstone: takes false, for the forge to add the excluded members back when any source lists them again, " \
+                           "or true, the default, for it not to when a lower precedence source does, not #{tombstone.inspect}"
     end
 
     # Raises when a member references a record that does not exist, or is named by an id that is not one of the owner's
@@ -296,7 +297,7 @@ module LaForge
 
     # Returns [key hash, no attributes] for a tombstone, which can only be named. Raises when `attributes` is true.
     def named_tombstone(member, attributes:)
-      raise ArgumentError, "A tombstone in #{owner_class.name}##{name} can only be forgotten, which lets sources add the member again; it has no row to include or exclude" if attributes
+      raise ArgumentError, "A tombstone in #{owner_class.name}##{name} can only be forgotten, after which the forge adds the member back when a source lists it again; it has no row to include or exclude" if attributes
 
       [member.slice(TOMBSTONE), {}]
     end
