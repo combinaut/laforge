@@ -152,9 +152,9 @@ module LaForge
       unsaved?(member) ? {} : key_hash(member)
     end
 
-    # Raises when `members`, exclusions that keep a tombstone, include a member keyed by primary key and the association
-    # has no `tombstone_matcher:`. An excluded member is removed, and only the matcher can recognize it when a source
-    # lists it again.
+    # Raises when `members`, the exclusions to record with a tombstone, include a member keyed by primary key and the
+    # association has no `tombstone_matcher:`. An excluded member is removed, and only the matcher can recognize it when
+    # a source lists it again.
     def assert_excludable!(owner, members)
       return unless primary_keyed? && !tombstone_matcher
 
@@ -166,7 +166,7 @@ module LaForge
                            "Declare tombstone_matcher: on #{owner_class.name}'s #{name}, a callable given the listed #{klass.name} and the excluded ones " \
                            "that returns the one it is, or nil, such as " \
                            "`laforged associations: { #{name}: { tombstone_matcher: ->(#{klass.model_name.element}, tombstones) { tombstones.find { |tombstone| ... } } } }`. " \
-                           'Or exclude it with tombstone: false, to remove it and have the forge add it back when any source lists it again'
+                           'Or exclude it with tombstone: false, to remove it and have the forge add it back when a source lists it again, unless another source\'s exclusion still stops it'
     end
 
     # Returns [key hash, attributes] for each of `members`, where the attributes are what the source says about the
@@ -215,17 +215,18 @@ module LaForge
       end
     end
 
-    # Returns the `tombstone:` option of `lists`, a partial list or edits given as a hash, which is true by default. False
-    # is for exclusions that keep neither a tombstone nor the exclusion once a forge has removed their member, so a
-    # later forge adds the member back when any source lists it. Raises for any other value.
+    # Returns the `tombstone:` option of `lists`, a partial list or edits given as a hash, which is true by default.
+    # False is for exclusions that keep neither a tombstone nor the exclusion once a forge has removed their member, so a
+    # later forge adds the member back when a source lists it, whatever that source's precedence, unless another
+    # source's exclusion or tombstone still stops it. Raises for any other value.
     # It is named for what would otherwise stop lower precedence sources from adding the member back, a tombstone for a
     # member keyed by primary key, and the exclusion itself for a member keyed by its columns, which never gets one.
     def tombstone_option(lists)
       tombstone = lists.fetch('tombstone', true)
       return tombstone if [true, false].include?(tombstone)
 
-      raise ArgumentError, "#{owner_class.name}##{name}: tombstone: takes false, for the forge to add the excluded members back when any source lists them again, " \
-                           "or true, the default, for it not to when a lower precedence source does, not #{tombstone.inspect}"
+      raise ArgumentError, "#{owner_class.name}##{name}: pass tombstone: true, the default, or false, not #{tombstone.inspect}. " \
+                           "With false, the forge adds the excluded members back when a source lists them again, unless another source's exclusion still stops it"
     end
 
     # Raises when a member references a record that does not exist, or is named by an id that is not one of the owner's
@@ -297,7 +298,7 @@ module LaForge
 
     # Returns [key hash, no attributes] for a tombstone, which can only be named. Raises when `attributes` is true.
     def named_tombstone(member, attributes:)
-      raise ArgumentError, "A tombstone in #{owner_class.name}##{name} can only be forgotten, after which the forge adds the member back when a source lists it again; it has no row to include or exclude" if attributes
+      raise ArgumentError, "A tombstone in #{owner_class.name}##{name} can only be forgotten, after which the forge adds the member back when a source lists it again, unless another source's exclusion still stops it; it has no row to include or exclude" if attributes
 
       [member.slice(TOMBSTONE), {}]
     end

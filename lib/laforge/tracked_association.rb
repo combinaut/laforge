@@ -502,8 +502,9 @@ module LaForge
 
     # Raises when another source's member list includes one of `members`, key hashes the source is to exclude with
     # `tombstone: false`, naming that source. That member list would still name the member once a forge removed it,
-    # and add it back or name a row that is gone. Every other source's member list counts, inactive sources' too,
-    # except those that have expired or are marked for destruction, and an inclusion that has expired.
+    # so the next forge would add it back, or it would name a row that is gone. Every other source's member list counts,
+    # inactive sources' too, except those that have expired or are marked for destruction, and an inclusion that has
+    # expired.
     def assert_removable_without_tombstone!(members, source)
       source_id = DataSource.normalize_source_id(source)
       owner.laforge.association_member_lists(config, inactive: true).each do |entry, list|
@@ -512,8 +513,8 @@ module LaForge
         found = members.map { |member| config.key_of(member) }.find { |key| list.includes?(config, key) && !list.expired?(config, key) }
         next unless found
 
-        raise ArgumentError, "Cannot exclude #{config.describe_key(found)} from #{owner.class.name} #{owner.id.inspect}'s #{config.name} with tombstone: false: " \
-                             "#{entry.source.name}'s member list includes it, and would still name it once a forge removed it. " \
+        raise ArgumentError, "Cannot exclude #{config.klass.name} #{config.describe_key(found)} from #{owner.class.name} #{owner.id.inspect}'s #{config.name} with tombstone: false, " \
+                             "since #{entry.source.name}'s member list includes it, and would still name it once a forge removed it. " \
                              "Leave out tombstone: false for an exclusion that stops lower precedence sources from adding it back, or exclude it this way once #{entry.source.name}'s member list no longer includes it"
       end
     end
@@ -690,8 +691,8 @@ module LaForge
     end
 
     # Forgets, in each member list, each member it excludes with `tombstone: false` that the forge leaves out of the
-    # association, so the member list keeps neither the exclusion nor a tombstone for it (see MemberList#forgetting).
-    # Each member list keeps its recorded_at, since its source said nothing new.
+    # association, so the member list keeps neither the exclusion nor a tombstone for it (see
+    # `MemberList::Partial#forgetting`). Each member list keeps its recorded_at, since its source said nothing new.
     def forget_removed_without_tombstone
       kept = included_keys + undecided
       member_lists.each do |entry, _|

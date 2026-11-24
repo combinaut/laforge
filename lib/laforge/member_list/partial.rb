@@ -15,9 +15,9 @@ module LaForge
       end
 
       # Returns the stored value for a partial list of `include` and `exclude` replacing `previous`, withdrawing what
-      # `previous` included or withdrew and this one does not name (see `MemberList#left_out_by`). Each exclusion keeps
-      # nothing once it removes its member when `tombstone` is false. It keeps the tombstones of `previous`, and its
-      # exclusions of tombstones this one does not name, with their expiries and `tombstone: false`.
+      # `previous` included or withdrew and this one does not name (see `MemberList#left_out_by`). With
+      # `tombstone: false`, its exclusions are noted in `no_tombstone`. It keeps the tombstones of `previous`, and its
+      # exclusions of tombstones this one does not name, with their expiries and whether they are in `no_tombstone`.
       def self.replacing(previous, config, include:, exclude:, pending:, expiries:, tombstone: true)
         listed = (include + exclude).map { |member| config.key_of(member) }
         kept = previous.exclude.select { |member| config.tombstone?(member) && !listed.include?(config.key_of(member)) }
