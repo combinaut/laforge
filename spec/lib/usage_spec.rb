@@ -793,6 +793,68 @@ describe 'Usage' do
       record.forge!
     end
 
+    context 'in a precedence order' do
+      let(:ours) { [cadastre, business_directory, map_editor] }
+
+      # The order's [source, level, precedence] for the sources of this spec, leaving out any other sources in the table
+      def ranked(order, sources = ours) = order.filter_map { |item| item.values_at(:source, :level, :precedence) if sources.include?(item[:source]) }
+
+      # Gives `source` a rule of `precedence` for the name at `level`, or leaves it its global precedence at :global
+      def rule_at(level, source, precedence)
+        case level
+        when :record_attribute then record.update_attribute_source_precedence(:name, source, precedence)
+        when :record then record.update_source_precedence(source, precedence)
+        when :model_attribute then ActiveRecordMock.update_attribute_source_precedence(:name, source, precedence)
+        when :model then ActiveRecordMock.update_source_precedence(source, precedence)
+        end
+      end
+
+      %i[record_attribute record model_attribute model global].each do |level|
+        it "lists it with include_inactive: where it would rank if active, at its #{level} rule, and leaves it out without" do
+          rule_at(level, cadastre, 1)
+          ActiveRecordMock.update_attribute_source_precedence(:name, business_directory, 2) unless level == :model_attribute
+          cadastre.update!(active: false)
+
+          inactive = ranked(record.precedence_order(attribute: :name, include_inactive: true))
+          expect(inactive.assoc(cadastre)).to eq([cadastre, level, level == :global ? 31 : 1])
+          expect(ranked(record.precedence_order(attribute: :name))).to eq(inactive - [inactive.assoc(cadastre)])
+
+          cadastre.update!(active: true)
+          expect(ranked(record.precedence_order(attribute: :name))).to eq(inactive)
+        end
+      end
+
+      it "lists a source with a rule for every attribute of the record at the :record level, in the order for every attribute and for one" do
+        record.update_source_precedence(cadastre, 1)
+        cadastre.update!(active: false)
+
+        expect(ranked(record.precedence_order(include_inactive: true)).first).to eq([cadastre, :record, 1])
+        expect(ranked(record.precedence_order(attribute: :name, include_inactive: true)).first).to eq([cadastre, :record, 1])
+        expect(ranked(record.precedence_order).map(&:first)).to eq([map_editor, business_directory])
+        expect(record.forge_attributes).to include('name' => 'From Map Editor')
+      end
+
+      it "lists it in the model's order with include_inactive:" do
+        ActiveRecordMock.update_precedence_order([cadastre], attribute: :name)
+        cadastre.update!(active: false)
+
+        expect(ranked(ActiveRecordMock.precedence_order(attribute: :name, include_inactive: true))).to eq([[cadastre, :model_attribute, 1], [map_editor, :global, 33], [business_directory, :global, 32]])
+        expect(ranked(ActiveRecordMock.precedence_order(attribute: :name))).to eq([[map_editor, :global, 33], [business_directory, :global, 32]])
+      end
+
+      it 'breaks ties by source id, active or not, after every source with a rule' do
+        no_precedence = Array.new(3) { |index| LaForge::DataSource.create!(name: "Unranked #{index}", precedence: 40 + index) }
+        LaForge::PrecedenceRule.global.where(source_id: no_precedence).delete_all # as for a source whose global precedence was never set
+        no_precedence.values_at(0, 2).each { |source| source.update!(active: false) }
+
+        expect(ranked(record.precedence_order(attribute: :name, include_inactive: true), ours + no_precedence))
+          .to eq([[map_editor, :global, 33], [business_directory, :global, 32], [cadastre, :global, 31], *no_precedence.map { |source| [source, nil, nil] }])
+        expect(ranked(record.precedence_order(attribute: :name), ours + no_precedence).last).to eq([no_precedence[1], nil, nil])
+      ensure
+        LaForge::DataSource.where(id: no_precedence).destroy_all if no_precedence
+      end
+    end
+
     it "falls back to the next source, and keeps a value no other source has, once the record is forged again" do
       record.update!(active: false)
       record.record_data_entries({ active: true }, map_editor) # an attribute only the map editor provides
