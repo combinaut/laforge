@@ -15,3 +15,5 @@ gemspec
 
 gem 'pry'
 gem 'pry-byebug'
+
+gem 'actionpack', group: :development, require: false

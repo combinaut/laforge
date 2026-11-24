@@ -1,4 +1,5 @@
-require 'rails/all'
+require 'active_support/all'
+require 'active_record'
 require 'laforge/expiry_trigger'
 require 'laforge/expiry_sweep'
 require 'laforge/expiring'

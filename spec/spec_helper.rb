@@ -3,6 +3,7 @@ ENV['RAILS_ENV'] ||= 'test'
 require 'bundler'
 Bundler.require :default, :development
 
+require 'action_controller/railtie' # after LaForge, which loads without it
 require 'rspec/rails'
 
 # Add additional requires below this line. Rails is not loaded until this point!
