@@ -180,7 +180,7 @@ Each call replaces the order at its level. Leaving out `attribute:` sets the ord
 
 Sources rank by level first. A source with a rule at a more specific level outranks every source whose most specific rule is at a less specific level, whatever the numbers; precedences only compare sources with rules at the same level. So a rule always puts its source above the sources without one at that level, and an order set at one level, such as one record's order for an attribute, puts the sources it lists above the rest, which keep the order of the next level down. A source added later lands below every order someone set.
 
-`precedence_order` lists the active sources in rank order, each with the most specific level it has a rule at, named after the call that sets it, `:record_attribute`, `:record`, `:model_attribute`, `:model` or `:global`, the precedence of its rule at that level, and the ruleset the rules at that level come from, `nil` for the base rules and for a record's own rules (see [Rulesets](#rulesets)). Without `attribute:`, it lists the order for every attribute, whose levels are `:record`, `:model` and `:global`. Precedences compare only within a level, so show each with its level, as "record attribute 1 · record 2", rather than ranking sources by the number.
+`precedence_order` lists the active sources in rank order (see [Listing inactive sources in a precedence order](#listing-inactive-sources-in-a-precedence-order) for the others), each with the most specific level it has a rule at, named after the call that sets it, `:record_attribute`, `:record`, `:model_attribute`, `:model` or `:global`, the precedence of its rule at that level, and the ruleset the rules at that level come from, `nil` for the base rules and for a record's own rules (see [Rulesets](#rulesets)). Without `attribute:`, it lists the order for every attribute, whose levels are `:record`, `:model` and `:global`. Precedences compare only within a level, so show each with its level, as "record attribute 1 · record 2", rather than ranking sources by the number.
 
   ```ruby
     foo.precedence_order(attribute: :height)
@@ -524,6 +524,17 @@ A source that is no longer used can be deactivated. From each record's next forg
   ```
 
 In a tracked association, an inactive source's member lists are left out too. Members only it listed become rows no member list has named, which are left alone, and its exclusions and tombstones stop applying until it is active again. A tenant it excluded that another source listed as new meanwhile is removed, per `dependent:`, by the first forge after it is activated again. A tenant the application created itself meanwhile, after `LaForge.tombstone_blocking` allowed it, keeps its id and is not matched against the tombstone, so the exclusion does not apply to it.
+
+#### Listing inactive sources in a precedence order
+
+An inactive source keeps its precedence rules, so a settings screen can still show it and let it be reordered for when it is active again. `precedence_order` leaves it out unless given `include_inactive: true`, which lists every inactive source where it would rank if active, with the level and precedence of its own rules. Tell them apart by `source.active`. Forging still leaves them out.
+
+  ```ruby
+    geocoder.update!(active: false)
+    place.precedence_order(attribute: :coordinates, include_inactive: true)
+    # => [{ source: geocoder, level: :model_attribute, precedence: 1, ruleset: nil }, { source: map_editor, level: :global, precedence: 3, ruleset: nil }, ...]
+    Place.precedence_order(attribute: :coordinates, include_inactive: true) # the same, for places with no rules of their own
+  ```
 
 ### Expiring a change
 

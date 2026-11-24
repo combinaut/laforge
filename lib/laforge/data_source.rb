@@ -34,12 +34,13 @@ module LaForge
 
     # @api private
     # Returns the active sources highest-ranked first by `resolver` for the attribute on `record`, or on a record with
-    # no rules of its own when `record` is nil, as [{ source:, level:, precedence:, ruleset: }]. A source's level is the
+    # no rules of its own when `record` is nil, as [{ source:, level:, precedence:, ruleset: }], and with
+    # `include_inactive`, the inactive sources too, each where it would rank if active. A source's level is the
     # most specific one it has a rule at (see `PrecedenceRule::LEVELS`), its precedence is that rule's, and its ruleset
     # is `resolver.ruleset_at` the level. Sources that rank equally come in id order. A source with no rule at any level,
     # such as one without a global precedence, comes last with a nil level and precedence.
-    def self.precedence_order(attribute, resolver:, record: nil)
-      ranked = active.to_a.map { |source| [source, resolver.rank(record, attribute.to_s, source.id)] }.sort_by { |source, rank| rank.map(&:-@) + [source.id] }
+    def self.precedence_order(attribute, resolver:, record: nil, include_inactive: false)
+      ranked = (include_inactive ? all : active).to_a.map { |source| [source, resolver.rank(record, attribute.to_s, source.id)] }.sort_by { |source, rank| rank.map(&:-@) + [source.id] }
       ranked.map do |source, rank|
         index = rank.index { |precedence| precedence != -Float::INFINITY }
         level = index && PrecedenceRule::LEVELS[index]

@@ -61,12 +61,13 @@ module LaForge
     # :model or :global, or nil when it has none, and the precedence is that rule's, or nil with a nil level. With a
     # nil `attribute`, the levels are :record, :model and :global. The ruleset is the one ranked by, nil for the base
     # rules, at the :record_attribute and :record levels, or with a nil level. Raises for a blank `attribute:`, which
-    # names none.
-    def precedence_order(attribute: nil)
+    # names none. `include_inactive: true` lists the inactive sources too, each where it would rank if active, so a
+    # settings screen can still order them. Forging still leaves them out. `source.active` tells them apart.
+    def precedence_order(attribute: nil, include_inactive: false)
       self.class.assert_attribute_named!(attribute, where: "#{record.class.name}#precedence_order", instead: Precedence::EVERY_ATTRIBUTE_ORDER) unless attribute.nil?
       # Not the last forge's resolver, so the ruleset and rules as they are now count
       resolver = PrecedenceRule::Resolver.new(record.class, ruleset: LaForge.ruleset_for(record))
-      DataSource.precedence_order(attribute, resolver: resolver, record: record)
+      DataSource.precedence_order(attribute, resolver: resolver, record: record, include_inactive: include_inactive)
     end
 
     # Returns `{ attribute_name => { source => precedence } }` for this record's own rules, unsaved ones included and
@@ -254,10 +255,11 @@ module LaForge
       # specific one the source has a rule at, :model_attribute, :model or :global, or nil when it has none, and the
       # precedence is that rule's, or nil with a nil level. The ruleset is the one ranked by, nil for the base rules,
       # for a ruleset not in use, or with a nil level. Raises for a blank `attribute:`, which names none.
-      def precedence_order(attribute: nil, ruleset: nil)
+      # `include_inactive: true` lists the inactive sources too, as the instance method does.
+      def precedence_order(attribute: nil, ruleset: nil, include_inactive: false)
         assert_attribute_named!(attribute, where: "#{model.name}.precedence_order", instead: EVERY_ATTRIBUTE_ORDER) unless attribute.nil?
         resolver = PrecedenceRule::Resolver.new(model, ruleset: PrecedenceRule.ruleset_name(ruleset, where: "#{model.name}.precedence_order"))
-        DataSource.precedence_order(attribute, resolver: resolver)
+        DataSource.precedence_order(attribute, resolver: resolver, include_inactive: include_inactive)
       end
 
       # Returns `{ attribute_name => { source => precedence } }` for this model's model-wide rules, in the base rules or
