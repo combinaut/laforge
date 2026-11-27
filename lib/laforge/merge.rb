@@ -123,7 +123,7 @@ module LaForge
       return unless keys.many?
 
       model = survivor.class.name
-      raise ArgumentError, "Cannot merge #{model} #{duplicate.id} into #{model} #{survivor.id}: #{source.name}'s member lists for their #{config.name} name " \
+      raise ArgumentError, "Cannot merge #{model} #{duplicate.id} into #{model} #{survivor.id}: #{source.key}'s member lists for their #{config.name} name " \
                            "#{keys.map { |key| config.describe_key(key) }.join(' and ')}, and #{model}##{config.name} holds one. " \
                            'Remove one of the member lists, or give the members the same key so the merge combines them, then merge again'
     end

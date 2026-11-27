@@ -36,7 +36,7 @@ ActiveRecord::Schema.define(version: 0) do
   drop_table :laforge_data_entries, if_exists: true
 
   create_table :laforge_data_sources, force: true do |t|
-    t.text :name
+    t.string :key, null: false, index: { unique: true }
     t.boolean :active, null: false, default: true
     t.timestamps precision: 6, null: false
   end

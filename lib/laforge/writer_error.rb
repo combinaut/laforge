@@ -18,7 +18,7 @@ module LaForge
       @sources = failures.transform_values { |failure| failure[:source] }
 
       raised = failures.map do |attribute_name, failure|
-        "#{record.class.name}##{attribute_name}= given #{failure[:value].inspect} from #{failure[:source].name} raised #{failure[:error].class.name} (#{failure[:error].message})"
+        "#{record.class.name}##{attribute_name}= given #{failure[:value].inspect} from #{failure[:source].key} raised #{failure[:error].class.name} (#{failure[:error].message})"
       end
       super("#{failures.one? ? 'A writer' : "#{failures.size} writers"} of #{record.class.name} #{record.id.inspect} raised while a forge assigned the forged values: " \
             "#{raised.join('; ')}. Record #{failures.one? ? 'a value the writer takes' : 'values the writers take'}, or rescue LaForge::WriterError and read its errors")

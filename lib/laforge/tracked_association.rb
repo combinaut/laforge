@@ -452,8 +452,8 @@ module LaForge
         used = placeholders.find { |key| list.includes?(config, key) }
         next unless used
 
-        raise ArgumentError, "#{owner.class.name}##{config.name}: the #{config.describe_key(used)} already names a new member in #{entry.source.name}'s member list. " \
-                             "Pass another token for this new member, or name the one #{entry.source.name} listed by its #{config.klass.primary_key} " \
+        raise ArgumentError, "#{owner.class.name}##{config.name}: the #{config.describe_key(used)} already names a new member in #{entry.source.key}'s member list. " \
+                             "Pass another token for this new member, or name the one #{entry.source.key} listed by its #{config.klass.primary_key} " \
                              "once #{owner.class.name} #{owner.id.inspect} is saved"
       end
     end
@@ -515,8 +515,8 @@ module LaForge
         next unless found
 
         raise ArgumentError, "Cannot exclude #{config.klass.name} #{config.describe_key(found)} from #{owner.class.name} #{owner.id.inspect}'s #{config.name} with tombstone: false, " \
-                             "since #{entry.source.name}'s member list includes it, and would still name it once a forge removed it. " \
-                             "Leave out tombstone: false for an exclusion that stops lower precedence sources from adding it back, or exclude it this way once #{entry.source.name}'s member list no longer includes it"
+                             "since #{entry.source.key}'s member list includes it, and would still name it once a forge removed it. " \
+                             "Leave out tombstone: false for an exclusion that stops lower precedence sources from adding it back, or exclude it this way once #{entry.source.key}'s member list no longer includes it"
       end
     end
 

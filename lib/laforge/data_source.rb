@@ -11,7 +11,7 @@ module LaForge
     after_rollback { PrecedenceCache.clear } # so no forge sees an undone change to `active`
     has_one :global_precedence_rule, -> { global }, class_name: 'LaForge::PrecedenceRule', foreign_key: :source_id, autosave: true, inverse_of: :source
 
-    validates :name, presence: true, uniqueness: { case_sensitive: false }
+    validates :key, presence: true, uniqueness: { case_sensitive: false }
     validates :precedence, presence: true, numericality: { only_integer: true, allow_nil: true }
     validate :precedence_is_unique
     validate :precedence_is_free_in_rulesets, on: :create
@@ -61,23 +61,36 @@ module LaForge
       Array.wrap(sources).map { |source| normalize_source_id(source) }
     end
 
-    # Resolves a source given as an id, an all-digit id string, a name, or a DataSource. A string
-    # is an id only when it is all digits, so a name such as "Channel 2" resolves by name.
+    # Resolves a source given as an id, an all-digit id string, a key as a String or Symbol, or a DataSource. A key is
+    # stored as a String, so a Symbol resolves as its String does. A string is an id only when it is all digits, so a key
+    # such as "channel_2" resolves by key.
     def self.normalize_source_id(source)
       case source
       when Integer
         source
+      when Symbol
+        normalize_source_id(source.to_s)
       when /\A\d+\z/
         source.to_i
       when String
-        data_source = find_by(name: source)
+        data_source = find_by_key(source)
         return data_source.id if data_source.present?
-        raise Invalid, "Could not find a DataSource with the name #{source}"
+        raise Invalid, "Could not find a DataSource with the key #{source.inspect}. Create it with LaForge::DataSource.create!(key: #{source.inspect}, precedence: ...), or pass the key of an existing source"
       when DataSource
         source.id
       else
-        raise Invalid, "Cannot find a DataSource with value: #{source.class} (#{source}). Supported values include: source_id, source_name, or source object"
+        raise Invalid, "Could not find a DataSource from #{source.inspect}, a #{source.class}. Pass a DataSource, its id, or its key"
       end
+    end
+
+    # Returns the source with `key`, or nil. Raises, naming the generator to run, when the table has no `key` column, as
+    # on an install upgraded from 0.0.1.alpha until it runs the migration `laforge:source_key` creates.
+    def self.find_by_key(key)
+      find_by(key: key)
+    rescue ::ActiveRecord::StatementInvalid
+      raise if with_connection { |connection| connection.column_exists?(table_name, :key) }
+
+      raise ::ActiveRecord::MigrationError, "#{table_name} has no key column. Run `rails generate laforge:source_key` and `rails db:migrate`, which rename its name column to key"
     end
 
     # EXCEPTIONS
@@ -98,7 +111,7 @@ module LaForge
       return if precedence.nil?
 
       PrecedenceRule.global.in_ruleset(LaForge.rulesets).where(precedence: precedence).includes(:source).order(:ruleset).each do |rule|
-        holder = rule.source.name.inspect
+        holder = rule.source.key.inspect
         ruleset = rule.ruleset.inspect
         errors.add(:precedence, "#{precedence} is held by #{holder} in ruleset #{ruleset}, and a new source takes its precedence in every ruleset. " \
                                 "Pass a precedence that is free in every ruleset, or first move #{holder} with LaForge.update_source_precedence(#{holder}, ..., ruleset: #{ruleset}) " \

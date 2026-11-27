@@ -8,7 +8,7 @@ describe 'Rulesets' do
     AssociationCapabilities.setup!
     AssociationCapabilities.reset!
     LaForge::PrecedenceRule.where.not(ruleset: LaForge::PrecedenceRule::BASE).delete_all
-    LaForge::DataSource.where(name: ['Cadastre', 'Business Directory', 'Business Registry', 'Map Editor']).delete_all
+    LaForge::DataSource.where(key: ['cadastre', 'business_directory', 'business_registry', 'map_editor']).delete_all
   end
 
   around do |example|
@@ -18,14 +18,14 @@ describe 'Rulesets' do
   end
 
   after do
-    LaForge::DataSource.where(name: ['Cadastre', 'Business Directory', 'Business Registry', 'Map Editor']).delete_all # their rules go with them
+    LaForge::DataSource.where(key: ['cadastre', 'business_directory', 'business_registry', 'map_editor']).delete_all # their rules go with them
     LaForge::PrecedenceRule.where.not(ruleset: LaForge::PrecedenceRule::BASE).delete_all
   end
 
-  let!(:business_registry) { LaForge::DataSource.create!(name: 'Business Registry', precedence: 41) }
-  let!(:cadastre) { LaForge::DataSource.create!(name: 'Cadastre', precedence: 42) }
-  let!(:business_directory) { LaForge::DataSource.create!(name: 'Business Directory', precedence: 43) }
-  let!(:map_editor) { LaForge::DataSource.create!(name: 'Map Editor', precedence: 44) }
+  let!(:business_registry) { LaForge::DataSource.create!(key: 'business_registry', precedence: 41) }
+  let!(:cadastre) { LaForge::DataSource.create!(key: 'cadastre', precedence: 42) }
+  let!(:business_directory) { LaForge::DataSource.create!(key: 'business_directory', precedence: 43) }
+  let!(:map_editor) { LaForge::DataSource.create!(key: 'map_editor', precedence: 44) }
 
   let(:north_place) { Place.create!(name: 'Harbor Building', region: 'north') }
   let(:south_place) { Place.create!(name: 'Harbor Building', region: 'south') }
@@ -320,7 +320,7 @@ describe 'Rulesets' do
     business_registry.destroy!
     expect(LaForge::PrecedenceRule.where(source_id: business_registry.id)).to be_empty # in every ruleset
 
-    registry = LaForge::DataSource.create!(name: 'Business Registry', precedence: 0)
+    registry = LaForge::DataSource.create!(key: 'business_registry', precedence: 0)
     placed = -> { ['', 'north', 'south'].map { |ruleset| LaForge::PrecedenceRule.global.in_ruleset(ruleset).find_by!(source: registry).precedence } }
     expect(placed.call).to eq([0, 0, 0])
     registry.update!(precedence: 41) # the base rules only
@@ -337,22 +337,22 @@ describe 'Rulesets' do
     LaForge.update_source_precedence(map_editor, -1, ruleset: 'north')
     LaForge.update_source_precedence(cadastre, -1, ruleset: 'south')
 
-    expect { LaForge::DataSource.create!(name: 'Geocoder', precedence: -1) }.to raise_error(ActiveRecord::RecordInvalid, Regexp.new(Regexp.escape(
-      'Precedence -1 is held by "Map Editor" in ruleset "north", and a new source takes its precedence in every ruleset. Pass a precedence that is free in every ruleset, ' \
-      'or first move "Map Editor" with LaForge.update_source_precedence("Map Editor", ..., ruleset: "north") or reorder the ruleset with LaForge.update_precedence_order(..., ruleset: "north"), ' \
-      'Precedence -1 is held by "Cadastre" in ruleset "south"'
+    expect { LaForge::DataSource.create!(key: 'geocoder', precedence: -1) }.to raise_error(ActiveRecord::RecordInvalid, Regexp.new(Regexp.escape(
+      'Precedence -1 is held by "map_editor" in ruleset "north", and a new source takes its precedence in every ruleset. Pass a precedence that is free in every ruleset, ' \
+      'or first move "map_editor" with LaForge.update_source_precedence("map_editor", ..., ruleset: "north") or reorder the ruleset with LaForge.update_precedence_order(..., ruleset: "north"), ' \
+      'Precedence -1 is held by "cadastre" in ruleset "south"'
     )))
-    expect(LaForge::DataSource.exists?(name: 'Geocoder')).to be(false)
-    expect(LaForge::DataSource.create(name: 'Geocoder', precedence: -1).errors[:precedence].size).to eq(2)
+    expect(LaForge::DataSource.exists?(key: 'geocoder')).to be(false)
+    expect(LaForge::DataSource.create(key: 'geocoder', precedence: -1).errors[:precedence].size).to eq(2)
 
-    geocoder = LaForge::DataSource.create!(name: 'Geocoder', precedence: -2)
+    geocoder = LaForge::DataSource.create!(key: 'geocoder', precedence: -2)
     expect(LaForge::PrecedenceRule.where(source: geocoder).pluck(:ruleset, :precedence)).to contain_exactly(['', -2], ['north', -2], ['south', -2])
 
-    unranked = LaForge::DataSource.new(name: 'Unranked Geocoder').tap { |source| source.save!(validate: false) }
+    unranked = LaForge::DataSource.new(key: 'unranked_geocoder').tap { |source| source.save!(validate: false) }
     expect(LaForge::PrecedenceRule.where(source: unranked)).to be_empty # no global precedence in the base rules, so none in a ruleset
   ensure
-    LaForge::DataSource.where(name: 'Unranked Geocoder').delete_all
-    LaForge::DataSource.where(name: 'Geocoder').delete_all
+    LaForge::DataSource.where(key: 'unranked_geocoder').delete_all
+    LaForge::DataSource.where(key: 'geocoder').delete_all
   end
 
   it 'forgets a fork or a reset that rolls back, inside one precedence cache block' do
@@ -399,10 +399,10 @@ describe 'Rulesets' do
     expect(LaForge::PrecedenceRule.where(ruleset: 'north').pluck(:ruleset).uniq).to eq(['north'])
     expect([forged_name(north_place), forged_name(upper_place)]).to eq(['From Cadastre', 'From Map Editor'])
 
-    archive = LaForge::DataSource.create!(name: 'Map Archive', precedence: LaForge::DataSource.maximum_precedence + 1)
+    archive = LaForge::DataSource.create!(key: 'map_archive', precedence: LaForge::DataSource.maximum_precedence + 1)
     expect(%w[North north].map { |ruleset| LaForge::PrecedenceRule.global.in_ruleset(ruleset).find_by!(source: archive).precedence }).to eq([archive.precedence] * 2)
   ensure
-    LaForge::DataSource.where(name: 'Map Archive').delete_all
+    LaForge::DataSource.where(key: 'map_archive').delete_all
   end
 
   it 'adds the ruleset column and indexes with the generated migration, and takes them away again' do

@@ -15,13 +15,13 @@ describe 'Association assignment by importers' do
   before do
     AssociationCapabilities.setup!
     AssociationCapabilities.reset!
-    LaForge::DataSource.where(name: ['cadastre', 'business directory', 'business registry', 'map editor']).delete_all
+    LaForge::DataSource.where(key: ['cadastre', 'business_directory', 'business_registry', 'map_editor']).delete_all
   end
 
-  let!(:cadastre) { LaForge::DataSource.create!(name: 'cadastre', precedence: 21) }
-  let!(:business_directory) { LaForge::DataSource.create!(name: 'business directory', precedence: 22) }
-  let!(:business_registry) { LaForge::DataSource.create!(name: 'business registry', precedence: 23) }
-  let!(:map_editor) { LaForge::DataSource.create!(name: 'map editor', precedence: 24) }
+  let!(:cadastre) { LaForge::DataSource.create!(key: 'cadastre', precedence: 21) }
+  let!(:business_directory) { LaForge::DataSource.create!(key: 'business_directory', precedence: 22) }
+  let!(:business_registry) { LaForge::DataSource.create!(key: 'business_registry', precedence: 23) }
+  let!(:map_editor) { LaForge::DataSource.create!(key: 'map_editor', precedence: 24) }
 
   let(:place) { Place.create!(name: 'Harbor Building') }
 
@@ -47,7 +47,7 @@ describe 'Association assignment by importers' do
   # entries on it.
   def sweep(record, source)
     record.withdraw_source(source)
-    record.update!(status: 'closed') if record.has_attribute?(:status) && (record.data_source_names - [source.name]).empty?
+    record.update!(status: 'closed') if record.has_attribute?(:status) && (record.data_source_keys - [source.key]).empty?
   end
 
   def categories(*list) = list.map { |category| { category_id: category.id } }
@@ -217,7 +217,7 @@ describe 'Association assignment by importers' do
         t1.remove_data_entries(attribute_names: :unit, sources: business_registry)
       end
       expect(t1.reload).to have_attributes(registration_number: nil, unit: '1A')
-      expect(t1.data_source_names).to include(business_directory.name)
+      expect(t1.data_source_keys).to include(business_directory.key)
 
       import(place.reload, business_directory, tenants: [tenant('T-1', unit: '1A'), tenant('T-2', unit: '1A')])
       expect(t1.reload).to have_attributes(registration_number: nil, unit: '1A')

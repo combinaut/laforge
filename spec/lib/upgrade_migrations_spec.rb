@@ -1,6 +1,7 @@
 require 'spec_helper'
 
-# The upgrade from 0.0.1.alpha that the README documents, run in its order on the 0.0.1.alpha schema and back again.
+# The upgrades the README documents, from 0.0.1.alpha to 1.0 and then from 1.0, run in their order on the 0.0.1.alpha schema
+# and back again.
 # It replaces LaForge's tables, so it puts them back as laforge:install creates them when it is done.
 describe 'The upgrade migrations' do
   let(:tables) { %i[laforge_precedence_rules laforge_data_entries laforge_data_sources] } # those referencing sources first
@@ -11,7 +12,8 @@ describe 'The upgrade migrations' do
       'active_sources_migration' => 'AddActiveToLaforgeDataSources',
       'expiry_migration' => 'AddExpiryToLaforgeDataEntriesAndPrecedenceRules',
       'rulesets_migration' => 'AddRulesetToLaforgePrecedenceRules',
-      'expires_when_migration' => 'AddExpiresWhenToLaforgeDataEntriesAndPrecedenceRules'
+      'expires_when_migration' => 'AddExpiresWhenToLaforgeDataEntriesAndPrecedenceRules',
+      'source_key_migration' => 'RenameNameToKeyOnLaforgeDataSources'
     }
   end
 
@@ -107,6 +109,47 @@ describe 'The upgrade migrations' do
     expect(schema).to eq(alpha)
     expect(connection.select_rows('SELECT name, priority FROM laforge_data_sources ORDER BY id')).to eq([['Cadastre', 10], ['Map Editor', 20]]) # not the ruleset's 5
     expect(connection.select_rows('SELECT source_id, priority FROM laforge_data_entries ORDER BY id')).to eq([[1, 30], [2, nil]])
+  end
+
+  describe 'the source key migration' do
+    let(:source_key_migration) { migration('source_key_migration', 'RenameNameToKeyOnLaforgeDataSources') }
+
+    before { connection.create_table(:laforge_data_sources) { |t| t.text :name } }
+
+    def insert_sources(*names)
+      names.each { |name| connection.execute("INSERT INTO laforge_data_sources (name) VALUES (#{connection.quote(name)})") }
+    end
+
+    it 'raises before changing anything when a source has no name or a blank one, naming its id' do
+      insert_sources('cadastre', nil, '  ')
+
+      expect { migrate(source_key_migration, :up) }.to raise_error(/Give these LaForge data sources a name before migrating, as each becomes the source's required key: source ids 2, 3/)
+      expect(connection.column_exists?(:laforge_data_sources, :name)).to be(true)
+    end
+
+    it 'raises before changing anything when a name is longer than 255 characters' do
+      insert_sources('c' * 256)
+
+      expect { migrate(source_key_migration, :up) }.to raise_error(/Shorten these LaForge data source names to 255 characters before migrating/)
+      expect(connection.column_exists?(:laforge_data_sources, :name)).to be(true)
+    end
+
+    it 'raises before changing anything when sources share a name, ignoring case as the default collation does' do
+      insert_sources('cadastre', 'Cadastre', 'map_editor', 'geocoder', 'geocoder')
+
+      expect { migrate(source_key_migration, :up) }.to raise_error(/LaForge data sources share names \(cadastre, Cadastre; geocoder, geocoder\)\. Rename all but one of each before migrating/)
+      expect(connection.column_exists?(:laforge_data_sources, :name)).to be(true)
+    end
+
+    it 'makes key a required string with a unique index, keeping each name' do
+      insert_sources('cadastre', 'map_editor')
+      migrate(source_key_migration, :up)
+
+      key = connection.columns(:laforge_data_sources).find { |column| column.name == 'key' }
+      expect([key.type, key.null]).to eq([:string, false])
+      expect(connection.indexes(:laforge_data_sources).map { |index| [index.columns, index.unique] }).to eq([[['key'], true]])
+      expect(connection.select_values('SELECT `key` FROM laforge_data_sources ORDER BY id')).to eq(%w[cadastre map_editor])
+    end
   end
 
   it 'raises before creating anything when an entry has a priority below that of another source whose entry for the same record and attribute has none' do

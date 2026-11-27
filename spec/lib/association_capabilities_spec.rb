@@ -34,9 +34,9 @@ describe 'Association tracking capabilities' do
   end
 
   # The sources differ only in precedence, numbered clear of the other specs' sources.
-  let(:low) { LaForge::DataSource.create!(name: 'low', precedence: 11) }
-  let(:high) { LaForge::DataSource.create!(name: 'high', precedence: 12) }
-  let(:top) { LaForge::DataSource.create!(name: 'top', precedence: 13) }
+  let(:low) { LaForge::DataSource.create!(key: 'low', precedence: 11) }
+  let(:high) { LaForge::DataSource.create!(key: 'high', precedence: 12) }
+  let(:top) { LaForge::DataSource.create!(key: 'top', precedence: 13) }
 
   let(:place) { Place.create!(name: 'Harbor Building') }
 
@@ -878,7 +878,7 @@ describe 'Association tracking capabilities' do
       place.record_data_entries({ tenants: { include: [{ id: corner_cafe.id }] } }, top, mode: :edit) # listed by key only
       place.save!
 
-      expect(corner_cafe.data_source_names).to contain_exactly('low')
+      expect(corner_cafe.data_source_keys).to contain_exactly('low')
       expect(corner_cafe.data_source?(top)).to be(false)
       expect(place.reload.member_sources(:tenants, id: corner_cafe.id)).to eq(membership: top, listed_by: [top, low], excluded_by: [], attributes: { 'external_id' => low, 'name' => low })
 
@@ -2527,7 +2527,7 @@ describe 'Association tracking capabilities' do
     end
 
     it "forges a member list's pending items whose expiry names a source deleted since, keeping the expiry at a time", capability: 'C180' do
-      geocoder = LaForge::DataSource.create!(name: 'geocoder', precedence: 5)
+      geocoder = LaForge::DataSource.create!(key: 'geocoder', precedence: 5)
       expires_at = 1.week.from_now
       unit = LaForge.with_settings('1A', precedence: 100, expires_on: geocoder, expires_at: expires_at)
       place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café', unit: unit)] }, top, expires_on: geocoder)
@@ -2831,7 +2831,7 @@ describe 'Association tracking capabilities' do
     end
 
     it 'keeps a trigger in a pending item only while its source exists', capability: 'C197' do
-      geocoder = LaForge::DataSource.create!(name: 'geocoder', precedence: 14)
+      geocoder = LaForge::DataSource.create!(key: 'geocoder', precedence: 14)
       place.forge! { place.record_data_entries({ tenants: [tenant('T-1', name: 'Corner Café')] }, low) }
       place.reload.record_data_entries({ tenants: [tenant('T-1', unit: LaForge.with_settings('1A', expires_on: geocoder, expires_when: :matches))] }, high, mode: :partial)
       place.save!
