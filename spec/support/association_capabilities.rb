@@ -13,7 +13,7 @@ module AssociationCapabilities
     TABLES.each { |table| ActiveRecord::Base.connection.execute("DELETE FROM #{table}") }
     LaForge::DataEntry.delete_all
     LaForge::PrecedenceRule.where.not(record_type: LaForge::PrecedenceRule::ANY_TYPE).delete_all
-    LaForge::DataSource.where(name: %w[low high top]).delete_all # their global precedence rules go with them
+    LaForge::DataSource.where(key: %w[low high top]).delete_all # their global precedence rules go with them
   end
 
   def self.create_tables

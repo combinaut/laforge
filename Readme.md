@@ -66,6 +66,23 @@ Declare each association, attribute group and `match_by` attribute in one call o
 
 A source created while rulesets are in use takes the precedence it is given in every ruleset, as in the base rules, rather than a place below each ruleset's lowest. Creating one now fails validation when another source holds that precedence in a ruleset. Pass a precedence that is free in every ruleset, or first move that source with `LaForge.update_source_precedence(..., ruleset:)` or reorder the ruleset with `LaForge.update_precedence_order(..., ruleset:)` (see [Sources created or destroyed later](#sources-created-or-destroyed-later)).
 
+Rename the data sources' `name` column to `key`. LaForge looks a source up by it, so it holds an identifier that stays the same, such as `cadastre`. The migration makes it a required string of up to 255 characters with a unique index. Each key keeps the source's old name, so code that passes those names keeps working. To change a key, change every call that passes it at the same time. LaForge shows no labels, so an application that wants a label people can change adds its own column to `laforge_data_sources`.
+
+Before changing anything, the migration checks that every source has a name that isn't blank and is at most 255 characters long, and that no two sources share a name, compared as the column's collation compares them, which on MySQL's default collation ignores case and accents. It raises, naming the sources, if not. Rename those sources, and change the calls that pass their old names, then migrate again.
+
+  ```bash
+    rails generate laforge:source_key
+    rails db:migrate
+  ```
+
+Then rename `name` to `key` where you call LaForge. There are no aliases.
+
+| Before | After |
+|---|---|
+| `DataSource.create!(name:)`, `source.name` | `DataSource.create!(key:)`, `source.key` |
+| `where(laforge_data_sources: { name: })` | `where(laforge_data_sources: { key: })` |
+| `record.data_source_names` | `record.data_source_keys` |
+
 ### Upgrading from 0.0.1.alpha to 1.0
 
 1.0 requires Rails 8.1.4.1 or later. It depends on Active Model, Active Record, Active Support and Railties only, so an application that relied on LaForge to install or load the rest of Rails must depend on `rails` itself.
@@ -122,12 +139,12 @@ A source created while rulesets are in use takes the precedence it is given in e
 ## Usage
 
 1. Create some sources and rank them by precedence. A source with a higher precedence outranks one with a lower, so an
-   attribute takes its value from the highest-ranked source that provides it. Each source needs a unique name and a unique
-   precedence.
+   attribute takes its value from the highest-ranked source that provides it. Each source needs a unique key, which LaForge
+   looks it up by, and a unique precedence.
 
   ```ruby
-    source1 = LaForge::DataSource.create(name: 'Encyclopedia Britannica', precedence: 2)
-    source2 = LaForge::DataSource.create(name: 'Wikipedia', precedence: 1)
+    source1 = LaForge::DataSource.create(key: 'business_directory', precedence: 2)
+    source2 = LaForge::DataSource.create(key: 'cadastre', precedence: 1)
   ```
 
 2. Build a new model, or update an existing one with data from any of your sources.
@@ -155,7 +172,7 @@ A source created while rulesets are in use takes the precedence it is given in e
     foo.forge! # => Saves the model with the attributes { height: nil, width: nil, name: 'El Capitan' }
   ```
 
-A source can be given as a `LaForge::DataSource`, its id, or its name. Looking a source up by a name that has no row raises `LaForge::DataSource::Invalid`.
+A source can be given as a `LaForge::DataSource`, its id, or its key, as a String or a Symbol. A key is stored and returned as a String, so `:cadastre` and `'cadastre'` name the same source. Looking a source up by a key that has no row raises `LaForge::DataSource::Invalid`.
 
 Each of LaForge's methods on a model and its records is also reachable through `laforge`, as `place.laforge.forge!` or `Place.laforge.update_source_precedence(map_editor, 3)`, for code that keeps LaForge's methods apart from the model's own.
 
@@ -280,7 +297,7 @@ Every source keeps a global precedence in each ruleset, as in the base rules, so
 
   ```ruby
     LaForge.update_source_precedence(geocoder, -1, ruleset: 'north')        # ranked low in 'north'
-    LaForge::DataSource.create!(name: 'Business Registry', precedence: 0)   # ranks above geocoder in 'north' too
+    LaForge::DataSource.create!(key: 'business_registry', precedence: 0)    # ranks above geocoder in 'north' too
   ```
 
 Creating a source fails validation when another source holds its precedence in a ruleset, as it does when another source holds it in the base rules. The error names the ruleset and the source. Pass a precedence that is free in every ruleset, or first move that source with `LaForge.update_source_precedence(..., ruleset:)` or reorder the ruleset with `LaForge.update_precedence_order(..., ruleset:)`.
@@ -292,7 +309,7 @@ Set rulesets up from one writer at a time. Two processes copying a ruleset at on
 ### Querying
   ```ruby
     foo.data_sources # => The sources that provided at least one of foo's data entries, each listed once
-    MyModel.joins(:data_sources).where(laforge_data_sources: { name: 'Wikipedia' }) # => Records with an entry from Wikipedia
+    MyModel.joins(:data_sources).where(laforge_data_sources: { key: 'cadastre' }) # => Records with an entry from the cadastre
 
     MyModel.with_source(source1) # => All records with an entry from source1
     MyModel.without_source(source1) # => All records with no entry from source1
@@ -326,10 +343,10 @@ The same scopes are available on a record's entries and on `LaForge::DataEntry`.
 These cover common ways of merging several feeds and manual edits into one record, and are covered by `spec/lib/usage_spec.rb`. They follow a map that places entities from several sources: a cadastre providing land records, a business directory that outranks it, a map editor whose edits outrank both, and a geocoder that only adds coordinates.
 
   ```ruby
-    cadastre = LaForge::DataSource.create!(name: 'Cadastre', precedence: 1)
-    business_directory = LaForge::DataSource.create!(name: 'Business Directory', precedence: 2)
-    map_editor = LaForge::DataSource.create!(name: 'Map Editor', precedence: 3)
-    geocoder = LaForge::DataSource.create!(name: 'Geocoder', precedence: 0)
+    cadastre = LaForge::DataSource.create!(key: 'cadastre', precedence: 1)
+    business_directory = LaForge::DataSource.create!(key: 'business_directory', precedence: 2)
+    map_editor = LaForge::DataSource.create!(key: 'map_editor', precedence: 3)
+    geocoder = LaForge::DataSource.create!(key: 'geocoder', precedence: 0)
   ```
 
 ### Importing
@@ -484,8 +501,8 @@ Whether another source still has entries on the record tells whether anything el
 ### Inspecting where values came from
 
   ```ruby
-    place.data_source_names                              # => ['Cadastre', 'Business Directory']
-    place.data_source_names(attributes: :parcel_number)  # => ['Cadastre']
+    place.data_source_keys                               # => ['cadastre', 'business_directory']
+    place.data_source_keys(attributes: :parcel_number)   # => ['cadastre']
     place.data_source?(map_editor)                       # => false
 
     # The entry forging takes for an attribute, its resolved entry, and its source
@@ -1135,7 +1152,7 @@ The withdrawn keys exist because LaForge leaves alone rows that no member list h
     place.forge_diff['tenants']          # => { added: [...], removed: [...], changed: [...] }, and skipped: when any would be; a new member is added as its attributes
   ```
 
-A member's own `data_source_names` and `data_source?` count only the sources with entries on the member. A source that lists the member without saying anything about it, such as a map editor including it by key, is not among them; `member_sources` on the owner names it. So an orphan check that asks whether another source still claims a member should check both.
+A member's own `data_source_keys` and `data_source?` count only the sources with entries on the member. A source that lists the member without saying anything about it, such as a map editor including it by key, is not among them; `member_sources` on the owner names it. So an orphan check that asks whether another source still claims a member should check both.
 
   ```ruby
     tenant.withdraw_source(business_registry)

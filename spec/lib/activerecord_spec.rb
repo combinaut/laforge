@@ -4,8 +4,8 @@ describe 'ActiveRecordExtensions' do
   context 'querying' do
     let(:record) { ActiveRecordMock.create(name: "Post") }
     let(:record2) { ActiveRecordMock.create(name: "News") }
-    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
-    let(:data_source2) { LaForge::DataSource.find_or_create_by!(name: "guardian") { |source| source.precedence = 2 } }
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(key: "bbc") { |source| source.precedence = 1 } }
+    let(:data_source2) { LaForge::DataSource.find_or_create_by!(key: "guardian") { |source| source.precedence = 2 } }
 
     before(:each) do
       LaForge::DataEntry.destroy_all
@@ -180,7 +180,7 @@ describe 'ActiveRecordExtensions' do
       end
 
       it 'returns a record once when several other sources provide the attribute' do
-        third_source = LaForge::DataSource.find_or_create_by!(name: "reuters") { |source| source.precedence = 3 }
+        third_source = LaForge::DataSource.find_or_create_by!(key: "reuters") { |source| source.precedence = 3 }
         LaForge::DataEntry.create(source: third_source, record: record2, attribute_name: "active", value: false)
 
         expect(ActiveRecordMock.with_attribute_without_source('active', data_source)).to eq([record2])
@@ -235,8 +235,8 @@ describe 'ActiveRecordExtensions' do
   end
 
   describe 'the querying scopes as sets of records' do
-    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
-    let(:data_source2) { LaForge::DataSource.find_or_create_by!(name: "guardian") { |source| source.precedence = 2 } }
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(key: "bbc") { |source| source.precedence = 1 } }
+    let(:data_source2) { LaForge::DataSource.find_or_create_by!(key: "guardian") { |source| source.precedence = 2 } }
     let(:sources) { [data_source.id, data_source2.id] }
     let(:attributes) { %w[name active] }
     let(:subsets) { ->(items) { (0..items.size).flat_map { |size| items.combination(size).to_a } } }
@@ -306,7 +306,7 @@ describe 'ActiveRecordExtensions' do
   end
 
   describe '#laforge' do
-    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(key: "bbc") { |source| source.precedence = 1 } }
 
     it "holds the methods the model delegates to it, and the model's laforge holds the class methods" do
       record = ActiveRecordMock.new
@@ -343,7 +343,7 @@ describe 'ActiveRecordExtensions' do
 
   describe '#forge!' do
     let(:record) { ActiveRecordMock.create(name: "Post", active: true) }
-    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(key: "bbc") { |source| source.precedence = 1 } }
     let(:data_entry) { LaForge::DataEntry.new(record: record, source_id: data_source.id) }
 
     it 'changes the database record' do
@@ -353,35 +353,35 @@ describe 'ActiveRecordExtensions' do
     end
 
     it 'changes the database record when a block is passed that creates data entries' do
-      expect { record.forge! { record.record_data_entries({name: "Article"}, data_source.name) }}.to change { record.reload.name }.from("Post").to("Article")
+      expect { record.forge! { record.record_data_entries({name: "Article"}, data_source.key) }}.to change { record.reload.name }.from("Post").to("Article")
     end
 
     it 'keeps the attribute when a block is passed that removes the only data entry with that attribute' do
       data_entry.update(attribute_name: "name", value: "Article")
       record.update!(name: "Post")
 
-      expect { record.forge! { record.remove_data_entries(sources: data_source.name) }}.not_to change { record.reload.name }
+      expect { record.forge! { record.remove_data_entries(sources: data_source.key) }}.not_to change { record.reload.name }
       expect(record.data_entries).to be_empty
     end
 
     it 'falls back to the next source when a block is passed that removes the resolved data entry' do
       LaForge::DataEntry.create!(record: record, source_id: data_source.id, attribute_name: "name", value: "Article")
-      higher = LaForge::DataSource.find_or_create_by!(name: "guardian") { |source| source.precedence = 2 }
+      higher = LaForge::DataSource.find_or_create_by!(key: "guardian") { |source| source.precedence = 2 }
       LaForge::DataEntry.create!(record: record, source_id: higher.id, attribute_name: "name", value: "Story")
       record.reload.forge!
 
-      expect { record.forge! { record.remove_data_entries(sources: higher.name) }}.to change { record.reload.name }.from("Story").to("Article")
+      expect { record.forge! { record.remove_data_entries(sources: higher.key) }}.to change { record.reload.name }.from("Story").to("Article")
     end
 
     it 'blanks the attribute when a block is passed that records nil for it' do
       data_entry.update(attribute_name: "name", value: "Post")
 
-      expect { record.forge! { record.record_data_entries({ name: nil }, data_source.name) }}.to change { record.reload.name }.from("Post").to(nil)
+      expect { record.forge! { record.record_data_entries({ name: nil }, data_source.key) }}.to change { record.reload.name }.from("Post").to(nil)
     end
 
     it 'does not change the attribute when the only data_entry with that attribute is destroyed outside of the block' do
       data_entry.update(attribute_name: "name", value: "Post")
-      record.remove_data_entries(sources: data_source.name)
+      record.remove_data_entries(sources: data_source.key)
 
       expect { record.forge! }.not_to change { record.reload.name }
     end
@@ -389,15 +389,15 @@ describe 'ActiveRecordExtensions' do
 
   describe '#forge' do
     let(:record) { ActiveRecordMock.create(name: "Post", active: true) }
-    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(key: "bbc") { |source| source.precedence = 1 } }
     let(:data_entry) { LaForge::DataEntry.new(record: record, source_id: data_source.id) }
 
-    let(:preceding_data_source) { LaForge::DataSource.find_or_create_by!(name: "guardian") { |source| source.precedence = 2 } }
+    let(:preceding_data_source) { LaForge::DataSource.find_or_create_by!(key: "guardian") { |source| source.precedence = 2 } }
     let(:preceding_data_entry) { LaForge::DataEntry.new(record: record, source_id: preceding_data_source.id) }
 
     it 'ranks an entry whose source has no global precedence below every source that has one, a negative one included' do
       # An entry whose source was deleted has no global rule
-      negative_source = LaForge::DataSource.find_or_create_by!(name: "negative") { |source| source.precedence = -5 }
+      negative_source = LaForge::DataSource.find_or_create_by!(key: "negative") { |source| source.precedence = -5 }
       LaForge::DataEntry.create!(record: record, source_id: negative_source.id, attribute_name: "name", value: "Ranked")
       LaForge::DataEntry.create!(record: record, source_id: data_source.id, attribute_name: "name", value: "Unranked")
       LaForge::PrecedenceRule.global.where(source_id: data_source.id).delete_all
@@ -486,7 +486,7 @@ describe 'ActiveRecordExtensions' do
   end
 
   describe '#forge_attributes' do
-    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(key: "bbc") { |source| source.precedence = 1 } }
     let(:record) { ActiveRecordMock.create(name: "Post", active: true) }
     let!(:data_entry) { LaForge::DataEntry.create!(record: record, attribute_name: "name", value: "Article", source_id: data_source.id) }
 
@@ -509,41 +509,41 @@ describe 'ActiveRecordExtensions' do
     end
 
     it 'lists attributes in the order forge calls the setters when every entry shares a precedence' do
-      record.record_data_entries({active: false}, data_source.name)
-      record.record_data_entries({count: 3}, data_source.name)
+      record.record_data_entries({active: false}, data_source.key)
+      record.record_data_entries({count: 3}, data_source.key)
 
       expect(record.forge_attributes.keys).to eq(%w[count active name])
     end
 
     it 'lists attributes highest precedence first, whichever entry each resolves to' do
-      higher_source = LaForge::DataSource.find_or_create_by!(name: "guardian") { |source| source.precedence = 2 }
-      record.record_data_entries({count: 3}, higher_source.name)
+      higher_source = LaForge::DataSource.find_or_create_by!(key: "guardian") { |source| source.precedence = 2 }
+      record.record_data_entries({count: 3}, higher_source.key)
 
       expect(record.forge_attributes.keys.first).to eq("count")
     end
   end
 
   describe '#record_data_entries' do
-    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(key: "bbc") { |source| source.precedence = 1 } }
     let(:record) { ActiveRecordMock.create(name: "Post") }
 
     it 'builds a data_entry for an attribute passed' do
-      expect { record.record_data_entries({name: "Article"}, data_source.name) }
+      expect { record.record_data_entries({name: "Article"}, data_source.key) }
         .to change { record.data_entries.size }
         .by(1)
     end
 
     it 'does not create a new data_entry until save is called' do
-      expect { record.record_data_entries({name: "Article"}, data_source.name) }
+      expect { record.record_data_entries({name: "Article"}, data_source.key) }
         .not_to change { record.data_entries.count }
     end
 
     it 'raises an error when the record does not have a setter method for the attribute_name' do
-      expect { record.record_data_entries({name2: "Article"}, data_source.name) }.to raise_exception(LaForge::InvalidAttributeName)
+      expect { record.record_data_entries({name2: "Article"}, data_source.key) }.to raise_exception(LaForge::InvalidAttributeName)
     end
 
-    it 'sets the source_id when a source_name is passed in' do
-      expect { record.record_data_entries({name: "Article"}, data_source.name) }
+    it 'sets the source_id when a source key is passed in' do
+      expect { record.record_data_entries({name: "Article"}, data_source.key) }
         .to change { record.data_entries.last&.source_id }
         .to(data_source.id)
     end
@@ -560,8 +560,8 @@ describe 'ActiveRecordExtensions' do
         .to(data_source.id)
     end
 
-    it 'raises an error when an invalid source name is passed in' do
-      expect { record.record_data_entries({name: "Article"}, "#{data_source.name}_test") }.to raise_exception(LaForge::DataSource::Invalid)
+    it 'raises an error when a key with no source is passed in' do
+      expect { record.record_data_entries({name: "Article"}, "#{data_source.key}_test") }.to raise_exception(LaForge::DataSource::Invalid)
     end
 
     it 'raises an error when an invalid source type is passed in' do
@@ -573,65 +573,65 @@ describe 'ActiveRecordExtensions' do
     end
 
     it 'sets the precedence for the attribute and source on the record when passed' do
-      expect { record.record_data_entries({name: "Article"}, data_source.name, precedence: 20) }
+      expect { record.record_data_entries({name: "Article"}, data_source.key, precedence: 20) }
         .to change { record.source_precedences }
         .to("name" => { data_source => 20 })
     end
 
     it 'can set an attribute to a string value' do
-      expect { record.record_data_entries({name: "Article"}, data_source.name) }
+      expect { record.record_data_entries({name: "Article"}, data_source.key) }
         .to change { record.data_entries.last&.value }
         .to("Article")
     end
 
     it 'can set an attribute to an integer value' do
-      expect { record.record_data_entries({count: 5}, data_source.name) }
+      expect { record.record_data_entries({count: 5}, data_source.key) }
         .to change { record.data_entries.last&.value }
         .to(5)
     end
 
     it 'can set an attribute to true' do
-      expect { record.record_data_entries({active: true}, data_source.name) }
+      expect { record.record_data_entries({active: true}, data_source.key) }
         .to change { record.data_entries.last&.value }
         .to(true)
     end
 
     it 'can set an attribute to false' do
-      expect { record.record_data_entries({active: false}, data_source.name) }
+      expect { record.record_data_entries({active: false}, data_source.key) }
         .to change { record.data_entries.last&.value }
         .to(false)
     end
 
     it 'keeps the precedence for the attribute and source when re-recorded without one' do
-      record.record_data_entries({name: "Article"}, data_source.name, precedence: 20)
-      record.record_data_entries({name: "Article 2"}, data_source.name)
+      record.record_data_entries({name: "Article"}, data_source.key, precedence: 20)
+      record.record_data_entries({name: "Article 2"}, data_source.key)
 
       expect(record.data_entries.map(&:value)).to eq(["Article 2"])
       expect(record.source_precedences).to eq("name" => { data_source => 20 })
     end
 
     it 'removes the precedence for the attribute and source when re-recorded with a nil precedence' do
-      record.record_data_entries({name: "Article"}, data_source.name, precedence: 20)
-      record.record_data_entries({name: "Article 2"}, data_source.name, precedence: nil)
+      record.record_data_entries({name: "Article"}, data_source.key, precedence: 20)
+      record.record_data_entries({name: "Article 2"}, data_source.key, precedence: nil)
 
       expect(record.source_precedences).to be_empty
     end
 
     it 'updates a data_entry for the same attribute from the same source' do
-      record.record_data_entries({name: "Article"}, data_source.name)
-      expect { record.record_data_entries({name: "Article 2"}, data_source.name) }
+      record.record_data_entries({name: "Article"}, data_source.key)
+      expect { record.record_data_entries({name: "Article 2"}, data_source.key) }
       .not_to change { record.data_entries.pluck(:id) }
     end
   end
 
   describe '#data_sources' do
-    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
-    let(:data_source2) { LaForge::DataSource.find_or_create_by!(name: "guardian") { |source| source.precedence = 2 } }
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(key: "bbc") { |source| source.precedence = 1 } }
+    let(:data_source2) { LaForge::DataSource.find_or_create_by!(key: "guardian") { |source| source.precedence = 2 } }
     let(:record) { ActiveRecordMock.create(name: "Post") }
 
     before do
-      record.record_data_entries({name: "Article", active: true}, data_source.name)
-      record.record_data_entries({count: 5}, data_source2.name)
+      record.record_data_entries({name: "Article", active: true}, data_source.key)
+      record.record_data_entries({count: 5}, data_source2.key)
       record.save!
     end
 
@@ -645,45 +645,45 @@ describe 'ActiveRecordExtensions' do
 
     it 'can be joined in a query' do
       other_record = ActiveRecordMock.create!(name: "Other")
-      other_record.record_data_entries({name: "Other"}, data_source.name)
+      other_record.record_data_entries({name: "Other"}, data_source.key)
       other_record.save!
 
-      expect(ActiveRecordMock.where(id: [record.id, other_record.id]).joins(:data_sources).where(laforge_data_sources: { name: "guardian" }))
+      expect(ActiveRecordMock.where(id: [record.id, other_record.id]).joins(:data_sources).where(laforge_data_sources: { key: "guardian" }))
         .to eq([record])
     end
   end
 
   describe '#data_source?' do
-    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(key: "bbc") { |source| source.precedence = 1 } }
     let(:record) { ActiveRecordMock.create(name: "Post") }
 
     it 'returns true when the record has a data_entry from the source' do
-      record.record_data_entries({name: "Article"}, data_source.name)
-      expect(record.data_source?(data_source.name)).to be true
+      record.record_data_entries({name: "Article"}, data_source.key)
+      expect(record.data_source?(data_source.key)).to be true
     end
 
     it 'returns false when the record does not have a data_entry from the source' do
-      expect(record.data_source?(data_source.name)).to be false
+      expect(record.data_source?(data_source.key)).to be false
     end
   end
 
-  describe '#data_source_names' do
-    let(:data_source) { LaForge::DataSource.find_or_create_by!(name: "bbc") { |source| source.precedence = 1 } }
-    let(:data_source2) { LaForge::DataSource.find_or_create_by!(name: "guardian") { |source| source.precedence = 2 } }
+  describe '#data_source_keys' do
+    let(:data_source) { LaForge::DataSource.find_or_create_by!(key: "bbc") { |source| source.precedence = 1 } }
+    let(:data_source2) { LaForge::DataSource.find_or_create_by!(key: "guardian") { |source| source.precedence = 2 } }
     let(:record) { ActiveRecordMock.create(name: "Post") }
 
     it 'returns a list of sources for the data_entries' do
-      record.record_data_entries({name: "Article"}, data_source.name)
-      record.record_data_entries({active: true}, data_source2.name)
+      record.record_data_entries({name: "Article"}, data_source.key)
+      record.record_data_entries({active: true}, data_source2.key)
 
-      expect(record.data_source_names).to eq([data_source.name, data_source2.name])
+      expect(record.data_source_keys).to eq([data_source.key, data_source2.key])
     end
 
     it 'returns a list of sources for the data_entries when an attribute is passed' do
-      record.record_data_entries({name: "Article"}, data_source.name)
-      record.record_data_entries({active: true}, data_source2.name)
+      record.record_data_entries({name: "Article"}, data_source.key)
+      record.record_data_entries({active: true}, data_source2.key)
 
-      expect(record.data_source_names(attributes: :name)).to eq([data_source.name])
+      expect(record.data_source_keys(attributes: :name)).to eq([data_source.key])
     end
   end
 end

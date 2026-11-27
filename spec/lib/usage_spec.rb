@@ -7,13 +7,13 @@ describe 'Usage' do
   before do
     LaForge::DataEntry.delete_all
     LaForge::PrecedenceRule.where.not(record_type: LaForge::PrecedenceRule::ANY_TYPE).delete_all
-    LaForge::DataSource.where(name: ['Cadastre', 'Business Directory', 'Map Editor', 'Geocoder']).delete_all
+    LaForge::DataSource.where(key: ['cadastre', 'business_directory', 'map_editor', 'geocoder']).delete_all
   end
 
   # Two importers and a map editor whose edits outrank both
-  let!(:cadastre) { LaForge::DataSource.create!(name: 'Cadastre', precedence: 31) }
-  let!(:business_directory) { LaForge::DataSource.create!(name: 'Business Directory', precedence: 32) }
-  let!(:map_editor) { LaForge::DataSource.create!(name: 'Map Editor', precedence: 33) }
+  let!(:cadastre) { LaForge::DataSource.create!(key: 'cadastre', precedence: 31) }
+  let!(:business_directory) { LaForge::DataSource.create!(key: 'business_directory', precedence: 32) }
+  let!(:map_editor) { LaForge::DataSource.create!(key: 'map_editor', precedence: 33) }
 
   let(:record) { ActiveRecordMock.create!(name: 'Original', active: true, count: 1) }
 
@@ -170,13 +170,13 @@ describe 'Usage' do
       record.record_data_entry(:name, 'From Map Editor', map_editor)
       record.save!
 
-      expect(record.data_entries.with_source(map_editor.name).with_attribute(:name)).to exist
-      expect(record.data_entries.with_source(map_editor.name).with_attribute(:count)).not_to exist
+      expect(record.data_entries.with_source(map_editor.key).with_attribute(:name)).to exist
+      expect(record.data_entries.with_source(map_editor.key).with_attribute(:count)).not_to exist
     end
 
-    it 'raises when a source is looked up by a name that has no row, which callers guard against' do
-      expect { record.data_entries.with_source('No Such Source').to_a }.to raise_error(LaForge::DataSource::Invalid)
-      expect(LaForge::DataSource.exists?(name: 'No Such Source')).to be(false)
+    it 'raises when a source is looked up by a key that has no row, which callers guard against' do
+      expect { record.data_entries.with_source('no_such_source').to_a }.to raise_error(LaForge::DataSource::Invalid)
+      expect(LaForge::DataSource.exists?(key: 'no_such_source')).to be(false)
     end
   end
 
@@ -422,17 +422,17 @@ describe 'Usage' do
     end
 
     it 'tells whether any other source still has entries on the record, to decide whether to orphan it' do
-      expect(record.data_entries.without_source('Business Directory')).not_to be_empty
+      expect(record.data_entries.without_source('business_directory')).not_to be_empty
 
       record.data_entries.with_source(cadastre).destroy_all
-      expect(record.data_entries.without_source('Business Directory')).to be_empty
+      expect(record.data_entries.without_source('business_directory')).to be_empty
     end
   end
 
   # When an import no longer includes a record, drop the importer's entries and orphan the record unless a source other
   # than a neutral one still has entries on it
   describe 'an import orphan sweep' do
-    let!(:geocoder) { LaForge::DataSource.create!(name: 'Geocoder', precedence: 34) }
+    let!(:geocoder) { LaForge::DataSource.create!(key: 'geocoder', precedence: 34) }
 
     before do
       record.record_data_entries({ name: 'From Cadastre' }, cadastre)
@@ -441,22 +441,22 @@ describe 'Usage' do
     end
 
     def still_claimed?(record, source, neutral_sources)
-      neutral_ids = LaForge::DataSource.where(name: neutral_sources).pluck(:id)
+      neutral_ids = LaForge::DataSource.where(key: neutral_sources).pluck(:id)
       record.data_entries.with_source(source).destroy_all
       record.data_entries.without_source(source).where.not(source_id: neutral_ids).exists?
     end
 
     it 'counts entries from any other source as a claim that the record exists' do
-      expect(still_claimed?(record, cadastre.name, [])).to be(true)
+      expect(still_claimed?(record, cadastre.key, [])).to be(true)
     end
 
     it 'ignores sources that only provide attribute values' do
-      expect(still_claimed?(record, cadastre.name, ['Geocoder'])).to be(false)
+      expect(still_claimed?(record, cadastre.key, ['geocoder'])).to be(false)
       expect(record.data_entries.reload.map(&:source)).to eq([geocoder])
     end
 
     it 'does not change the record, which keeps its values until it is next forged' do
-      still_claimed?(record, cadastre.name, [])
+      still_claimed?(record, cadastre.key, [])
 
       expect(record.reload.name).to eq('Original')
     end
@@ -472,7 +472,7 @@ describe 'Usage' do
     it "orders an attribute's entries by the precedence that decides them" do
       entries = record.data_entries.includes(:source).group_by(&:attribute_name)['name'].sort_by(&:effective_precedence).reverse
 
-      expect(entries.map { |entry| [entry.source.name, entry.effective_precedence] }).to eq([['Business Directory', 100], ['Cadastre', 31]])
+      expect(entries.map { |entry| [entry.source.key, entry.effective_precedence] }).to eq([['business_directory', 100], ['cadastre', 31]])
     end
 
     it 'ranks by precedence rules changed since the last forge once the record is reloaded' do
@@ -486,8 +486,8 @@ describe 'Usage' do
     end
 
     it 'lists the sources a record or one attribute has entries from' do
-      expect(record.data_source_names).to contain_exactly('Cadastre', 'Business Directory')
-      expect(record.data_source_names(attributes: :count)).to eq(['Cadastre'])
+      expect(record.data_source_keys).to contain_exactly('cadastre', 'business_directory')
+      expect(record.data_source_keys(attributes: :count)).to eq(['cadastre'])
       expect(record.data_source?(business_directory)).to be(true)
       expect(record.data_source?(map_editor)).to be(false)
     end
@@ -592,14 +592,14 @@ describe 'Usage' do
     end
 
     it "resolves to the next source's value once the outranking source's entries are deleted" do
-      LaForge::DataEntry.with_source('Business Directory').where(record_type: 'ActiveRecordMock', record_id: record.id, attribute_name: 'name').delete_all
+      LaForge::DataEntry.with_source('business_directory').where(record_type: 'ActiveRecordMock', record_id: record.id, attribute_name: 'name').delete_all
       record.reload.forge!
 
       expect(record.reload.name).to eq('From Cadastre')
     end
 
     it 'finds every record with an entry from a source for an attribute in one query' do
-      ids = LaForge::DataEntry.with_source(business_directory.name).with_attribute(:count).where(record_type: 'ActiveRecordMock').distinct.pluck(:record_id)
+      ids = LaForge::DataEntry.with_source(business_directory.key).with_attribute(:count).where(record_type: 'ActiveRecordMock').distinct.pluck(:record_id)
 
       expect(ids).to eq([record.id])
     end
@@ -943,7 +943,7 @@ describe 'Usage' do
     it 'ranks a source added later below an order set at a more specific level, whatever its global precedence' do
       record.update_precedence_order([business_directory, cadastre], attribute: :name)
       record.forge!
-      geocoder = LaForge::DataSource.create!(name: 'Geocoder', precedence: 1000)
+      geocoder = LaForge::DataSource.create!(key: 'geocoder', precedence: 1000)
       record.reload.record_data_entries({ name: 'From Geocoder' }, geocoder)
       record.forge!
 
@@ -1097,7 +1097,7 @@ describe 'Usage' do
       ActiveRecordMock.update_precedence_order([map_editor], attribute: :name)
       ActiveRecordMock.update_precedence_order([map_editor])
       record.update_precedence_order([business_directory])
-      geocoder = LaForge::DataSource.create!(name: 'Geocoder', precedence: 1000)
+      geocoder = LaForge::DataSource.create!(key: 'geocoder', precedence: 1000)
       record.record_data_entries({ name: 'From Geocoder' }, geocoder)
       record.forge!
 
@@ -1937,7 +1937,7 @@ describe 'Usage' do
         grouped.data_entries.with_source(map_editor).with_attribute(:count).delete_all
 
         expect { grouped.reload.update_precedence_order([map_editor], attribute: :listing, expires_on: cadastre, expires_when: :matches) }
-          .to raise_error(ArgumentError, /ActiveRecordMock#listing: Map Editor provides no value for count on this record/)
+          .to raise_error(ArgumentError, /ActiveRecordMock#listing: map_editor provides no value for count on this record/)
       end
     end
 
@@ -2007,9 +2007,9 @@ describe 'Usage' do
 
       it 'raises when the source has no entry for the attribute, naming both, and sets nothing' do
         expect { record.update_precedence_order([map_editor, business_directory], attribute: :name, expires_on: cadastre, expires_when: :matches) }
-          .to raise_error(ArgumentError, /ActiveRecordMock#name: Business Directory provides no value for name on this record.*Record a value from that source first, or leave out expires_when:/)
+          .to raise_error(ArgumentError, /ActiveRecordMock#name: business_directory provides no value for name on this record.*Record a value from that source first, or leave out expires_when:/)
         expect { record.update_attribute_source_precedence(:count, map_editor, 5, expires_on: cadastre, expires_when: :matches) }
-          .to raise_error(ArgumentError, /ActiveRecordMock#count: Map Editor provides no value for count on this record/)
+          .to raise_error(ArgumentError, /ActiveRecordMock#count: map_editor provides no value for count on this record/)
         expect(record.precedence_rules).to be_empty
       end
 
@@ -2076,7 +2076,7 @@ describe 'Usage' do
     end
 
     it "expires it on the source's first entry for the attribute" do
-      geocoder = LaForge::DataSource.create!(name: 'Geocoder', precedence: 1000)
+      geocoder = LaForge::DataSource.create!(key: 'geocoder', precedence: 1000)
       record_at(Time.utc(2030, 1, 2), { count: 3 }, map_editor, expires_on: geocoder, expires_when: :records)
 
       record_at(Time.utc(2030, 1, 3), { count: 4 }, geocoder)
@@ -2124,17 +2124,17 @@ describe 'Usage' do
   end
 
   describe 'data sources' do
-    it 'requires a unique precedence and a case-insensitively unique name' do
-      expect(LaForge::DataSource.new(name: 'Other', precedence: business_directory.precedence)).not_to be_valid
-      expect(LaForge::DataSource.new(name: 'business directory', precedence: 99)).not_to be_valid
-      expect(LaForge::DataSource.new(name: 'Other')).not_to be_valid
+    it 'requires a unique precedence and a case-insensitively unique key' do
+      expect(LaForge::DataSource.new(key: 'Other', precedence: business_directory.precedence)).not_to be_valid
+      expect(LaForge::DataSource.new(key: 'Business_Directory', precedence: 99)).not_to be_valid
+      expect(LaForge::DataSource.new(key: 'Other')).not_to be_valid
     end
 
     it 'stores the global precedence as a precedence rule, unique among global rules in the database too' do
       expect(LaForge::PrecedenceRule.global.find_by!(source: cadastre).precedence).to eq(31)
       expect { LaForge::PrecedenceRule.create!(source: map_editor, record_type: 'ActiveRecordMock', precedence: 31) }.not_to raise_error
-      expect { LaForge::DataSource.new(name: 'Duplicate', precedence: 31).save!(validate: false) }.to raise_error(ActiveRecord::RecordNotUnique)
-      expect(LaForge::DataSource.exists?(name: 'Duplicate')).to be(false)
+      expect { LaForge::DataSource.new(key: 'Duplicate', precedence: 31).save!(validate: false) }.to raise_error(ActiveRecord::RecordNotUnique)
+      expect(LaForge::DataSource.exists?(key: 'Duplicate')).to be(false)
     end
 
     it 'reorders sources by updating their precedence' do
@@ -2145,13 +2145,61 @@ describe 'Usage' do
       expect(LaForge::DataSource.where(id: [cadastre, business_directory, map_editor]).by_precedence.map(&:precedence)).to eq([1033, 1032, 1031])
     end
 
-    it 'accepts a source as a record, an id or a name wherever one is expected' do
-      [business_directory, business_directory.id, 'Business Directory'].each_with_index do |source, index|
+    it 'accepts a source as a record, an id, or a key as a String or Symbol wherever one is expected' do
+      [business_directory, business_directory.id, 'business_directory', :business_directory].each_with_index do |source, index|
         record.record_data_entries({ count: index }, source)
       end
 
       expect(record.data_entries.map(&:source_id)).to eq([business_directory.id])
-      expect(record.data_entries.first.value).to eq(2)
+      expect(record.data_entries.first.value).to eq(3)
+    end
+
+    it 'stores a key given as a Symbol as its String, and finds the source by either' do
+      geocoder = LaForge::DataSource.create!(key: :geocoder, precedence: 34)
+
+      expect(geocoder.reload.key).to eq('geocoder')
+      expect(LaForge::DataSource.find_by_key(:geocoder)).to eq(geocoder)
+      expect(LaForge::DataSource.where(key: :geocoder)).to eq([geocoder])
+      expect(LaForge::DataSource.new(key: 'Geocoder', precedence: 35)).not_to be_valid
+    ensure
+      LaForge::DataSource.where(key: 'geocoder').delete_all
+    end
+
+    describe 'with keys given as Symbols' do
+      it 'records, inspects and removes entries' do
+        record.record_data_entries({ name: 'From Cadastre', count: 5 }, :cadastre)
+        record.record_data_entry(:name, 'From Map Editor', :map_editor, expires_on: :cadastre)
+        record.save!
+
+        expect(record.data_source_keys).to contain_exactly('cadastre', 'map_editor')
+        expect(record.data_source?(:map_editor)).to be(true)
+        expect(record.data_entries.with_source(:map_editor).sole.expires_on_source_id).to eq(cadastre.id)
+        expect(LaForge::DataEntry.without_source(%i[cadastre map_editor]).where(record: record)).to be_empty
+        expect(ActiveRecordMock.with_attribute_with_source(:count, :cadastre)).to eq([record])
+        expect(record.forge_attributes(except_sources: :map_editor)).to include('name' => 'From Cadastre')
+
+        record.forge! { record.remove_data_entries(sources: :map_editor) }
+        expect(record.reload.name).to eq('From Cadastre')
+      end
+
+      it 'sets precedence rules and orders' do
+        record.record_data_entries({ name: 'From Cadastre' }, :cadastre)
+        record.record_data_entries({ name: 'From Business Directory' }, :business_directory)
+        record.update_attribute_source_precedence(:name, :cadastre, 5)
+        record.forge!
+        expect(record.reload.name).to eq('From Cadastre')
+
+        record.update_precedence_order(%i[business_directory cadastre], attribute: :name)
+        record.forge!
+        expect(record.reload.name).to eq('From Business Directory')
+
+        ActiveRecordMock.update_precedence_order(%i[cadastre business_directory])
+        LaForge.update_precedence_order(%i[cadastre map_editor business_directory])
+        expect(LaForge::DataSource.by_precedence.first(3)).to eq([cadastre, map_editor, business_directory])
+
+        LaForge.update_source_precedence(:business_directory, 999)
+        expect(business_directory.reload.precedence).to eq(999)
+      end
     end
   end
 end

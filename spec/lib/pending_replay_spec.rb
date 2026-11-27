@@ -23,8 +23,8 @@ describe 'Recordings on a member before its owner is forged' do
     AssociationCapabilities.reset!
   end
 
-  let(:low) { LaForge::DataSource.create!(name: 'low', precedence: 11) }
-  let(:high) { LaForge::DataSource.create!(name: 'high', precedence: 12) }
+  let(:low) { LaForge::DataSource.create!(key: 'low', precedence: 11) }
+  let(:high) { LaForge::DataSource.create!(key: 'high', precedence: 12) }
   let(:place) { Place.create!(name: 'Harbor Building') }
 
   def jan(day) = Time.utc(2026, 1, day)

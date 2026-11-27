@@ -32,9 +32,9 @@ describe 'forge_diff through setters' do
 
   after { LaForge::PrecedenceRule.where.not(ruleset: LaForge::PrecedenceRule::BASE).delete_all }
 
-  let(:low) { LaForge::DataSource.create!(name: 'low', precedence: 11) }
-  let(:high) { LaForge::DataSource.create!(name: 'high', precedence: 12) }
-  let(:top) { LaForge::DataSource.create!(name: 'top', precedence: 13) }
+  let(:low) { LaForge::DataSource.create!(key: 'low', precedence: 11) }
+  let(:high) { LaForge::DataSource.create!(key: 'high', precedence: 12) }
+  let(:top) { LaForge::DataSource.create!(key: 'top', precedence: 13) }
 
   let(:tenant) { Tenant.create!(name: 'Corner Café', unit: '1A', street: '2 Harbor Road', postcode: '94107', registered_on: Date.new(2024, 5, 1), accessible: true) }
 

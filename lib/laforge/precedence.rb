@@ -137,7 +137,7 @@ module LaForge
       self.class.attributes_of(name).product(source_ids).each do |attribute_name, source_id|
         next if provided_entry(attribute_name, source_id)
 
-        raise ArgumentError, "#{record.class.name}##{name}: #{DataSource.find(source_id).name} provides no value for #{attribute_name} on this record, and expires_when: :matches compares a rule's source's value. " \
+        raise ArgumentError, "#{record.class.name}##{name}: #{DataSource.find(source_id).key} provides no value for #{attribute_name} on this record, and expires_when: :matches compares a rule's source's value. " \
                              'Record a value from that source first, or leave out expires_when:'
       end
     end

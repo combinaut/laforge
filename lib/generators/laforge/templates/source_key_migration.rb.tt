@@ -1,0 +1,36 @@
+# Renames `name` to `key` on `laforge_data_sources`, keeping each source's value, and makes it a required string with a
+# unique index. LaForge looks sources up by it, so it holds an identifier that stays the same. An application that wants
+# a label people can change adds its own column.
+#
+# Raises before changing anything when a source has no name, a blank one or one longer than 255 characters, or when
+# sources share a name as the column's collation compares them, since the index would reject them.
+class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
+  def up
+    assert_names_migratable!
+    rename_column :laforge_data_sources, :name, :key
+    change_column :laforge_data_sources, :key, :string, null: false
+    add_index :laforge_data_sources, :key, unique: true
+  end
+
+  def down
+    remove_index :laforge_data_sources, :key
+    change_column :laforge_data_sources, :key, :text, null: true
+    rename_column :laforge_data_sources, :key, :name
+  end
+
+  private
+
+  def assert_names_migratable!
+    unnamed = select_values("SELECT id FROM laforge_data_sources WHERE name IS NULL OR TRIM(name) = '' ORDER BY id")
+    raise "Give these LaForge data sources a name before migrating, as each becomes the source's required key: source ids #{unnamed.join(', ')}" if unnamed.any?
+
+    long = select_values("SELECT name FROM laforge_data_sources WHERE CHAR_LENGTH(name) > 255 ORDER BY id")
+    raise "Shorten these LaForge data source names to 255 characters before migrating, as each becomes the source's key: #{long.join(', ')}" if long.any?
+
+    shared = select_rows("SELECT GROUP_CONCAT(name ORDER BY id SEPARATOR ', ') FROM laforge_data_sources GROUP BY name HAVING COUNT(*) > 1").flatten
+    return if shared.empty?
+
+    raise "LaForge data sources share names (#{shared.join('; ')}). Rename all but one of each before migrating, as keys are unique and compared as the column's collation " \
+          'compares them, which usually ignores case'
+  end
+end

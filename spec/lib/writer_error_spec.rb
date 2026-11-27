@@ -5,11 +5,11 @@ describe 'Writers that raise during a forge' do
   before do
     LaForge::DataEntry.delete_all
     LaForge::PrecedenceRule.where.not(record_type: LaForge::PrecedenceRule::ANY_TYPE).delete_all
-    LaForge::DataSource.where(name: ['Cadastre', 'Business Directory']).delete_all
+    LaForge::DataSource.where(key: ['cadastre', 'business_directory']).delete_all
   end
 
-  let!(:cadastre) { LaForge::DataSource.create!(name: 'Cadastre', precedence: 31) }
-  let!(:business_directory) { LaForge::DataSource.create!(name: 'Business Directory', precedence: 32) }
+  let!(:cadastre) { LaForge::DataSource.create!(key: 'cadastre', precedence: 31) }
+  let!(:business_directory) { LaForge::DataSource.create!(key: 'business_directory', precedence: 32) }
 
   # A model whose writers refuse a blank name and a negative count
   let(:model) do
@@ -46,7 +46,7 @@ describe 'Writers that raise during a forge' do
 
     expect(error.message).to eq(
       'A writer of ActiveRecordMock ' + record.id.to_s + ' raised while a forge assigned the forged values: ' \
-      'ActiveRecordMock#count= given -1 from Cadastre raised ArgumentError (count must not be negative). ' \
+      'ActiveRecordMock#count= given -1 from cadastre raised ArgumentError (count must not be negative). ' \
       'Record a value the writer takes, or rescue LaForge::WriterError and read its errors'
     )
     expect(error.record).to be(record)
@@ -64,8 +64,8 @@ describe 'Writers that raise during a forge' do
     error = raised { record.forge }
 
     expect(error.message).to start_with("2 writers of ActiveRecordMock #{record.id} raised while a forge assigned the forged values: ")
-    expect(error.message).to include('ActiveRecordMock#name= given "" from Business Directory raised ArgumentError (name must not be blank)')
-    expect(error.message).to include('ActiveRecordMock#count= given -1 from Cadastre raised ArgumentError (count must not be negative)')
+    expect(error.message).to include('ActiveRecordMock#name= given "" from business_directory raised ArgumentError (name must not be blank)')
+    expect(error.message).to include('ActiveRecordMock#count= given -1 from cadastre raised ArgumentError (count must not be negative)')
     expect(error.errors.keys).to eq(%w[name count]) # in the order the forge assigned them
     expect(error.sources).to eq('name' => business_directory, 'count' => cadastre)
     expect(record.attributes).to include('name' => 'Original', 'active' => false, 'count' => 1)
@@ -85,7 +85,7 @@ describe 'Writers that raise during a forge' do
     landmark = Landmark.create!(name: 'lighthouse')
     landmark.record_data_entries({ name: 'windmill', count: 4 }, cadastre)
 
-    expect { landmark.forge! }.to raise_error(LaForge::WriterError, /Landmark#name= given "windmill" from Cadastre raised ArgumentError \('windmill' is not a valid name\)/)
+    expect { landmark.forge! }.to raise_error(LaForge::WriterError, /Landmark#name= given "windmill" from cadastre raised ArgumentError \('windmill' is not a valid name\)/)
     expect(landmark.reload.count).to be_nil
   end
 

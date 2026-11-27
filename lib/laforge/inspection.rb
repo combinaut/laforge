@@ -3,7 +3,7 @@ module LaForge
   module Inspection
     extend ActiveSupport::Concern
 
-    API = %i[data_source? data_source_names source_values member_sources new_member tombstones membership_expiries].freeze
+    API = %i[data_source? data_source_keys source_values member_sources new_member tombstones membership_expiries].freeze
     CLASS_API = %i[source_values].freeze
 
     # Whether the source has entries on this record
@@ -11,9 +11,9 @@ module LaForge
       filter_data_entries_in_memory(sources: source).any?
     end
 
-    # Returns the names of the sources with entries on this record, for `attributes` when given
-    def data_source_names(attributes: nil)
-      filter_data_entries_in_memory(attributes: attributes).map(&:source).map(&:name).uniq
+    # Returns the keys of the sources with entries on this record, for `attributes` when given
+    def data_source_keys(attributes: nil)
+      filter_data_entries_in_memory(attributes: attributes).map(&:source).map(&:key).uniq
     end
 
     # Returns what each source says about the members of the tracked association `name`, as
