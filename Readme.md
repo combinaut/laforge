@@ -62,6 +62,10 @@ Declare each association, attribute group and `match_by` attribute in one call o
 
 ## Upgrading
 
+### Upgrading from 1.0
+
+A source created while rulesets are in use takes the precedence it is given in every ruleset, as in the base rules, rather than a place below each ruleset's lowest. Creating one now fails validation when another source holds that precedence in a ruleset. Pass a precedence that is free in every ruleset, or first move that source with `LaForge.update_source_precedence(..., ruleset:)` or reorder the ruleset with `LaForge.update_precedence_order(..., ruleset:)` (see [Sources created or destroyed later](#sources-created-or-destroyed-later)).
+
 ### Upgrading from 0.0.1.alpha to 1.0
 
 1.0 requires Rails 8.1.4.1 or later. It depends on Active Model, Active Record, Active Support and Railties only, so an application that relied on LaForge to install or load the rest of Rails must depend on `rails` itself.
@@ -272,11 +276,18 @@ The selector is called when a record is forged, by `forge`, `forge_attributes` o
 
 ##### Sources created or destroyed later
 
-Every source keeps a global precedence in each ruleset, as in the base rules, so a source created later is placed at the bottom of each existing ruleset's global order, below its lowest, in the same transaction. A ruleset that has placed it already is left alone. Destroying a source deletes its rules in every ruleset.
+Every source keeps a global precedence in each ruleset, as in the base rules, so a source created later takes the precedence it is given in every ruleset in use, in the same transaction. The developer who adds a source decides where it ranks everywhere, and changes it in one ruleset afterwards with `LaForge.update_source_precedence(..., ruleset:)`. Destroying a source deletes its rules in every ruleset.
+
+  ```ruby
+    LaForge.update_source_precedence(geocoder, -1, ruleset: 'north')        # ranked low in 'north'
+    LaForge::DataSource.create!(name: 'Business Registry', precedence: 0)   # ranks above geocoder in 'north' too
+  ```
+
+Creating a source fails validation when another source holds its precedence in a ruleset, as it does when another source holds it in the base rules. The error names the ruleset and the source. Pass a precedence that is free in every ruleset, or first move that source with `LaForge.update_source_precedence(..., ruleset:)` or reorder the ruleset with `LaForge.update_precedence_order(..., ruleset:)`.
 
 ##### Setting rulesets up while the app runs
 
-Set rulesets up from one writer at a time. Two processes copying a ruleset at once don't copy it twice, since the unique indexes skip the rows the other inserted, but two processes making a ruleset's first write at the same moment can both copy the base rules, so a rule the first one removed can come back. Call `LaForge.fork_ruleset` once ahead of time, such as in a deploy task, to avoid it. Likewise, two sources created at the same moment while rulesets exist can be given the same place in a ruleset, and one creation then fails on the unique index and rolls back. Retry it.
+Set rulesets up from one writer at a time. Two processes copying a ruleset at once don't copy it twice, since the unique indexes skip the rows the other inserted, but two processes making a ruleset's first write at the same moment can both copy the base rules, so a rule the first one removed can come back. Call `LaForge.fork_ruleset` once ahead of time, such as in a deploy task, to avoid it. Likewise, a ruleset change made while a source is created can take the source's precedence in that ruleset first, and the creation then fails on the unique index and rolls back. Retry it with a free precedence.
 
 ### Querying
   ```ruby
