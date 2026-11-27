@@ -67,13 +67,15 @@ module LaForge
     end
 
     # @api private
-    # Gives the source a global rule one below the lowest in each ruleset in use that has none for it, so every
-    # ruleset's global order includes every source, as the base one does. A ruleset with a global rule for the source is
-    # left alone.
+    # Gives the source its global precedence in each ruleset in use that has no global rule for it, so every ruleset's
+    # global order includes every source, as the base one does. A ruleset with a global rule for the source is left
+    # alone, and a source without a global precedence gets none in a ruleset either. `DataSource` validates on create
+    # that no ruleset has the precedence taken.
     def place_in_rulesets(source)
+      return if source.precedence.nil?
+
       unplaced = rulesets - PrecedenceRule.global.in_ruleset(rulesets).where(source_id: source.id).pluck(:ruleset)
-      lowest = PrecedenceRule.global.in_ruleset(unplaced).group(:ruleset).minimum(:precedence)
-      unplaced.each { |ruleset| PrecedenceRule.create!(source_id: source.id, ruleset: ruleset, precedence: lowest.fetch(ruleset, 1) - 1) }
+      unplaced.each { |ruleset| PrecedenceRule.create!(source_id: source.id, ruleset: ruleset, precedence: source.precedence) }
       PrecedenceCache.clear if unplaced.any?
     end
 

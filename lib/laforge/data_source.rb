@@ -14,6 +14,7 @@ module LaForge
     validates :name, presence: true, uniqueness: { case_sensitive: false }
     validates :precedence, presence: true, numericality: { only_integer: true, allow_nil: true }
     validate :precedence_is_unique
+    validate :precedence_is_free_in_rulesets, on: :create
 
     scope :active, -> { where(active: true) }
     scope :inactive, -> { where(active: false) }
@@ -90,6 +91,19 @@ module LaForge
       taken = PrecedenceRule.global.where(precedence: precedence)
       taken = taken.where.not(source_id: id) if persisted?
       errors.add(:precedence, :taken) if taken.exists?
+    end
+
+    # A new source takes its global precedence in every ruleset in use as well (see `LaForge.place_in_rulesets`)
+    def precedence_is_free_in_rulesets
+      return if precedence.nil?
+
+      PrecedenceRule.global.in_ruleset(LaForge.rulesets).where(precedence: precedence).includes(:source).order(:ruleset).each do |rule|
+        holder = rule.source.name.inspect
+        ruleset = rule.ruleset.inspect
+        errors.add(:precedence, "#{precedence} is held by #{holder} in ruleset #{ruleset}, and a new source takes its precedence in every ruleset. " \
+                                "Pass a precedence that is free in every ruleset, or first move #{holder} with LaForge.update_source_precedence(#{holder}, ..., ruleset: #{ruleset}) " \
+                                "or reorder the ruleset with LaForge.update_precedence_order(..., ruleset: #{ruleset})")
+      end
     end
   end
 
